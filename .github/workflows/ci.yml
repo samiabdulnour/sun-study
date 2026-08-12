@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the primary deployment platform -- the office runs
+        # Archicad 26 on Windows -- so it is a first-class target, not an
+        # afterthought. It is also the platform where the stdlib has no system
+        # tz database, which is exactly what the 21 June AEST test depends on.
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --python ${{ matrix.python }}
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest -v
+
+      - name: Validation report
+        run: uv run python scripts/validation_report.py
+
+  no-optional-deps:
+    name: bare install (no pvlib)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # pvlib is a validation reference, never a runtime dependency. This job
+      # proves the package still installs and its suite still passes without
+      # it, so the boundary cannot rot into a hidden hard dependency.
+      - name: Install runtime dependencies only
+        run: uv sync --no-dev
+
+      - name: Confirm pvlib is absent
+        run: |
+          if uv run --no-dev python -c "import pvlib" 2>/dev/null; then
+            echo "pvlib should not be installed in a runtime-only environment"
+            exit 1
+          fi
+
+      - name: Test without the optional reference
+        run: uv run --no-dev --with pytest pytest -v

@@ -1,0 +1,82 @@
+[project]
+name = "sun-study"
+version = "0.0.1"
+description = "Direct sunlight hours from an Archicad model, written back into Archicad as Zone properties"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Runtime dependencies are added as the code that needs them lands, not up front.
+# The approved set for this project (see docs/decisions.md) is numpy, trimesh,
+# ifcopenshell, pydantic, typer, pyyaml. Anything beyond that is a conversation.
+dependencies = [
+    "numpy>=1.26",
+    # Pure-data wheel, no code. Python's stdlib `zoneinfo` reads the *system* tz
+    # database first and falls back to this package. Windows ships no system tz
+    # database at all, so without this the primary deployment platform cannot
+    # resolve "Australia/Sydney". Unconditional rather than Windows-only so CI
+    # exercises the same fallback path the office machines will use.
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+# pvlib is a *validation reference*, never a runtime dependency. It provides an
+# independent implementation of the NREL SPA algorithm that CI cross-checks
+# core.solar against. See docs/validation.md.
+validation = ["pvlib>=0.10"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pvlib>=0.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sun_study"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "validation: cross-checks against the optional pvlib reference implementation",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "A",         # builtins shadowing
+    "C4",        # comprehensions
+    "PTH",       # use pathlib, not os.path -- Windows is the primary platform
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test bodies name published reference constants; long lines are citations.
+"tests/**" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = ["pvlib.*"]
+ignore_missing_imports = true
