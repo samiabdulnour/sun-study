@@ -662,6 +662,158 @@ def init_properties_command(
         )
 
 
+@app.command("archicad-selftest")
+def archicad_selftest(
+    port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    count: Annotated[
+        int, typer.Option("--zones", help="How many zones to write to. 0 for all.")
+    ] = 8,
+    layer: Annotated[
+        str, typer.Option("--layer", help="Archicad layer to draw on.")
+    ] = DEFAULT_LAYER_NAME,
+    pen: Annotated[
+        list[str] | None,
+        typer.Option("--pen", help="Override a band's fill pen as 'label=index'. Repeatable."),
+    ] = None,
+) -> None:
+    """Exercise the whole Archicad round trip with invented numbers.
+
+    Everything the tool does to a project -- create properties, write values,
+    create a layer, draw fills, draw a legend -- against real Zones, in
+    seconds, with no geometry analysis in the way.
+
+    That separation is the point. A real run spends most of its time casting
+    rays, and finding out only at the end that a property was not available or
+    a pen index was wrong is a slow way to learn it. This isolates the part
+    that cannot be tested without an Archicad from the part that is tested
+    exhaustively without one.
+
+    **It writes invented values to your project.** They are spread across
+    every band so the legend and the pen mapping are all visible at once, and
+    every one is stamped SELFTEST. Re-run a real assessment, or delete the
+    layer and clear the properties, before anybody looks at the result.
+    """
+    banner()
+    typer.secho(
+        "SELF TEST: this writes invented numbers onto real Zones and draws them. "
+        "Nothing it produces is a measurement.",
+        fg=typer.colors.YELLOW,
+        bold=True,
+    )
+    typer.echo("")
+
+    connection = _connect(port)
+    try:
+        found = read_zones(connection)
+        if not found:
+            typer.secho("No Zones in the project to test against.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+        chosen = found if count <= 0 else found[:count]
+        assessment, match = _synthetic_assessment(chosen, band_styles(pen))
+        typer.echo(f"  testing against {len(chosen)} of {len(found)} zones")
+
+        classified = classification_items_of(connection, [zone.guid for zone in chosen])
+        init_properties(connection, classified)
+        typer.echo(f"  properties ready in group {PROPERTY_GROUP_NAME!r}")
+
+        written = write_assessment(
+            connection, assessment, match=match, run_stamp="SELFTEST -- not a measurement"
+        )
+        typer.secho(
+            written.describe(),
+            fg=typer.colors.GREEN if written.complete else typer.colors.RED,
+            bold=True,
+        )
+
+        drawn = draw_assessment(
+            connection,
+            assessment,
+            chosen,
+            zone_by_apartment=match.by_apartment,
+            bands=band_styles(pen),
+            layer_name=layer,
+            title="SELF TEST -- invented values",
+        )
+        typer.secho(
+            drawn.describe(),
+            fg=typer.colors.GREEN if drawn.complete else typer.colors.RED,
+            bold=True,
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+    typer.echo("")
+    typer.secho(
+        "Now look in Archicad: the zones should carry Sun Study values, and the "
+        f"layer {layer!r} should hold one fill per zone plus a legend, in as many "
+        "colours as there are bands. Wrong colours mean the pen mapping needs "
+        "--pen; missing values mean the zone's classification does not carry the "
+        "property.",
+        fg=typer.colors.YELLOW,
+    )
+
+
+def _synthetic_assessment(
+    zones: Sequence[ArchicadZone], bands: Sequence[BandStyle]
+) -> tuple[Any, Any]:
+    """Invented results for real zones, one per band, cycling.
+
+    Every band gets used so a single glance at the plan checks the whole pen
+    mapping. Values sit in the middle of each band rather than on its edge, so
+    a rounding disagreement cannot make the test look like a banding bug.
+    """
+    from sun_study.archicad.write import ApartmentMatch
+    from sun_study.rules.assessment import ApartmentResult, BuildingAssessment
+    from sun_study.rules.ruleset import Continuity
+
+    lower = 0.0
+    midpoints: list[float] = []
+    for band in bands:
+        upper = band.upper_minutes if band.upper_minutes != float("inf") else lower + 60.0
+        midpoints.append(lower if upper <= lower else (lower + upper) / 2.0)
+        lower = upper
+
+    apartments = []
+    for index, zone in enumerate(zones):
+        minutes = midpoints[index % len(midpoints)]
+        apartments.append(
+            ApartmentResult(
+                apartment_id=zone.guid,
+                apartment_name=zone.label,
+                living_room_minutes=minutes,
+                open_space_minutes=None,
+                governing_minutes=minutes,
+                meets_minimum=minutes >= 120.0,
+                receives_no_sunlight=minutes <= 0.0,
+                counted=True,
+                note="SELFTEST",
+            )
+        )
+
+    counted = len(apartments)
+    meeting = sum(1 for a in apartments if a.meets_minimum)
+    assessment = BuildingAssessment(
+        ruleset_name="SELFTEST",
+        ruleset_version="0",
+        area_key="sydney_metro",
+        area_label="Self test",
+        minimum_minutes=120.0,
+        continuity=Continuity.CUMULATIVE,
+        apartments=tuple(apartments),
+        counted_total=counted,
+        meeting_minimum=meeting,
+        with_no_sunlight=sum(1 for a in apartments if a.receives_no_sunlight),
+        compliant_share=meeting / counted if counted else 0.0,
+        no_sunlight_share=0.0,
+        required_share=0.7,
+        maximum_no_sunlight_share=0.15,
+    )
+    match = ApartmentMatch({zone.guid: zone.guid for zone in zones}, (), ())
+    return assessment, match
+
+
 @app.command("archicad-run")
 def archicad_run(
     timezone: Annotated[
@@ -727,6 +879,17 @@ def archicad_run(
         str,
         typer.Option("--layer", help="Archicad layer to draw the result on."),
     ] = DEFAULT_LAYER_NAME,
+    allow_georeference_mismatch: Annotated[
+        bool,
+        typer.Option(
+            "--allow-georeference-mismatch",
+            help=(
+                "Continue when the live project and its export disagree about "
+                "the site. For testing the Archicad round trip only -- the "
+                "numbers it produces are not usable."
+            ),
+        ),
+    ] = False,
     pen: Annotated[
         list[str] | None,
         typer.Option(
@@ -804,15 +967,23 @@ def archicad_run(
         # would be plausible and wrong.
         try:
             cross_check_georeferencing(location, result.model)
+            typer.secho(
+                "  georeferencing cross-check passed: the live project and its "
+                "export place the site alike",
+                fg=typer.colors.GREEN,
+            )
         except ArchicadError as error:
-            typer.secho(str(error), fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=2) from error
-
-        typer.secho(
-            "  georeferencing cross-check passed: the live project and its "
-            "export place the site alike",
-            fg=typer.colors.GREEN,
-        )
+            if not allow_georeference_mismatch:
+                typer.secho(str(error), fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2) from error
+            typer.secho(str(error), fg=typer.colors.YELLOW, err=True)
+            typer.secho(
+                "  CONTINUING ANYWAY because --allow-georeference-mismatch was "
+                "given. Every figure below is computed from a site the two "
+                "sources disagree about. Do not quote any of it.",
+                fg=typer.colors.RED,
+                bold=True,
+            )
         typer.echo("")
         report_assessment(result, timezone=timezone, area=area, csv_out=csv_out, json_out=json_out)
 

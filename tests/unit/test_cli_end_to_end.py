@@ -376,3 +376,53 @@ def test_drawing_is_opt_in_like_writing() -> None:
     from sun_study.cli import archicad_run
 
     assert inspect.signature(archicad_run).parameters["draw"].default is False
+
+
+def test_the_self_test_uses_every_band_so_one_glance_checks_the_palette() -> None:
+    """A self test that only exercised one colour would prove one third of the
+    pen mapping and look like it had proved all of it."""
+    from sun_study.archicad.draw import DEFAULT_BANDS, band_for
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.cli import _synthetic_assessment
+
+    zones = [ArchicadZone(f"z{i}", "Living", f"{i}") for i in range(len(DEFAULT_BANDS))]
+    assessment, match = _synthetic_assessment(zones, DEFAULT_BANDS)
+
+    used = {band_for(a.governing_minutes, DEFAULT_BANDS).label for a in assessment.apartments}
+    assert used == {band.label for band in DEFAULT_BANDS}
+    assert match.by_apartment == {f"z{i}": f"z{i}" for i in range(len(DEFAULT_BANDS))}
+    assert not match.unmatched and not match.ambiguous
+
+
+def test_the_self_test_values_sit_inside_their_bands_not_on_the_edge() -> None:
+    """On an edge, a rounding disagreement would look like a banding bug."""
+    from sun_study.archicad.draw import DEFAULT_BANDS
+
+    zones_count = len(DEFAULT_BANDS)
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.cli import _synthetic_assessment
+
+    zones = [ArchicadZone(f"z{i}", "Living", f"{i}") for i in range(zones_count)]
+    assessment, _ = _synthetic_assessment(zones, DEFAULT_BANDS)
+
+    edges = {band.upper_minutes for band in DEFAULT_BANDS}
+    assert not (edges & {a.governing_minutes for a in assessment.apartments if a.governing_minutes})
+
+
+def test_the_self_test_marks_everything_as_not_a_measurement() -> None:
+    from sun_study.archicad.draw import DEFAULT_BANDS
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.cli import _synthetic_assessment
+
+    assessment, _ = _synthetic_assessment([ArchicadZone("z", "L", "1")], DEFAULT_BANDS)
+    assert assessment.ruleset_name == "SELFTEST"
+    assert all(a.note == "SELFTEST" for a in assessment.apartments)
+
+
+def test_a_georeference_mismatch_can_be_overridden_but_only_deliberately() -> None:
+    import inspect
+
+    from sun_study.cli import archicad_run
+
+    parameter = inspect.signature(archicad_run).parameters["allow_georeference_mismatch"]
+    assert parameter.default is False
