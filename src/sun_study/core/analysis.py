@@ -30,8 +30,10 @@ in the engine.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import pairwise
 
 import numpy as np
 import numpy.typing as npt
@@ -43,8 +45,12 @@ FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
 
 __all__ = [
+    "DEFAULT_BAND_EDGES_MINUTES",
+    "Band",
+    "BandedResult",
     "SunlightResult",
     "Weighting",
+    "band_by_area",
     "cumulative_minutes",
     "instant_weights",
     "longest_continuous_minutes",
@@ -232,4 +238,161 @@ def summarise_by_parent(
         weighting=weighting,
         instant_count=int(sunlit.shape[1]),
         surface_offset_m=points.surface_offset_m,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Area-weighted banding.
+#
+# The office's massing decks report sunlight as a histogram of surface area
+# rather than a per-apartment verdict, because at massing stage there are no
+# apartments -- no Zones, no windows, just a mass. The metric that drives the
+# design loop is "what share of the facade gets more than two hours", and it is
+# a share of *square metres*.
+#
+# Three details of the published band scheme are load-bearing:
+#
+# * ``0hr`` is held separate from ``0-2hrs``. A surface that receives nothing
+#   is a different finding from one that receives forty minutes, and it maps
+#   directly onto ADG criterion 3.
+# * The ``>2hrs`` roll-up is inclusive of exactly two hours, because the
+#   criterion reads "a minimum of 2 hours".
+# * Bands are area-weighted, not sample-counted. The two agree only when every
+#   sample stands for the same area, which is never true on a triangle soup.
+# ---------------------------------------------------------------------------
+
+#: Upper edges in minutes. The final band is everything above the last edge.
+DEFAULT_BAND_EDGES_MINUTES: tuple[float, ...] = (60.0, 120.0, 180.0, 240.0, 300.0)
+
+#: A duration at or below this counts as no direct sunlight at all.
+ZERO_TOLERANCE_MINUTES = 1e-9
+
+
+@dataclass(frozen=True)
+class Band:
+    """One row of the histogram."""
+
+    label: str
+    lower_minutes: float
+    upper_minutes: float | None
+    area_m2: float
+    share: float
+
+
+@dataclass(frozen=True)
+class BandedResult:
+    """An area-weighted sunlight histogram, with the roll-ups reported."""
+
+    bands: tuple[Band, ...]
+    total_area_m2: float
+    threshold_minutes: float
+
+    at_or_above_threshold_m2: float
+    below_threshold_m2: float
+    """Area receiving *some* sun but less than the threshold. Excludes zero."""
+    zero_m2: float
+
+    @property
+    def at_or_above_threshold_share(self) -> float:
+        return self.at_or_above_threshold_m2 / self.total_area_m2 if self.total_area_m2 else 0.0
+
+    @property
+    def below_threshold_share(self) -> float:
+        return self.below_threshold_m2 / self.total_area_m2 if self.total_area_m2 else 0.0
+
+    @property
+    def zero_share(self) -> float:
+        return self.zero_m2 / self.total_area_m2 if self.total_area_m2 else 0.0
+
+    def summary(self) -> str:
+        hours = self.threshold_minutes / 60.0
+        return (
+            f">{hours:g}hrs {self.at_or_above_threshold_m2:.2f} m2 "
+            f"{self.at_or_above_threshold_share:.2%} | "
+            f"0-{hours:g}hrs {self.below_threshold_m2:.2f} m2 "
+            f"{self.below_threshold_share:.2%} | "
+            f"0hr {self.zero_m2:.2f} m2 {self.zero_share:.2%}"
+        )
+
+
+def _band_label(lower: float, upper: float | None) -> str:
+    if upper is None:
+        return f">{lower / 60.0:g}hrs"
+    low, high = lower / 60.0, upper / 60.0
+    unit = "hr" if high <= 1.0 else "hrs"
+    return f"{low:g}-{high:g}{unit}"
+
+
+def band_by_area(
+    points: SamplePoints,
+    minutes: FloatArray,
+    *,
+    edges_minutes: Sequence[float] = DEFAULT_BAND_EDGES_MINUTES,
+    threshold_minutes: float = 120.0,
+    mask: BoolArray | None = None,
+) -> BandedResult:
+    """Bucket per-sample durations into area-weighted bands.
+
+    ``minutes`` is parallel to ``points``. ``mask`` optionally restricts the
+    analysis to a subset without disturbing the sample arrays.
+
+    Bands are half-open ``[lower, upper)`` above an exact-zero band, so a
+    surface receiving precisely the threshold falls in the first band above it
+    and counts toward the roll-up -- "a minimum of 2 hours" means two hours
+    passes.
+    """
+    if len(minutes) != len(points):
+        raise ValueError(f"{len(minutes)} durations for {len(points)} samples")
+    if any(b <= a for a, b in pairwise(edges_minutes)):
+        raise ValueError(f"edges_minutes must be strictly increasing, got {list(edges_minutes)}")
+
+    areas = points.areas if mask is None else points.areas[mask]
+    values = np.asarray(minutes, dtype=np.float64)
+    values = values if mask is None else values[mask]
+
+    total = float(np.sum(areas))
+    zero = values <= ZERO_TOLERANCE_MINUTES
+
+    raw: list[Band] = [Band("0hr", 0.0, 0.0, float(np.sum(areas[zero])), 0.0)]
+    lower = ZERO_TOLERANCE_MINUTES
+    for edge in edges_minutes:
+        inside = (
+            (values > lower) & (values < edge)
+            if lower == ZERO_TOLERANCE_MINUTES
+            else ((values >= lower) & (values < edge))
+        )
+        raw.append(
+            Band(
+                _band_label(0.0 if lower == ZERO_TOLERANCE_MINUTES else lower, edge),
+                lower,
+                edge,
+                float(np.sum(areas[inside])),
+                0.0,
+            )
+        )
+        lower = edge
+    top = values >= lower
+    raw.append(Band(_band_label(lower, None), lower, None, float(np.sum(areas[top])), 0.0))
+
+    # Shares are filled in only now, once the total is known.
+    bands = tuple(
+        Band(
+            b.label,
+            b.lower_minutes,
+            b.upper_minutes,
+            b.area_m2,
+            (b.area_m2 / total) if total else 0.0,
+        )
+        for b in raw
+    )
+
+    at_or_above = float(np.sum(areas[values >= threshold_minutes]))
+    below = float(np.sum(areas[(values > ZERO_TOLERANCE_MINUTES) & (values < threshold_minutes)]))
+    return BandedResult(
+        bands=bands,
+        total_area_m2=total,
+        threshold_minutes=threshold_minutes,
+        at_or_above_threshold_m2=at_or_above,
+        below_threshold_m2=below,
+        zero_m2=float(np.sum(areas[zero])),
     )
