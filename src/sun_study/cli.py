@@ -29,7 +29,9 @@ from sun_study.archicad.draw import (
     DEFAULT_BANDS,
     DEFAULT_LAYER_NAME,
     BandStyle,
+    Pen,
     draw_assessment,
+    indistinguishable_bands,
     match_pens,
     pen_table,
 )
@@ -46,8 +48,10 @@ from sun_study.archicad.read import zones as read_zones
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
+    WriteReport,
     all_properties,
     default_property_value,
+    diagnose_write_access,
     ensure_property_group,
     enum_values,
     init_properties,
@@ -280,9 +284,48 @@ def resolve_bands(
         )
 
     if not overrides:
-        return styles
+        return _warn_if_alike(styles, pens)
     wanted = {band.label: band.fill_pen for band in overridden}
-    return tuple(replace(band, fill_pen=wanted.get(band.label, band.fill_pen)) for band in styles)
+    corrected = tuple(
+        replace(band, fill_pen=wanted.get(band.label, band.fill_pen)) for band in styles
+    )
+    return _warn_if_alike(corrected, pens)
+
+
+def report_write(connection: ArchicadConnection, written: WriteReport) -> None:
+    """Print a write report, and chase down the cause of any refusals.
+
+    ``APIERR_NOACCESSRIGHT`` names three possible causes and leaves the reader
+    to work out which. The project can answer that, so it is asked rather than
+    left as an exercise -- but only after a failure, because it costs calls.
+    """
+    typer.secho(
+        written.describe(),
+        fg=typer.colors.GREEN if written.complete else typer.colors.RED,
+        bold=True,
+    )
+    if not written.zones_refused:
+        return
+    diagnosis = diagnose_write_access(connection, written.zones_refused)
+    detail = diagnosis.describe() if diagnosis is not None else ""
+    if detail:
+        typer.secho(detail, fg=typer.colors.YELLOW)
+
+
+def _warn_if_alike(styles: tuple[BandStyle, ...], pens: Sequence[Pen]) -> tuple[BandStyle, ...]:
+    """Say so when two bands will look the same on the plan.
+
+    Distinct pen indices are not distinct colours. Matching guarantees the
+    first; only this checks the second, and a boundary a reader cannot see is
+    a diagram that answers the wrong question while looking finished.
+    """
+    for left, right in indistinguishable_bands(styles, pens):
+        typer.secho(
+            f"  '{left}' and '{right}' are on pens of near-identical colour and will "
+            f"not be tellable apart on the plan. Override one with --pen 'label=index'.",
+            fg=typer.colors.YELLOW,
+        )
+    return styles
 
 
 def band_styles(overrides: list[str] | None) -> tuple[BandStyle, ...]:
@@ -915,11 +958,7 @@ def archicad_selftest(
             written = write_assessment(
                 connection, assessment, match=match, run_stamp="SELFTEST -- not a measurement"
             )
-            typer.secho(
-                written.describe(),
-                fg=typer.colors.GREEN if written.complete else typer.colors.RED,
-                bold=True,
-            )
+            report_write(connection, written)
 
         # Independent of the properties on purpose. A fill is geometry on a
         # layer; it needs no property, no classification and no schedule, so a
@@ -1206,13 +1245,8 @@ def archicad_run(
                 typer.secho(str(error), fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=2) from error
 
-            partial = not written.complete
-            typer.secho(
-                written.describe(),
-                fg=typer.colors.RED if partial else typer.colors.GREEN,
-                bold=True,
-            )
-            if partial:
+            report_write(connection, written)
+            if not written.complete:
                 typer.secho(
                     "  The project now holds a partial set of results. Schedules "
                     "built on them will be missing rows.",

@@ -303,11 +303,19 @@ machine-checked against a fake transport:
 | Connection, version handshake, project info | works |
 | `GetGeoLocation`, zones, zone details, classifications | works |
 | Property group create and lookup | works, **once definitions carry a `defaultValue`** |
-| Property **value** writes | **blocked** on one project with `APIERR_NOACCESSRIGHT` |
+| Property **value** writes | **partly blocked**: 2 of 8 zones took every value, 6 refused every value, `APIERR_NOACCESSRIGHT` |
 | Layer create and lookup, element delete | works |
 | `CreateHatches`, `CreateTexts` — fills and legend | **works**: 8 fills and a 7-item legend, replacing the previous run's 15 |
+| `GetPenTables` — reading the office palette | **works**: 255 pens, one band matched exactly, one had no pen within 110 |
 
-Two traps found the hard way, both now guarded:
+**The write refusal is per element, not per request.** The decisive observation: in one
+run the same payload, the same nine properties and the same classification landed on two
+zones and was refused by six. That rules out the request, the property definitions and
+the classification all at once, and leaves a property of those six elements — which is
+what `diagnose_write_access` now goes and asks about, since `APIERR_NOACCESSRIGHT` names
+three causes (locked element, locked layer, hotlinked module) without saying which.
+
+Three traps found the hard way, all now guarded:
 
 **A property definition with no `defaultValue` is rejected** with `APIERR_BADVALUE`
 (-2130313104). The schema does not require the field, but Tapir then sets the variant
@@ -326,10 +334,18 @@ it reports just id, index and name, so reading any detail is always two calls.
 `GetPenTables` also accepts `fields`, which is worth using: each pen table carries 255
 pens, and finding out which of several tables is active should not pull all of them.
 
+**A pen table can put two bands on one pen.** Matching each band to its nearest pen
+independently is the obvious implementation and it is wrong: on a real office table the
+3–4 and 4–5 hour bands both took pen 124, because their reference colours are 30 apart
+and the palette held one amber nearest to both. The assignment is one-to-one now, and a
+separate check reports bands whose *different* pens are still near-identical in colour
+([D27](decisions.md)).
+
 And one Tapir bug worth knowing: **it reuses a single `err` across the loop over an
 element's properties without resetting it**, so the first genuine failure makes every
 later property on that element report "Failed to get property values" as well. Only the
-first failure per element is a cause.
+first failure per element is a cause. Confirmed live: 48 reported failures over 6
+elements, so 6 causes and 42 echoes.
 
 ### Known unknowns to settle while you are there
 

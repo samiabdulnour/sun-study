@@ -563,6 +563,27 @@ poor is how far it had to reach. Each run prints the mapping with a quality labe
 it. Explicit overrides are applied after matching, so one band can be corrected without
 losing the other six.
 
+**The assignment is one-to-one, and that took a real project to notice.** Matching each
+band independently is the obvious implementation, and on the first office pen table it
+put the 3–4 and 4–5 hour bands both on pen 124: their reference colours are only 30
+apart, and the palette had a single amber nearest to both. Distinct bands drawn in one
+colour make the plan unable to show where the four-hour line falls — and it looks
+finished, so nothing prompts a second look. So pens are claimed globally: every band–pen
+pairing is ranked by distance, the closest wins, and that band and that pen both leave
+the pool. Greedy rather than optimal — with seven bands it is within a hair of the best
+assignment, and "closest pairing first" is a rule a person can follow when checking why
+a band got the pen it did.
+
+Where there are fewer pens than bands the tail keeps its default rather than reusing a
+pen. An incomplete mapping that says so beats a complete one that hides a boundary.
+
+**Distinct pens are still not distinct colours.** A palette can hold two ambers a hair
+apart, and a one-to-one assignment will use both — technically correct, unreadable at
+the boundary. So a separate check reports any two bands whose assigned pens are closer
+than `INDISTINGUISHABLE_RGB`. That threshold is 30, measured rather than chosen: it is
+the tightest adjacent pair in the reference legend itself, so anything closer is a
+finer distinction than the published study asks a reader to make.
+
 Plain Euclidean RGB, not a perceptual metric. The job is picking the obvious match out
 of a palette of a few hundred, not ranking near-misses, and a metric nobody can compute
 in their head is harder to argue with when it is wrong.

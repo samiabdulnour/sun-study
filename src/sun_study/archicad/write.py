@@ -37,7 +37,7 @@ landed.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,12 +48,14 @@ from sun_study.rules.assessment import BuildingAssessment
 __all__ = [
     "APARTMENT_PROPERTIES",
     "PROPERTY_GROUP_NAME",
+    "AccessDiagnosis",
     "ApartmentMatch",
     "PropertyDetail",
     "PropertySpec",
     "WriteReport",
     "all_properties",
     "default_property_value",
+    "diagnose_write_access",
     "ensure_property_group",
     "enum_values",
     "existing_properties",
@@ -138,22 +140,37 @@ class WriteReport:
     values_skipped: int
     """Undefined measurements, deliberately not written rather than zeroed."""
     zones_written: tuple[str, ...]
-    zones_unmatched: tuple[str, ...]
+    """Zones at least one value actually landed on."""
+    zones_refused: tuple[str, ...] = ()
+    """Zones that took nothing at all -- every value on them failed."""
+    zones_unmatched: tuple[str, ...] = ()
     """Apartments in the results with no element in the project."""
-    zones_ambiguous: tuple[str, ...]
+    zones_ambiguous: tuple[str, ...] = ()
     """Apartments matching more than one element, so the target is unclear."""
-    failures: tuple[str, ...]
+    failures: tuple[str, ...] = ()
 
     @property
     def complete(self) -> bool:
         return not (self.zones_unmatched or self.zones_ambiguous or self.failures)
 
     def describe(self) -> str:
+        total = len(self.zones_written) + len(self.zones_refused)
+        across = (
+            f"{len(self.zones_written)} of {total} zones"
+            if self.zones_refused
+            else f"{len(self.zones_written)} zones"
+        )
         lines = [
-            f"wrote {self.values_written} property values across "
-            f"{len(self.zones_written)} zones"
+            f"wrote {self.values_written} property values across {across}"
             + (f", {self.values_skipped} left undefined" if self.values_skipped else "")
         ]
+        if self.zones_refused:
+            lines.append(
+                f"  {len(self.zones_refused)} zones took nothing at all -- every value "
+                f"on them was refused. The same payload landed on the other "
+                f"{len(self.zones_written)}, so this is a property of those elements, "
+                f"not of the request."
+            )
         if self.zones_unmatched:
             lines.append(
                 f"  {len(self.zones_unmatched)} apartments had no matching element: "
@@ -686,14 +703,13 @@ def write_assessment(
 
     payload: list[dict[str, Any]] = []
     labels: list[str] = []
-    written_zones: list[str] = []
+    guids: list[str] = []
     skipped = 0
 
     for apartment in assessment.apartments:
         guid = resolved.by_apartment.get(apartment.apartment_id)
         if guid is None:
             continue
-        written_zones.append(guid)
         for name, value in _values_for(assessment, apartment, stamp).items():
             if value is None:
                 skipped += 1
@@ -706,12 +722,14 @@ def write_assessment(
                 }
             )
             labels.append(f"{apartment.apartment_name or guid} / {name}")
+            guids.append(guid)
 
     if not payload:
         return WriteReport(
             values_written=0,
             values_skipped=skipped,
             zones_written=(),
+            zones_refused=(),
             zones_unmatched=tuple(unmatched),
             zones_ambiguous=tuple(ambiguous),
             failures=(),
@@ -729,19 +747,168 @@ def write_assessment(
             f"possible to say which values landed."
         )
 
-    failures = [
-        problem
-        for problem in (
-            _execution_problem(result, label) for result, label in zip(results, labels, strict=True)
-        )
-        if problem is not None
-    ]
+    # A zone is "written" only if something actually landed on it. Counting
+    # every matched zone here is how a run where six of eight zones refused
+    # every value still reported writing "across 8 zones".
+    failures: list[str] = []
+    took: dict[str, None] = {}
+    refused: dict[str, None] = {}
+    for result, label, guid in zip(results, labels, guids, strict=True):
+        problem = _execution_problem(result, label)
+        if problem is None:
+            took[guid] = None
+        else:
+            failures.append(problem)
+            refused[guid] = None
 
     return WriteReport(
         values_written=len(payload) - len(failures),
         values_skipped=skipped,
-        zones_written=tuple(written_zones),
+        zones_written=tuple(took),
+        zones_refused=tuple(guid for guid in refused if guid not in took),
         zones_unmatched=tuple(unmatched),
         zones_ambiguous=tuple(ambiguous),
         failures=tuple(failures),
     )
+
+
+@dataclass(frozen=True)
+class AccessDiagnosis:
+    """Why a set of elements refused to be written to.
+
+    ``APIERR_NOACCESSRIGHT`` names three causes at once -- locked element,
+    locked layer, hotlinked module -- and leaves the reader to work out which.
+    Two cheap queries separate them, and the difference matters because the
+    fixes are unrelated: one is a click in Layer Settings, the other means the
+    results have to be written in the module's own file.
+    """
+
+    locked_layers: tuple[str, ...]
+    """Names of locked layers the refusing elements sit on."""
+    unlocked_layers: tuple[str, ...]
+    """Names of unlocked layers they sit on -- these point away from layers."""
+    hotlink_sources: tuple[str, ...]
+    """Hotlink module paths in the project, if any."""
+
+    def describe(self) -> str:
+        lines: list[str] = []
+        if self.locked_layers:
+            lines.append(
+                f"  those zones sit on locked layers: {', '.join(self.locked_layers)}. "
+                f"Unlock them in Layer Settings and re-run -- this is the whole cause."
+            )
+        elif self.hotlink_sources:
+            shown = ", ".join(self.hotlink_sources[:3])
+            lines.append(
+                f"  their layers are unlocked, and the project hotlinks "
+                f"{len(self.hotlink_sources)} module(s): {shown}. Elements placed by a "
+                f"hotlink are read-only in the host and can only be changed in the "
+                f"module's own file, so the results cannot be written onto them here."
+            )
+            lines.append(
+                "  Either run sun-study against the module file, or make those zones "
+                "native to this project. Drawing is unaffected -- it creates new "
+                "elements rather than editing hotlinked ones."
+            )
+        elif self.unlocked_layers:
+            lines.append(
+                f"  their layers ({', '.join(self.unlocked_layers[:3])}) are unlocked "
+                f"and the project has no hotlinks, which leaves the elements "
+                f"themselves being locked. Select one and check its lock state."
+            )
+        return "\n".join(lines)
+
+
+def diagnose_write_access(
+    connection: ArchicadConnection, guids: Sequence[str]
+) -> AccessDiagnosis | None:
+    """Work out why ``guids`` refused their writes, or ``None`` if it cannot.
+
+    Best effort by design. This runs only after a write has already failed, so
+    a query that fails here must not turn a partial write into an exception --
+    the caller has a real report to print either way.
+    """
+    if not guids:
+        return None
+    try:
+        details = connection.run_tapir(
+            "GetDetailsOfElements",
+            {"elements": [{"elementId": {"guid": guid}} for guid in guids]},
+        )
+        listed = details.get("detailsOfElements") if isinstance(details, dict) else None
+        indices = {
+            int(entry["layerIndex"])
+            for entry in (listed or [])
+            if isinstance(entry, dict) and isinstance(entry.get("layerIndex"), (int, float))
+        }
+
+        locked: list[str] = []
+        unlocked: list[str] = []
+        for name, is_locked in _layer_lock_states(connection, indices):
+            (locked if is_locked else unlocked).append(name)
+
+        hotlinks = connection.run_tapir("GetHotlinks")
+        sources = _hotlink_paths(hotlinks.get("hotlinks") if isinstance(hotlinks, dict) else None)
+    except ArchicadError:
+        return None
+
+    return AccessDiagnosis(
+        locked_layers=tuple(sorted(locked)),
+        unlocked_layers=tuple(sorted(unlocked)),
+        hotlink_sources=tuple(sources),
+    )
+
+
+def _layer_lock_states(
+    connection: ArchicadConnection, indices: Collection[int]
+) -> list[tuple[str, bool]]:
+    """``(name, is_locked)`` for each layer index, via the two-call dance.
+
+    ``GetAttributesByType`` enumerates but carries no lock flag; ``GetLayers``
+    carries the flag but requires ids. Same shape as ``draw._find_layer``.
+    """
+    if not indices:
+        return []
+    attributes = connection.run_tapir("GetAttributesByType", {"attributeType": "Layer"})
+    listed = attributes.get("attributes") if isinstance(attributes, dict) else None
+    wanted = {
+        int(attribute["index"]): (
+            str(attribute.get("name", "")),
+            str((attribute.get("attributeId") or {}).get("guid", "")),
+        )
+        for attribute in (listed or [])
+        if isinstance(attribute, dict)
+        and isinstance(attribute.get("index"), (int, float))
+        and int(attribute["index"]) in indices
+    }
+    if not wanted:
+        return []
+
+    response = connection.run_tapir(
+        "GetLayers",
+        {"attributeIds": [{"attributeId": {"guid": guid}} for _, guid in wanted.values()]},
+    )
+    layers = response.get("layers") if isinstance(response, dict) else None
+    states: list[tuple[str, bool]] = []
+    for (name, _), entry in zip(wanted.values(), layers or [], strict=False):
+        if not isinstance(entry, dict) or "error" in entry:
+            continue
+        attribute = entry.get("layerAttribute") if "layerAttribute" in entry else entry
+        if isinstance(attribute, dict):
+            states.append((name, bool(attribute.get("isLocked", False))))
+    return states
+
+
+def _hotlink_paths(nodes: Any, depth: int = 0) -> list[str]:
+    """Every module path in the hotlink tree, flattened."""
+    if not isinstance(nodes, list) or depth > 8:
+        return []
+    paths: list[str] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        location = node.get("location")
+        if isinstance(location, str) and location:
+            paths.append(location)
+        paths.extend(_hotlink_paths(node.get("children"), depth + 1))
+    return paths

@@ -165,8 +165,10 @@ study's colour for it. Nothing to configure, and the mapping is printed:
 ```
 
 **Read the labels.** `POOR MATCH` means the pen table has no pen near that colour, and
-the band landed on whatever was least far away. Override any band with `--pen`,
-repeatable, applied after matching so the other six keep their matches:
+the band landed on whatever was least far away. A separate warning names any two bands
+whose pens are near-identical in colour — different pen numbers, same look on paper, so
+the boundary between them cannot be read. Override any band with `--pen`, repeatable,
+applied after matching so the others keep their matches:
 
 ```powershell
 --pen "2-3 hrs=42" --pen "5+ hrs=47"

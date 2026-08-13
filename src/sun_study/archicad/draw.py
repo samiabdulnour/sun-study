@@ -40,6 +40,7 @@ from sun_study.rules.assessment import BuildingAssessment
 __all__ = [
     "DEFAULT_BANDS",
     "DEFAULT_LAYER_NAME",
+    "INDISTINGUISHABLE_RGB",
     "BandStyle",
     "DrawReport",
     "LayerState",
@@ -48,6 +49,7 @@ __all__ = [
     "clear_layer",
     "draw_assessment",
     "ensure_layer",
+    "indistinguishable_bands",
     "match_pens",
     "pen_table",
 ]
@@ -296,30 +298,98 @@ def _distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
     return math.dist(left, right)
 
 
+#: Two fills closer than this in RGB read as the same colour on a printed
+#: plan. Measured rather than chosen: the reference legend's tightest adjacent
+#: pair -- 3-4 hrs and 4-5 hrs, rgb(255,213,79) against rgb(255,183,77) -- is
+#: about 30 apart, so anything under that is closer than a distinction the
+#: published study expects a reader to make.
+INDISTINGUISHABLE_RGB = 30.0
+
+
 def match_pens(
     bands: Sequence[BandStyle], pens: Sequence[Pen]
 ) -> tuple[tuple[BandStyle, ...], dict[str, float]]:
-    """Re-point each band at the closest pen in the project's own table.
+    """Re-point each band at the closest *unused* pen in the project's table.
 
     A pen index means nothing outside the pen table it came from, so a
     hard-coded default is guaranteed wrong somewhere. The colour, on the other
     hand, is the thing the reference study and this tool already agree on --
     so the colour is the input and the pen is derived.
 
+    **The assignment is one-to-one, and that is the point.** Matching each
+    band independently is the obvious implementation and it is wrong: on a real
+    office pen table the 3-4 and 4-5 hour bands both landed on pen 124, because
+    their reference colours are only 30 apart and the palette had one amber
+    near both. Two bands sharing a pen makes the diagram unable to show where
+    the four-hour line falls -- a plan that looks finished and answers the
+    wrong question. So pens are claimed globally: every band-pen pairing is
+    ranked by distance and the closest pairing wins, then that band and that
+    pen are both out of the running.
+
+    Greedy rather than optimal. With seven bands it is within a hair of the
+    best possible assignment, and a person can follow "closest pairing first"
+    when checking why a band got the pen it did.
+
     Returns the re-pointed bands and how far each had to reach, because a
-    palette with no yellow in it will still return *something* and the
+    palette with no dark navy in it will still return *something* and the
     distance is the only sign that the answer is poor.
     """
     if not pens:
         return tuple(bands), {}
 
+    # Ranked by distance, then by band and pen index so an exact tie -- two
+    # identical pens in the table, which happens -- resolves the same way
+    # every run rather than by dict ordering.
+    pairings = sorted(
+        (_distance(band.rgb, pen.rgb), position, pen.index, pen)
+        for position, band in enumerate(bands)
+        for pen in pens
+    )
+
+    chosen: dict[int, Pen] = {}
+    claimed: set[int] = set()
+    for _gap, position, _index, pen in pairings:
+        if position in chosen or pen.index in claimed:
+            continue
+        chosen[position] = pen
+        claimed.add(pen.index)
+        if len(chosen) == len(bands):
+            break
+
     matched: list[BandStyle] = []
     distances: dict[str, float] = {}
-    for band in bands:
-        best = min(pens, key=lambda pen: _distance(band.rgb, pen.rgb))
-        matched.append(replace(band, fill_pen=best.index))
-        distances[band.label] = _distance(band.rgb, best.rgb)
+    for position, band in enumerate(bands):
+        # Fewer pens than bands leaves the tail unassigned. Keeping the band's
+        # own default is better than reusing a pen and hiding a boundary.
+        assigned = chosen.get(position)
+        if assigned is None:
+            matched.append(band)
+            continue
+        matched.append(replace(band, fill_pen=assigned.index))
+        distances[band.label] = _distance(band.rgb, assigned.rgb)
     return tuple(matched), distances
+
+
+def indistinguishable_bands(
+    bands: Sequence[BandStyle], pens: Sequence[Pen]
+) -> tuple[tuple[str, str], ...]:
+    """Pairs of bands whose assigned pens will look the same on the plan.
+
+    Distinct pen indices are not the same as distinct colours. A palette can
+    hold two ambers a hair apart, and a one-to-one assignment will happily use
+    both -- leaving a diagram that is technically correct and unreadable at the
+    boundary. This is the check that a reader could actually tell them apart.
+    """
+    colour = {pen.index: pen.rgb for pen in pens}
+    close: list[tuple[str, str]] = []
+    for position, band in enumerate(bands):
+        for other in bands[position + 1 :]:
+            left, right = colour.get(band.fill_pen), colour.get(other.fill_pen)
+            if left is None or right is None:
+                continue
+            if _distance(left, right) < INDISTINGUISHABLE_RGB:
+                close.append((band.label, other.label))
+    return tuple(close)
 
 
 def band_for(minutes: float, bands: Sequence[BandStyle]) -> BandStyle:

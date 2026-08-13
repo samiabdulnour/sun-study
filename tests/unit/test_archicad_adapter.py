@@ -37,6 +37,7 @@ from sun_study.archicad.draw import (
     Pen,
     band_for,
     draw_assessment,
+    indistinguishable_bands,
     match_pens,
     pen_table,
 )
@@ -57,6 +58,7 @@ from sun_study.archicad.write import (
     PROPERTY_GROUP_NAME,
     all_properties,
     default_property_value,
+    diagnose_write_access,
     enum_values,
     existing_properties,
     init_properties,
@@ -913,6 +915,145 @@ def test_an_ambiguous_apartment_is_skipped() -> None:
     assert report.zones_ambiguous == ("Apt apt-2",)
 
 
+def test_a_zone_that_took_nothing_is_counted_separately() -> None:
+    """The bug this fixes: a run where six of eight zones refused every value
+    still reported writing "across 8 zones", because every matched zone was
+    counted whether or not anything landed on it."""
+    names = [spec.name for spec in APARTMENT_PROPERTIES]
+    refused = {"success": False, "error": {"code": -2130312909, "message": "no access"}}
+    responses = _write_responses(names, [refused] * len(names))
+    responses["GetElementsByIFCIds"] = {
+        "elementsByIFCIds": [
+            {"ifcId": "apt-1", "elements": [{"elementId": {"guid": "z1"}}]},
+            {"ifcId": "apt-2", "elements": [{"elementId": {"guid": "z2"}}]},
+        ]
+    }
+    responses["SetPropertyValuesOfElements"] = {
+        "executionResults": [{"success": True}] * len(names) + [refused] * len(names)
+    }
+    connection, _ = connect(responses)
+
+    report = write_assessment(connection, _assessment(_apartment("apt-1"), _apartment("apt-2")))
+
+    assert report.zones_written == ("z1",)
+    assert report.zones_refused == ("z2",), "z1 took everything, z2 took nothing"
+    assert "1 of 2 zones" in report.describe()
+    assert "property of those elements, not of the request" in report.describe()
+
+
+def test_a_zone_that_took_something_is_not_called_refused() -> None:
+    """A partial write is a different problem from a locked element, and
+    sending a half-written zone to the access diagnosis would mislead."""
+    names = [spec.name for spec in APARTMENT_PROPERTIES]
+    responses = _write_responses(
+        names,
+        [{"success": False, "error": {"code": 9, "message": "nope"}}]
+        + [{"success": True}] * (len(names) - 1),
+    )
+    connection, _ = connect(responses)
+
+    report = write_assessment(connection, _assessment(_apartment("apt-1")))
+    assert report.zones_written == ("z1",)
+    assert report.zones_refused == ()
+
+
+# -- why a write was refused ----------------------------------------------
+
+
+def _access_responses(**overrides: Any) -> dict[str, Any]:
+    responses: dict[str, Any] = {
+        "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 4}, {"layerIndex": 4}]},
+        "GetAttributesByType": {
+            "attributes": [
+                {"attributeId": {"guid": "L4"}, "index": 4, "name": "06 | Zone.Apartment"},
+                {"attributeId": {"guid": "L9"}, "index": 9, "name": "something else"},
+            ]
+        },
+        "GetLayers": {"layers": [{"index": 4, "isHidden": False, "isLocked": False}]},
+        "GetHotlinks": {"hotlinks": []},
+    }
+    responses.update(overrides)
+    return responses
+
+
+def test_a_locked_layer_is_named_as_the_whole_cause() -> None:
+    connection, transport = connect(
+        _access_responses(GetLayers={"layers": [{"index": 4, "isLocked": True}]})
+    )
+    diagnosis = diagnose_write_access(connection, ["z1", "z2"])
+
+    assert diagnosis is not None
+    assert diagnosis.locked_layers == ("06 | Zone.Apartment",)
+    assert "Unlock them in Layer Settings" in diagnosis.describe()
+    assert transport.parameters_for("GetLayers")["attributeIds"] == [
+        {"attributeId": {"guid": "L4"}}
+    ], "only the layers the refusing elements actually sit on are queried"
+
+
+def test_an_unlocked_layer_plus_a_hotlink_points_at_the_module() -> None:
+    """The case seen on a real project: layers fine, elements read-only
+    because they arrive through a hotlinked module."""
+    connection, _ = connect(
+        _access_responses(
+            GetHotlinks={
+                "hotlinks": [
+                    {
+                        "location": "X:/proj/Tower.mod",
+                        "children": [{"location": "X:/proj/Core.mod"}],
+                    }
+                ]
+            }
+        )
+    )
+    diagnosis = diagnose_write_access(connection, ["z1"])
+
+    assert diagnosis is not None
+    assert diagnosis.hotlink_sources == ("X:/proj/Tower.mod", "X:/proj/Core.mod")
+    assert "read-only in the host" in diagnosis.describe()
+    assert "Drawing is unaffected" in diagnosis.describe()
+
+
+def test_a_locked_layer_outranks_a_hotlink_because_it_is_the_cheaper_fix() -> None:
+    connection, _ = connect(
+        _access_responses(
+            GetLayers={"layers": [{"index": 4, "isLocked": True}]},
+            GetHotlinks={"hotlinks": [{"location": "X:/proj/Tower.mod"}]},
+        )
+    )
+    diagnosis = diagnose_write_access(connection, ["z1"])
+    assert diagnosis is not None
+    assert "Layer Settings" in diagnosis.describe()
+
+
+def test_no_lock_and_no_hotlink_leaves_the_element_itself() -> None:
+    connection, _ = connect(_access_responses())
+    diagnosis = diagnose_write_access(connection, ["z1"])
+
+    assert diagnosis is not None
+    assert diagnosis.unlocked_layers == ("06 | Zone.Apartment",)
+    assert "the elements themselves being locked" in diagnosis.describe()
+
+
+def test_the_diagnosis_never_turns_a_partial_write_into_an_exception() -> None:
+    """It runs only after a write already failed. A second failure here must
+    not cost the caller the report it already has."""
+
+    class Broken:
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            name = payload["parameters"]["addOnCommandId"]["commandName"]
+            if name == "GetAddOnVersion":
+                return {"succeeded": True, "result": {"addOnCommandResponse": {"version": "1.5.7"}}}
+            return {"succeeded": False, "error": {"code": 1, "message": "unsupported"}}
+
+    assert diagnose_write_access(ArchicadConnection(Broken()), ["z1"]) is None
+
+
+def test_no_refused_zones_asks_archicad_nothing() -> None:
+    connection, transport = connect({})
+    assert diagnose_write_access(connection, []) is None
+    assert transport.commands() == []
+
+
 def test_write_refuses_before_init_properties() -> None:
     connection, _ = connect({"GetAllProperties": _property_catalogue([])})
     with pytest.raises(ArchicadError, match="init-properties"):
@@ -1469,6 +1610,79 @@ def test_each_band_takes_the_closest_pen_by_colour() -> None:
     assert distances["cold"] < 6.0
     assert distances["hot"] < 5.0
     assert [band.label for band in matched] == ["cold", "hot"], "only the pen changes"
+
+
+def test_two_bands_never_share_a_pen() -> None:
+    """The bug this fixes, seen on a real office pen table.
+
+    The 3-4 and 4-5 hour reference colours are only 30 apart, and a palette
+    with one amber near both gave them the same pen -- a plan that cannot show
+    where the four-hour line falls while looking entirely finished.
+    """
+    bands = (
+        BandStyle("3-4 hrs", 240.0, fill_pen=1, rgb=(255, 213, 79)),
+        BandStyle("4-5 hrs", 300.0, fill_pen=1, rgb=(255, 183, 77)),
+    )
+    amber = Pen(index=124, rgb=(255, 200, 60))
+    matched, _ = match_pens(bands, (amber, Pen(index=125, rgb=(250, 150, 60))))
+
+    assert len({band.fill_pen for band in matched}) == 2, "one pen cannot serve two bands"
+    assert matched[0].fill_pen == 124, "the closest pairing overall still wins"
+    assert matched[1].fill_pen == 125
+
+
+def test_the_closest_pairing_wins_globally_not_band_by_band() -> None:
+    """Assigning in band order would let an early band take a pen a later one
+    needs far more. Pens are claimed by best pairing across the whole table."""
+    bands = (
+        BandStyle("first", 60.0, fill_pen=1, rgb=(100, 100, 100)),
+        BandStyle("second", 120.0, fill_pen=1, rgb=(110, 110, 110)),
+    )
+    contested = Pen(index=7, rgb=(111, 111, 111))
+    matched, _ = match_pens(bands, (contested, Pen(index=8, rgb=(0, 0, 0))))
+
+    assert matched[1].fill_pen == 7, "'second' is nearer the contested pen, so it gets it"
+    assert matched[0].fill_pen == 8
+
+
+def test_fewer_pens_than_bands_leaves_the_tail_on_its_default() -> None:
+    """Reusing a pen would hide a boundary; keeping the default at least says
+    the mapping is incomplete rather than quietly merging two bands."""
+    bands = (
+        BandStyle("a", 60.0, fill_pen=91, rgb=(0, 0, 0)),
+        BandStyle("b", 120.0, fill_pen=92, rgb=(255, 255, 255)),
+    )
+    matched, distances = match_pens(bands, (Pen(index=5, rgb=(10, 10, 10)),))
+
+    assert [band.fill_pen for band in matched] == [5, 92]
+    assert "b" not in distances, "an unassigned band reports no distance"
+
+
+def test_bands_on_near_identical_pens_are_reported() -> None:
+    """Distinct pen indices are not distinct colours, and only this catches
+    the difference between a legible boundary and a technically correct one."""
+    pens = (Pen(index=10, rgb=(255, 200, 60)), Pen(index=11, rgb=(255, 202, 62)))
+    bands = (
+        BandStyle("3-4 hrs", 240.0, fill_pen=10, rgb=(255, 213, 79)),
+        BandStyle("4-5 hrs", 300.0, fill_pen=11, rgb=(255, 183, 77)),
+    )
+    assert indistinguishable_bands(bands, pens) == (("3-4 hrs", "4-5 hrs"),)
+
+
+def test_bands_on_clearly_different_pens_are_not_reported() -> None:
+    pens = (Pen(index=10, rgb=(8, 48, 107)), Pen(index=11, rgb=(244, 81, 30)))
+    bands = (
+        BandStyle("0 hrs", 1e-9, fill_pen=10, rgb=(8, 48, 107)),
+        BandStyle("5+ hrs", float("inf"), fill_pen=11, rgb=(244, 81, 30)),
+    )
+    assert indistinguishable_bands(bands, pens) == ()
+
+
+def test_the_default_bands_are_all_distinguishable_from_each_other() -> None:
+    """A guard on the reference palette itself: if two band colours were ever
+    edited closer than the legibility threshold, no pen table could save them."""
+    as_pens = tuple(Pen(index=band.fill_pen, rgb=band.rgb) for band in DEFAULT_BANDS)
+    assert indistinguishable_bands(DEFAULT_BANDS, as_pens) == ()
 
 
 def test_a_palette_missing_a_colour_still_answers_but_the_distance_says_so() -> None:
