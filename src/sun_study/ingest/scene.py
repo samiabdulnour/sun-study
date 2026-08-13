@@ -24,21 +24,29 @@ import numpy as np
 import numpy.typing as npt
 
 from sun_study.core.geometry import TriangleMesh
+from sun_study.core.occlusion import Occluder
 from sun_study.core.orientation import SiteOrientation
 from sun_study.core.sampling import (
     DEFAULT_GRID_SPACING_M,
     DEFAULT_SURFACE_OFFSET_M,
+    FaceSelection,
     SamplePoints,
     grid_on_rectangle,
+    horizontal_grid,
+    triangle_samples,
 )
 from sun_study.ingest.ifc import IfcElement, IfcModel
 
 FloatArray = npt.NDArray[np.float64]
 
 __all__ = [
+    "DEFAULT_MASSING_SPACING_M",
+    "MassingConfig",
+    "MassingScene",
     "Scene",
     "SceneConfig",
     "WindowAssignment",
+    "build_massing_scene",
     "build_scene",
     "planar_face_grid",
 ]
@@ -514,3 +522,221 @@ def _clip_to_radius(model: IfcModel, radius_m: float) -> TriangleMesh:
         and float(np.linalg.norm(element.centroid[:2] - subject[:2])) <= radius_m
     ]
     return TriangleMesh.concatenate(kept)
+
+
+# ---------------------------------------------------------------------------
+# Massing mode.
+#
+# At massing stage there are no apartments -- no Zones, no windows, just a mass
+# and its context. The ADG's per-apartment criterion cannot be computed, so the
+# metric that drives the design loop is the share of *facade area* receiving at
+# least two hours, plus the same banding on the ground for public domain and
+# communal open space.
+#
+# Everything below therefore works from raw geometry. It never looks for an
+# IfcSpace and never needs one.
+# ---------------------------------------------------------------------------
+
+DEFAULT_MASSING_SPACING_M = 1.0
+"""Coarser than the 200 mm used for a developed model, and deliberately so.
+
+An optimisation run evaluates hundreds of variants. At 200 mm a facade of
+roughly 18,000 m2 is about 445,000 samples and several minutes per variant; at
+1 m it is about 18,000 samples and a few seconds. The spacing used is recorded
+on every result so a coarse number can never be mistaken for a fine one.
+"""
+
+
+@dataclass(frozen=True)
+class MassingConfig:
+    """Settings for a massing-stage study."""
+
+    timezone: str
+
+    context_name_prefixes: tuple[str, ...] = ("Context",)
+    """Elements whose name starts with one of these are occluders only.
+
+    They shade the subject but are not themselves analysed, so they stay out of
+    the facade-area denominator. Everything else is subject.
+    """
+
+    facade_spacing_m: float = DEFAULT_MASSING_SPACING_M
+    ground_spacing_m: float = DEFAULT_MASSING_SPACING_M
+    surface_offset_m: float = DEFAULT_SURFACE_OFFSET_M
+
+    vertical_tolerance_deg: float = 30.0
+    """How far from upright a face may be and still count as facade."""
+
+    ground_level_m: float | None = None
+    """Ground plane height. Defaults to the lowest point of the geometry."""
+
+    ground_margin_m: float = 10.0
+    """How far beyond the subject's footprint to grid the ground."""
+
+    ground_sample_height_m: float = 0.0
+    footprint_probe_height_m: float = 2.5
+    """A ground sample with geometry this close above it is inside a building.
+
+    Chosen so a point indoors is excluded while open ground under a high tower
+    soffit is kept. A balcony two metres up will mask the ground beneath it,
+    which is the intended reading: that ground is covered.
+    """
+
+    def describe(self) -> str:
+        ground = (
+            f"{self.ground_level_m:g} m" if self.ground_level_m is not None else "auto (lowest)"
+        )
+        return (
+            f"timezone {self.timezone} | "
+            f"facade grid {self.facade_spacing_m:g} m | "
+            f"ground grid {self.ground_spacing_m:g} m | "
+            f"surface offset {self.surface_offset_m * 1000:.0f} mm | "
+            f"facade = faces within {self.vertical_tolerance_deg:g} deg of vertical | "
+            f"context prefixes {list(self.context_name_prefixes)} | "
+            f"ground level {ground}, margin {self.ground_margin_m:g} m | "
+            f"vegetation excluded"
+        )
+
+
+@dataclass(frozen=True)
+class MassingScene:
+    """Facade and ground samples for a massing study."""
+
+    orientation: SiteOrientation
+    occluders: TriangleMesh
+    facade_samples: SamplePoints
+    ground_samples: SamplePoints
+    config: MassingConfig
+    provenance: dict[str, object] = field(default_factory=dict)
+
+    def describe(self) -> str:
+        return (
+            f"{self.orientation.describe()}\n"
+            f"  {self.config.describe()}\n"
+            f"  occluders {self.occluders.triangle_count} triangles | "
+            f"{len(self.facade_samples)} facade samples "
+            f"({self.facade_samples.total_area_m2:.1f} m2) | "
+            f"{len(self.ground_samples)} ground samples "
+            f"({self.ground_samples.total_area_m2:.1f} m2)"
+        )
+
+
+def _is_context(element: IfcElement, config: MassingConfig) -> bool:
+    return any(
+        element.name.casefold().startswith(prefix.casefold())
+        for prefix in config.context_name_prefixes
+    )
+
+
+def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
+    """Assemble a massing-stage scene: facade and ground samples, no Zones.
+
+    The whole model is the occluder set, including the subject: self-shading
+    between towers on the same podium is precisely what a massing study is
+    measuring.
+    """
+    orientation = model.orientation(config.timezone)
+
+    # IfcSpace is a void, never a solid; it would shade the building from
+    # inside. Everything else occludes, subject and context alike.
+    solids = [element for element in model.elements if element.ifc_class != "IfcSpace"]
+    subject = [element for element in solids if not _is_context(element, config)]
+    context = [element for element in solids if _is_context(element, config)]
+
+    occluders = TriangleMesh.concatenate([element.mesh for element in solids])
+
+    # Facade: upright faces of the subject only. Context towers shade but are
+    # not part of the denominator, or the percentage would describe the
+    # neighbourhood rather than the scheme.
+    facade_groups = [
+        triangle_samples(
+            element.mesh.triangles(),
+            [element.global_id] * element.mesh.triangle_count,
+            spacing_m=config.facade_spacing_m,
+            surface_offset_m=config.surface_offset_m,
+            faces=FaceSelection.VERTICAL,
+            vertical_tolerance_deg=config.vertical_tolerance_deg,
+        )
+        for element in subject
+        if element.mesh.triangle_count
+    ]
+    facade = SamplePoints.concatenate([group for group in facade_groups if len(group)])
+
+    ground = _ground_grid(subject, occluders, config)
+
+    provenance: dict[str, object] = {
+        "mode": "massing",
+        "source": model.path.name,
+        "schema": model.schema,
+        "length_unit_scale": model.length_unit_scale,
+        "true_north_bearing_deg": orientation.normalised_bearing_deg,
+        "subject_elements": len(subject),
+        "context_elements": len(context),
+        "occluder_triangles": occluders.triangle_count,
+        "facade_samples": len(facade),
+        "facade_area_m2": round(facade.total_area_m2, 3),
+        "facade_spacing_m": config.facade_spacing_m,
+        "ground_samples": len(ground),
+        "ground_area_m2": round(ground.total_area_m2, 3),
+        "ground_spacing_m": config.ground_spacing_m,
+        "vegetation_included": False,
+    }
+    return MassingScene(
+        orientation=orientation,
+        occluders=occluders,
+        facade_samples=facade,
+        ground_samples=ground,
+        config=config,
+        provenance=provenance,
+    )
+
+
+def _ground_grid(
+    subject: list[IfcElement], occluders: TriangleMesh, config: MassingConfig
+) -> SamplePoints:
+    """An open-ground grid around the subject, with building footprints removed.
+
+    Footprints are found by firing a short ray straight up from each candidate
+    point: if anything is directly overhead within
+    ``footprint_probe_height_m`` the point is inside a building rather than on
+    open ground. That reuses the ray caster instead of needing polygon
+    booleans, and it handles an L-shaped or perforated footprint exactly, which
+    a bounding box would not.
+    """
+    if not subject:
+        return SamplePoints.empty()
+
+    lower = np.min([element.bounds[0] for element in subject], axis=0)
+    upper = np.max([element.bounds[1] for element in subject], axis=0)
+    ground_z = config.ground_level_m if config.ground_level_m is not None else float(lower[2])
+
+    # horizontal_grid takes the minimum corner, not the centre.
+    margin = config.ground_margin_m
+    grid = horizontal_grid(
+        (float(lower[0]) - margin, float(lower[1]) - margin, ground_z),
+        float(upper[0] - lower[0]) + 2.0 * margin,
+        float(upper[1] - lower[1]) + 2.0 * margin,
+        "ground",
+        height_m=config.ground_sample_height_m,
+        spacing_m=config.ground_spacing_m,
+    )
+    if len(grid) == 0 or occluders.triangle_count == 0:
+        return grid
+
+    probe = Occluder(occluders)
+    covered = probe.any_hit(
+        grid.positions,
+        np.tile(np.array([0.0, 0.0, 1.0]), (len(grid), 1)),
+        max_distance=config.footprint_probe_height_m,
+    )
+    open_ground = ~covered
+    if not open_ground.any():
+        return SamplePoints.empty()
+
+    return SamplePoints(
+        grid.positions[open_ground],
+        grid.normals[open_ground],
+        tuple(np.asarray(grid.parent_ids)[open_ground].tolist()),
+        grid.areas[open_ground],
+        surface_offset_m=grid.surface_offset_m,
+    )

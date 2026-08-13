@@ -16,8 +16,13 @@ import typer
 from sun_study import __version__
 from sun_study.disclaimer import DISCLAIMER, STATUS
 from sun_study.ingest.ifc import GeoreferencingError, read_ifc
-from sun_study.ingest.scene import SceneConfig
-from sun_study.pipeline import run_assessment
+from sun_study.ingest.scene import DEFAULT_MASSING_SPACING_M, MassingConfig, SceneConfig
+from sun_study.pipeline import run_assessment, run_massing
+from sun_study.report.bands_out import (
+    build_massing_header,
+    write_bands_csv,
+    write_bands_json,
+)
 from sun_study.report.csv_out import write_csv
 from sun_study.report.header import build_header
 from sun_study.report.json_out import write_json
@@ -193,6 +198,115 @@ def run(
             typer.echo(f"  wrote {write_csv(csv_out, result.assessment, header)}")
         if json_out:
             typer.echo(f"  wrote {write_json(json_out, result.assessment, header)}")
+
+    typer.echo("")
+    typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)
+
+
+@app.command()
+def massing(
+    ifc: Annotated[Path, typer.Argument(help="IFC file of the massing.")],
+    timezone: Annotated[
+        str, typer.Option("--timezone", "-z", help="IANA timezone, e.g. Australia/Sydney.")
+    ],
+    area: Annotated[
+        str,
+        typer.Option("--area", help="Which threshold applies: sydney_metro (2h) or other (3h)."),
+    ] = "sydney_metro",
+    ruleset: Annotated[
+        str, typer.Option("--ruleset", help="Built-in ruleset name, or a path to a YAML file.")
+    ] = "nsw_adg",
+    year: Annotated[
+        int, typer.Option("--year", help="Which year's assessment date to use.")
+    ] = 2024,
+    facade_grid: Annotated[
+        float, typer.Option("--facade-grid", help="Facade sample spacing in metres.")
+    ] = DEFAULT_MASSING_SPACING_M,
+    ground_grid: Annotated[
+        float, typer.Option("--ground-grid", help="Ground sample spacing in metres.")
+    ] = DEFAULT_MASSING_SPACING_M,
+    context: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--context",
+            help=(
+                "Name prefix marking an element as context: it shades the subject but "
+                "is excluded from the area denominator. Repeatable."
+            ),
+        ),
+    ] = None,
+    ground_margin: Annotated[
+        float, typer.Option("--ground-margin", help="Metres of ground to grid beyond the subject.")
+    ] = 10.0,
+    csv_out: Annotated[
+        Path | None, typer.Option("--csv", help="Write the band tables as CSV.")
+    ] = None,
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Write the band tables as JSON.")
+    ] = None,
+) -> None:
+    """Area-weighted sunlight bands for a massing, with no Zones or windows.
+
+    Reports the share of facade area and of open ground reaching the threshold
+    duration -- the metric a massing optimisation loop maximises. This is not
+    the ADG per-apartment criterion and must not be quoted as one; use `run`
+    once the model has Zones and windows.
+    """
+    banner()
+
+    config = MassingConfig(
+        timezone=timezone,
+        context_name_prefixes=tuple(context) if context else ("Context",),
+        facade_spacing_m=facade_grid,
+        ground_spacing_m=ground_grid,
+        ground_margin_m=ground_margin,
+    )
+
+    try:
+        result = run_massing(
+            ifc, timezone=timezone, ruleset=ruleset, area=area, year=year, massing_config=config
+        )
+    except GeoreferencingError as error:
+        typer.secho(f"Georeferencing error: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+    except RulesetError as error:
+        typer.secho(f"Ruleset error: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+    typer.echo(result.scene.describe())
+    typer.echo("")
+    typer.echo(
+        f"  {result.sun_position_count} sun positions on "
+        f"{result.assessment_date.isoformat()}, threshold "
+        f"{result.threshold_minutes:g} min from {result.ruleset.identifier}"
+    )
+
+    surfaces = {"facade": result.facade, "ground": result.ground}
+    for name, banded in surfaces.items():
+        typer.echo("")
+        typer.secho(f"  {name.upper()}  ({banded.total_area_m2:.1f} m2)", bold=True)
+        for band in banded.bands:
+            typer.echo(f"    {band.label:>8} {band.area_m2:11.2f} m2 {band.share:8.2%}")
+        typer.echo(f"    {banded.summary()}")
+
+    typer.echo("")
+    typer.secho(result.summary(), fg=typer.colors.GREEN, bold=True)
+
+    if csv_out or json_out:
+        header = build_massing_header(
+            ruleset=result.ruleset,
+            area_key=result.area_key,
+            threshold_minutes=result.threshold_minutes,
+            site_description=result.scene.orientation.describe(),
+            scene_config_description=result.scene.config.describe(),
+            scene_provenance=result.scene.provenance,
+            generated_at=dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        )
+        typer.echo("")
+        if csv_out:
+            typer.echo(f"  wrote {write_bands_csv(csv_out, surfaces, header)}")
+        if json_out:
+            typer.echo(f"  wrote {write_bands_json(json_out, surfaces, header)}")
 
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)

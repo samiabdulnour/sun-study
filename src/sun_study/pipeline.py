@@ -18,7 +18,9 @@ from pathlib import Path
 import numpy as np
 
 from sun_study.core.analysis import (
+    BandedResult,
     Weighting,
+    band_by_area,
     cumulative_minutes,
     instant_weights,
     longest_continuous_minutes,
@@ -28,7 +30,14 @@ from sun_study.core.occlusion import Occluder
 from sun_study.core.sampling import SamplePoints
 from sun_study.core.solar import assessment_times, solar_position
 from sun_study.ingest.ifc import IfcModel, read_ifc
-from sun_study.ingest.scene import Scene, SceneConfig, build_scene
+from sun_study.ingest.scene import (
+    MassingConfig,
+    MassingScene,
+    Scene,
+    SceneConfig,
+    build_massing_scene,
+    build_scene,
+)
 from sun_study.rules.assessment import (
     ApartmentMeasurement,
     BuildingAssessment,
@@ -37,7 +46,7 @@ from sun_study.rules.assessment import (
 from sun_study.rules.ruleset import Ruleset, load_ruleset
 from sun_study.rules.ruleset import Weighting as RulesetWeighting
 
-__all__ = ["PipelineResult", "run_assessment"]
+__all__ = ["MassingResult", "PipelineResult", "run_assessment", "run_massing"]
 
 _WEIGHTING = {
     RulesetWeighting.TRAPEZOIDAL: Weighting.TRAPEZOIDAL,
@@ -157,6 +166,99 @@ def run_assessment(
         scene=scene,
         ruleset=rules,
         assessment=assess_building(measurements, rules, area),
+        sun_position_count=len(times),
+        assessment_date=rules.assessment.date_in(year),
+    )
+
+
+@dataclass(frozen=True)
+class MassingResult:
+    """A massing-stage study: area-weighted bands, no apartments involved."""
+
+    model: IfcModel
+    scene: MassingScene
+    ruleset: Ruleset
+    area_key: str
+    threshold_minutes: float
+    facade: BandedResult
+    ground: BandedResult
+    sun_position_count: int
+    assessment_date: dt.date
+
+    def summary(self) -> str:
+        hours = self.threshold_minutes / 60.0
+        return (
+            f"facade area with >{hours:g}hrs on "
+            f"{self.assessment_date.isoformat()}: "
+            f"{self.facade.at_or_above_threshold_share:.2%} "
+            f"({self.facade.at_or_above_threshold_m2:.1f} of "
+            f"{self.facade.total_area_m2:.1f} m2)\n"
+            f"  open ground with >{hours:g}hrs: "
+            f"{self.ground.at_or_above_threshold_share:.2%} "
+            f"({self.ground.at_or_above_threshold_m2:.1f} of "
+            f"{self.ground.total_area_m2:.1f} m2)"
+        )
+
+
+def run_massing(
+    ifc_path: str | Path,
+    *,
+    timezone: str,
+    ruleset: str | Path | Ruleset = "nsw_adg",
+    area: str = "sydney_metro",
+    year: int = 2024,
+    massing_config: MassingConfig | None = None,
+) -> MassingResult:
+    """Area-weighted sunlight bands for a massing, with no Zones or windows.
+
+    This is the metric that drives a massing optimisation loop: the share of
+    facade area receiving at least the threshold duration. It is deliberately
+    *not* the ADG's per-apartment criterion, which cannot be computed before
+    apartments exist. The threshold itself still comes from the ruleset, so the
+    two stay anchored to the same cited number.
+    """
+    rules = ruleset if isinstance(ruleset, Ruleset) else load_ruleset(ruleset)
+    config = massing_config or MassingConfig(timezone=timezone)
+    if config.timezone != timezone:
+        raise ValueError(
+            f"timezone {timezone!r} does not match massing_config.timezone "
+            f"{config.timezone!r}; the run would use two different zones."
+        )
+
+    model = read_ifc(ifc_path)
+    scene = build_massing_scene(model, config)
+
+    times = assessment_times(
+        rules.assessment.date_in(year),
+        timezone,
+        rules.assessment.start_time,
+        rules.assessment.end_time,
+        rules.assessment.timestep_minutes,
+    )
+    sun_vectors = scene.orientation.sun_vectors(
+        solar_position(times, model.latitude_deg, model.longitude_deg)
+    )
+
+    occluder = Occluder(scene.occluders)
+    timestep = float(rules.assessment.timestep_minutes)
+    weighting = _WEIGHTING[rules.assessment.weighting]
+    weights = instant_weights(len(times), timestep, weighting)
+    threshold = rules.area(area).minimum_sunlight_minutes
+
+    def banded(points: SamplePoints) -> BandedResult:
+        if len(points) == 0:
+            return band_by_area(points, np.zeros(0), threshold_minutes=threshold)
+        minutes = cumulative_minutes(sunlit_matrix(points, occluder, sun_vectors), weights)
+        return band_by_area(points, minutes, threshold_minutes=threshold)
+
+    return MassingResult(
+        model=model,
+        scene=scene,
+        ruleset=rules,
+        area_key=area,
+        threshold_minutes=threshold,
+        facade=banded(scene.facade_samples),
+        ground=banded(scene.ground_samples),
         sun_position_count=len(times),
         assessment_date=rules.assessment.date_in(year),
     )
