@@ -181,6 +181,10 @@ workstation without a compiler. That makes it the production backend rather than
 fallback, so its speed is measured too: about 38k rays/s, roughly 20 seconds for a
 200 apartment job (`uv run python scripts/benchmark_occlusion.py`).
 
+[`docs/workflow.md`](docs/workflow.md) sets out the end-to-end office workflow — which
+Archicad layers and conventions carry the information, how to set up the IFC translator,
+and where the results land — written against the FUSE Archicad Manual and layer matrix.
+
 See [`docs/validation.md`](docs/validation.md) for measured residuals,
 [`docs/decisions.md`](docs/decisions.md) for the domain assumptions that change the
 headline compliance percentage, and [`docs/archicad.md`](docs/archicad.md) for what was
