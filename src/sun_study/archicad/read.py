@@ -45,7 +45,7 @@ from sun_study.core.orientation import SiteOrientation
 from sun_study.ingest.ifc import IfcModel
 
 __all__ = [
-    "ASSUMED_NORTH_SENSE",
+    "NORTH_ANGLE_OFFSET_DEG",
     "ArchicadZone",
     "GeoLocation",
     "GeoreferencingMismatchError",
@@ -59,20 +59,28 @@ __all__ = [
     "zones",
 ]
 
-#: How ``GetGeoLocation``'s ``north`` angle is read as a compass bearing.
+#: Where Archicad's ``north`` angle points, and why the offset is 90 degrees.
 #:
-#: **This is an assumption, not a verified fact.** Tapir returns
-#: ``API_PlaceInfo::north`` verbatim and documents it only as "north direction
-#: in radians"; nothing in the add-on sources, its schemas or its Grasshopper
-#: components states the sense. ``+1`` reads the angle as already clockwise
-#: from true north, so it is a bearing after converting to degrees.
+#: ``API_PlaceInfo::north`` is **the angle of the true-north direction measured
+#: counter-clockwise from the project +X axis, in radians.** Tapir passes it
+#: through undocumented, and nothing in the add-on sources says which sense it
+#: runs in, so this was derived from a real project rather than assumed --
+#: three independent numbers out of one Archicad 26 model, all agreeing:
 #:
-#: Nothing in this tool depends on the guess being right. North comes from the
-#: IFC export, and this value is used only by ``cross_check_georeferencing``,
-#: which fails loudly on disagreement. If the sense is in fact the opposite,
-#: the cross-check on a project with a non-zero north will fail by exactly
-#: twice the angle, which the error message says to look for.
-ASSUMED_NORTH_SENSE = 1.0
+#: =============================  ===========================================
+#: ``GetGeoLocation``             ``north = 0.856118 rad`` = 49.0518 deg
+#: ``IfcSite`` ``RefDirection``   ``(0.755304, 0.655374)``
+#:                                = ``(sin 49.0518, cos 49.0518)``
+#: Walls, in world coordinates    40.948 deg = 90 - 49.0518
+#: =============================  ===========================================
+#:
+#: The mirrored convention would have put those walls at 130.9 degrees, and
+#: they were not there, so the sign is settled by measurement. Two further
+#: checks agree: the offset makes Archicad's *default* north pi/2 rather than
+#: 0, which is what "true north runs along project +Y" should report, and
+#: substituting the three numbers into ``cross_check_georeferencing`` below
+#: balances exactly. See decision D23.
+NORTH_ANGLE_OFFSET_DEG = 90.0
 
 #: How far the two georeferencing sources may differ before the run stops.
 #: Degrees for the bearing, decimal degrees for the coordinates. Both are
@@ -94,13 +102,14 @@ class GeoreferencingMismatchError(ArchicadError):
 
 
 def north_bearing_deg(north_radians: float) -> float:
-    """Archicad's north angle as a compass bearing, under ``ASSUMED_NORTH_SENSE``.
+    """The compass bearing of the *project* +Y axis, from Archicad's north angle.
 
-    Read the constant's docstring before trusting the number: this is the
-    unverified part of the adapter, and it is deliberately used only for a
-    cross-check.
+    This is the same quantity ``SiteOrientation.true_north_bearing_deg`` holds,
+    but stated for the project frame rather than for whatever frame an IFC
+    export happened to write. The two are only equal when the export left the
+    site placement unrotated -- see ``cross_check_georeferencing``.
     """
-    return (ASSUMED_NORTH_SENSE * math.degrees(north_radians)) % 360.0
+    return (math.degrees(north_radians) - NORTH_ANGLE_OFFSET_DEG) % 360.0
 
 
 @dataclass(frozen=True)
@@ -123,8 +132,9 @@ class ProjectInfo:
 class GeoLocation:
     """``GetGeoLocation``'s project location, in the units Archicad reported.
 
-    ``north_radians`` is stored raw rather than converted on the way in. The
-    conversion is the uncertain step, so it stays visible at the point of use.
+    ``north_radians`` is stored raw rather than converted on the way in, so
+    the raw value stays printable next to the derived one. A human comparing
+    the tool's output against Archicad's dialog needs both.
     """
 
     latitude_deg: float
@@ -133,14 +143,15 @@ class GeoLocation:
     north_radians: float
 
     @property
-    def assumed_north_bearing_deg(self) -> float:
+    def project_north_bearing_deg(self) -> float:
+        """Compass bearing of the *project* +Y axis."""
         return north_bearing_deg(self.north_radians)
 
     def describe(self) -> str:
         return (
             f"lat {self.latitude_deg:.6f} lon {self.longitude_deg:.6f} "
             f"altitude {self.altitude_m:.3f} m, north {self.north_radians:.6f} rad "
-            f"({self.assumed_north_bearing_deg:.3f} deg as a bearing, assumed sense)"
+            f"(project +Y at bearing {self.project_north_bearing_deg:.3f} deg)"
         )
 
 
@@ -190,6 +201,11 @@ def read_geo_location(connection: ArchicadConnection) -> GeoLocation:
         ) from exc
 
 
+def _signed_delta(a: float, b: float) -> float:
+    """The shortest signed angle from ``b`` to ``a``, in (-180, 180]."""
+    return (a - b + 180.0) % 360.0 - 180.0
+
+
 def cross_check_georeferencing(location: GeoLocation, model: IfcModel) -> None:
     """Fail unless the live project and its IFC export place the site alike.
 
@@ -197,6 +213,23 @@ def cross_check_georeferencing(location: GeoLocation, model: IfcModel) -> None:
     the source of truth for every number the analysis uses; Archicad's own
     answer is here purely to catch the case where the export lost, rounded
     away or re-interpreted the georeferencing.
+
+    Comparing north takes care, and an earlier version of this got it wrong.
+    Archicad reports north in the **project** frame. An IFC export need not be
+    in that frame: Archicad's "Survey Point" model position rotates the
+    geometry through ``IfcSite``'s placement and then writes ``TrueNorth`` as
+    ``(0,1)``, because its world coordinates really are north-aligned. Naively
+    comparing Archicad's angle against ``TrueNorth`` therefore rejects a
+    perfectly good export -- observed on a real AC26 project, where Archicad
+    said 49.05 degrees and a correct IFC said 0.
+
+    What is comparable is the *total* rotation from the project frame to true
+    north, which is the sum of the two things the file records::
+
+        project +Y bearing  ==  TrueNorth bearing  -  site placement rotation
+
+    That holds for both model-position options without needing to know which
+    was used, because whichever one carries the angle, the sum is the same.
     """
     problems: list[str] = []
 
@@ -210,23 +243,25 @@ def cross_check_georeferencing(location: GeoLocation, model: IfcModel) -> None:
                 f"{exported:.6f} (difference {abs(live - exported):.6f} deg)"
             )
 
-    live_north = location.assumed_north_bearing_deg
-    exported_north = model.true_north_bearing_deg % 360.0
-    delta = abs((live_north - exported_north + 180.0) % 360.0 - 180.0)
-    if delta > NORTH_TOLERANCE_DEG:
+    live_north = location.project_north_bearing_deg
+    exported_north = (model.true_north_bearing_deg - model.site_rotation_deg) % 360.0
+    delta = _signed_delta(live_north, exported_north)
+
+    if abs(delta) > NORTH_TOLERANCE_DEG:
         hint = ""
-        mirrored = abs((-live_north - exported_north + 180.0) % 360.0 - 180.0)
-        if mirrored <= NORTH_TOLERANCE_DEG:
+        if abs(_signed_delta(-live_north, exported_north)) <= NORTH_TOLERANCE_DEG:
             hint = (
-                "\n  The two agree once the sign is flipped, so ASSUMED_NORTH_SENSE "
-                "in sun_study.archicad.read is wrong. The analysis is unaffected -- "
-                "it uses the IFC value -- but please report this so the constant "
-                "can be corrected."
+                "\n  The two agree once the sign is flipped, so the north convention "
+                "in sun_study.archicad.read is wrong for this Archicad build. The "
+                "analysis is unaffected -- it uses the IFC value -- but please report "
+                "this so NORTH_ANGLE_OFFSET_DEG can be corrected."
             )
         problems.append(
-            f"true north: Archicad says {live_north:.3f} deg as a bearing, the "
-            f"IFC export says {exported_north:.3f} deg (difference {delta:.3f} deg)"
-            f"{hint}"
+            f"true north: Archicad puts project +Y at bearing {live_north:.3f} deg; "
+            f"the IFC export puts it at {exported_north:.3f} deg "
+            f"(TrueNorth {model.true_north_bearing_deg % 360.0:.3f} minus site "
+            f"placement {model.site_rotation_deg:.3f}), a difference of "
+            f"{abs(delta):.3f} deg{hint}"
         )
 
     if problems:

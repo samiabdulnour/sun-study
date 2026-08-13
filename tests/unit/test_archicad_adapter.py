@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -207,7 +208,7 @@ def test_unreachable_archicad_names_the_setting_to_check() -> None:
 # -- georeferencing -------------------------------------------------------
 
 
-def test_geo_location_is_read_without_converting_north() -> None:
+def test_geo_location_keeps_the_raw_radians_and_derives_the_bearing() -> None:
     connection, _ = connect(
         {
             "GetGeoLocation": {
@@ -225,12 +226,24 @@ def test_geo_location_is_read_without_converting_north() -> None:
 
     assert location.latitude_deg == pytest.approx(-33.8373)
     assert location.north_radians == pytest.approx(0.5)
-    assert location.assumed_north_bearing_deg == pytest.approx(math.degrees(0.5))
+    assert location.project_north_bearing_deg == pytest.approx(math.degrees(0.5) - 90.0 + 360.0)
+
+
+def test_archicads_default_north_means_project_y_is_true_north() -> None:
+    """The check that makes the 90 degree offset believable rather than fitted.
+
+    ``placeInfo.north`` measures true north counter-clockwise from project +X,
+    so a project nobody has rotated reports pi/2, not 0 -- and pi/2 has to come
+    out as a bearing of zero. An offset of 0 would make an untouched project
+    report 90 degrees of rotation, which no Archicad user has ever seen.
+    """
+    assert north_bearing_deg(math.pi / 2) == pytest.approx(0.0)
 
 
 def test_north_bearing_is_wrapped_into_zero_to_360() -> None:
-    assert north_bearing_deg(-math.pi / 2) == pytest.approx(270.0)
-    assert north_bearing_deg(3 * math.pi) == pytest.approx(180.0)
+    assert north_bearing_deg(0.0) == pytest.approx(270.0)
+    assert north_bearing_deg(math.pi) == pytest.approx(90.0)
+    assert north_bearing_deg(3 * math.pi) == pytest.approx(90.0)
 
 
 def test_geo_location_without_a_project_location_says_where_to_set_it() -> None:
@@ -243,71 +256,113 @@ def _fixture_model() -> Any:
     return read_ifc(FIXTURE)
 
 
-def test_cross_check_passes_when_both_sources_agree() -> None:
-    model = _fixture_model()
+def _located(model: Any, *, north_deg: float, latitude_offset: float = 0.0) -> Any:
     connection, _ = connect(
         {
             "GetGeoLocation": {
                 "projectLocation": {
-                    "latitude": model.latitude_deg,
+                    "latitude": model.latitude_deg + latitude_offset,
                     "longitude": model.longitude_deg,
                     "altitude": 0.0,
-                    "north": math.radians(model.true_north_bearing_deg),
+                    "north": math.radians(north_deg),
                 },
                 "surveyPoint": {},
             }
         }
     )
-    cross_check_georeferencing(read_geo_location(connection), model)
+    return read_geo_location(connection)
+
+
+def _archicad_north_for(bearing_deg: float) -> float:
+    """The ``placeInfo.north`` Archicad would report for a project +Y bearing."""
+    return bearing_deg + 90.0
+
+
+def test_cross_check_passes_when_both_sources_agree() -> None:
+    model = _fixture_model()
+    north = _archicad_north_for(model.true_north_bearing_deg)
+    cross_check_georeferencing(_located(model, north_deg=north), model)
 
 
 def test_cross_check_catches_a_moved_site() -> None:
     model = _fixture_model()
-    connection, _ = connect(
-        {
-            "GetGeoLocation": {
-                "projectLocation": {
-                    "latitude": model.latitude_deg + 1.0,
-                    "longitude": model.longitude_deg,
-                    "altitude": 0.0,
-                    "north": math.radians(model.true_north_bearing_deg),
-                },
-                "surveyPoint": {},
-            }
-        }
-    )
+    north = _archicad_north_for(model.true_north_bearing_deg)
     with pytest.raises(GeoreferencingMismatchError, match="latitude"):
-        cross_check_georeferencing(read_geo_location(connection), model)
+        cross_check_georeferencing(_located(model, north_deg=north, latitude_offset=1.0), model)
 
 
-def test_cross_check_recognises_a_flipped_north_sense() -> None:
-    """The fixture's 30-degree north makes the sign visible.
+def test_cross_check_catches_a_rotated_export() -> None:
+    """The failure it exists for: a north the export lost or re-interpreted.
 
-    ``ASSUMED_NORTH_SENSE`` is the one guess in this package. If it is wrong,
-    the failure has to say so rather than reading as a rotated building, so
-    the message is asserted, not just the exception type.
+    The fixture's 30 degree north makes the direction visible; a sign error
+    would land on 330 rather than 30 and pass a test built on zero.
     """
     model = _fixture_model()
     assert model.true_north_bearing_deg % 360.0 == pytest.approx(30.0), (
         "the fixture is authored with true north 30 degrees off project north; "
-        "this test needs a non-zero north to distinguish the two senses"
+        "this test needs a non-zero north to have any discriminating power"
     )
 
-    connection, _ = connect(
-        {
-            "GetGeoLocation": {
-                "projectLocation": {
-                    "latitude": model.latitude_deg,
-                    "longitude": model.longitude_deg,
-                    "altitude": 0.0,
-                    "north": -math.radians(model.true_north_bearing_deg),
-                },
-                "surveyPoint": {},
-            }
-        }
+    wrong = _archicad_north_for(model.true_north_bearing_deg) + 25.0
+    with pytest.raises(GeoreferencingMismatchError, match="true north"):
+        cross_check_georeferencing(_located(model, north_deg=wrong), model)
+
+
+def test_cross_check_names_a_flipped_convention_rather_than_just_failing() -> None:
+    """If the 90 degree offset is wrong for some build, say so, don't just stop."""
+    model = _fixture_model()
+    mirrored = _archicad_north_for(-model.true_north_bearing_deg)
+    with pytest.raises(GeoreferencingMismatchError, match="NORTH_ANGLE_OFFSET_DEG"):
+        cross_check_georeferencing(_located(model, north_deg=mirrored), model)
+
+
+# The numbers below are measured, not invented: they come from an Archicad 26
+# export of a real nine-storey project, cross-read three ways. See D23.
+REFERENCE_ARCHICAD_NORTH_RAD = 0.856118
+REFERENCE_SITE_ROTATION_DEG = 40.948
+REFERENCE_IFC_TRUE_NORTH_DEG = 0.0
+
+
+def test_a_survey_point_export_is_not_reported_as_a_mismatch() -> None:
+    """The false positive this cross-check shipped with, pinned so it stays fixed.
+
+    Archicad's "Survey Point" model position rotates the geometry through
+    ``IfcSite``'s placement and then writes ``TrueNorth`` as ``(0,1)``, because
+    the world coordinates it produces really are north-aligned. Comparing
+    Archicad's project-frame angle against ``TrueNorth`` alone rejected that
+    export -- 49 degrees against 0 -- on a file that was entirely correct.
+
+    Only the sum is comparable, and the sum balances.
+    """
+    model = replace(
+        _fixture_model(),
+        true_north_bearing_deg=REFERENCE_IFC_TRUE_NORTH_DEG,
+        site_rotation_deg=REFERENCE_SITE_ROTATION_DEG,
     )
-    with pytest.raises(GeoreferencingMismatchError, match="ASSUMED_NORTH_SENSE"):
-        cross_check_georeferencing(read_geo_location(connection), model)
+    location = _located(model, north_deg=math.degrees(REFERENCE_ARCHICAD_NORTH_RAD))
+
+    # Both routes must land on the same project +Y bearing.
+    assert location.project_north_bearing_deg == pytest.approx(319.052, abs=1e-3)
+    cross_check_georeferencing(location, model)
+
+
+def test_the_two_export_modes_are_indistinguishable_to_the_cross_check() -> None:
+    """Whichever half of the file carries the angle, the sum is the same.
+
+    That is what lets this work without detecting the export mode, which is
+    not recorded anywhere a reader could rely on.
+    """
+    base = _fixture_model()
+    survey_point = replace(
+        base, true_north_bearing_deg=0.0, site_rotation_deg=REFERENCE_SITE_ROTATION_DEG
+    )
+    project_origin = replace(
+        base, true_north_bearing_deg=-REFERENCE_SITE_ROTATION_DEG, site_rotation_deg=0.0
+    )
+    location = _located(base, north_deg=math.degrees(REFERENCE_ARCHICAD_NORTH_RAD))
+
+    cross_check_georeferencing(location, survey_point)
+    cross_check_georeferencing(location, project_origin)
 
 
 # -- elements -------------------------------------------------------------

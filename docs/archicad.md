@@ -192,19 +192,34 @@ definition a colleague may have edited.
 
 ---
 
-## The one thing that is guessed
+## North: the convention, and the frame trap
 
-**The sense of `GetGeoLocation`'s `north` angle.** Nothing in the add-on sources, its
-schemas or its Grasshopper components says whether the angle runs clockwise or
-anticlockwise, or from which axis.
+**`placeInfo.north` is the angle of true north measured counter-clockwise from the
+project +X axis, in radians.** Tapir passes it through undocumented; this was derived
+from a real AC26 export, three independent numbers agreeing to 1.6 × 10⁻⁵ degrees. The
+bearing of project +Y is `degrees(north) − 90`, so an untouched project reports π/2,
+not 0. See [decision D23](decisions.md) for the measurements.
 
-`ASSUMED_NORTH_SENSE` in `archicad/read.py` states the guess in one place, and nothing
-depends on it. North for the analysis comes from the IFC export, whose conversion is
-pinned by tests. The assumed reading is used only by `cross_check_georeferencing`,
-which compares the two and stops the run when they disagree — printing no numbers.
+**The trap is that Archicad's angle is in the project frame and an IFC export need not
+be.** Archicad's `IFC Model position` option decides where the rotation goes:
 
-If the sense is backwards, a project with a non-zero north fails the cross-check by
-exactly twice the angle, and the message says so. See [decision D23](decisions.md).
+| Model position | `IfcSite` placement | `TrueNorth` |
+|---|---|---|
+| Survey Point | carries the rotation | `(0,1)` — world coords are already north-aligned |
+| Project Origin | unrotated | carries the rotation |
+
+Both are correct and self-consistent, and the analysis is unaffected either way because
+it reads world coordinates with `use-world-coords = True`. But a comparison against
+anything *outside* the file has to add the two together:
+
+```
+project +Y bearing  ==  TrueNorth bearing  -  site placement rotation
+```
+
+`cross_check_georeferencing` uses that identity, which holds under both options without
+needing to know which was used. An earlier version compared against `TrueNorth` alone
+and rejected a perfectly good Survey Point export — 49° against 0°. If you change this
+code, that is the mistake to avoid.
 
 ---
 
@@ -227,10 +242,11 @@ Before starting, in Archicad:
 Then:
 
 1. **Connection.** `sun-study archicad-info`
-   Expect: add-on version, project name, location line, zone count, and either "all N
-   zones are classified" or a named list of the unclassified ones.
-   *Record the `north` value in radians and the North Direction shown in Archicad's
-   dialog — that pair settles [D23](decisions.md).*
+   Expect: add-on version, project name, location line, zone count, either "all N zones
+   are classified" or a named list of the unclassified ones, and the distinct zone
+   names. *Read the zone names before anything else* — they tell you what to pass to
+   `--living-room`, and whether zones are placed per room or per unit. **Done once on
+   an AC26 project: everything above returned correctly.**
 
 2. **Nothing running.** Quit Archicad, repeat step 1.
    Expect: exit code 2 and a message naming the JSON Interface setting. No traceback.
@@ -272,8 +288,22 @@ Then:
 
 ### Known unknowns to settle while you are there
 
-- The `north` sense ([D23](decisions.md)) — step 1.
 - Whether a `boolean` property accepts a display string, and which one
   ([D21](decisions.md)). Create one by hand in the Property Manager and try
   `"true"` / `"Yes"` / `"1"` through `SetPropertyValuesOfElements`.
 - Whether `GetClassificationsOfElements` sends the wrapped or the bare shape on AC26.
+
+The `north` convention ([D23](decisions.md)) is **settled** and no longer needs a step.
+
+## Translator settings the analysis needs
+
+Read off a real AC26 export that turned out to be missing two of them. Check these in
+the translator you export with, under `File ▸ Interoperability ▸ IFC ▸ IFC Translators`:
+
+| Setting | Needed | Why |
+|---|---|---|
+| Zones in the export filter | **Yes** | Zones become `IfcSpace`. Without them there are no apartments at all, and `run` reports zero. |
+| IFC Space boundaries | **On** | `IfcRelSpaceBoundary` maps each window to the room it serves. Without it the tool falls back to geometric containment, which is a guess. |
+| Project Location set to the real site | **Yes** | Archicad ships a city preset; exact arcminute coordinates such as `(-33,-52,0,0)` are the tell that nobody set it. |
+| IFC Model position | either | Both Survey Point and Project Origin work — see the north section above. |
+| Properties to export | any | The tool reads none of them. `All properties` inflated one 283 MB export to 1.7 million `IfcPropertySingleValue` entities; `Element Parameters only` exports far faster. |

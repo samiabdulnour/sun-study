@@ -486,3 +486,63 @@ def test_the_fixture_discriminates() -> None:
         "the top-floor unlit-side apartment should see the whole window, matching "
         "the unobstructed analytic case"
     )
+
+
+# ---------------------------------------------------------------------------
+# The site placement, and why it is read at all.
+#
+# Archicad's "Survey Point" IFC model position rotates the geometry through
+# IfcSite's placement and then writes TrueNorth as (0,1), because the world
+# coordinates it produces really are true-north-aligned. Its "Project Origin"
+# option does the opposite. Both are correct; the analysis is unaffected
+# either way because it reads world coordinates. Only a comparison against
+# something *outside* the file -- a live Archicad -- needs to know which half
+# of the pair carries the angle, and that is what site_rotation_deg is for.
+# ---------------------------------------------------------------------------
+def test_the_fixture_has_an_unrotated_site() -> None:
+    """The default, and the case that keeps the cross-check arithmetic simple."""
+    assert read_ifc(SAMPLE).site_rotation_deg == pytest.approx(0.0)
+
+
+def _with_site_rotation(source: Path, destination: Path, degrees: float) -> Path:
+    """The fixture, re-exported as though Archicad had rotated the site."""
+    model = ifcopenshell.open(str(source))
+    site = model.by_type("IfcSite")[0]
+    radians = np.radians(degrees)
+    site.ObjectPlacement.RelativePlacement.RefDirection = model.create_entity(
+        "IfcDirection", DirectionRatios=(float(np.cos(radians)), float(np.sin(radians)), 0.0)
+    )
+    model.write(str(destination))
+    return destination
+
+
+def test_a_rotated_site_placement_is_read_back(tmp_path: Path) -> None:
+    rotated = _with_site_rotation(SAMPLE, tmp_path / "rotated.ifc", 40.948)
+    model = read_ifc(rotated)
+
+    assert model.site_rotation_deg == pytest.approx(40.948, abs=1e-6)
+    # TrueNorth is untouched, so the two are independent and both survive.
+    assert model.true_north_bearing_deg % 360.0 == pytest.approx(30.0)
+
+
+def test_the_site_rotation_does_not_reach_the_analysis(tmp_path: Path) -> None:
+    """It is diagnostic metadata, not an input.
+
+    ``SiteOrientation`` must keep taking its bearing from ``TrueNorth`` alone,
+    because the geometry it is applied to is already in world coordinates with
+    the site placement baked in. Adding the rotation here would count it twice.
+    """
+    rotated = _with_site_rotation(SAMPLE, tmp_path / "rotated.ifc", 40.948)
+    orientation = read_ifc(rotated).orientation("Australia/Sydney")
+
+    assert orientation.true_north_bearing_deg % 360.0 == pytest.approx(30.0)
+
+
+def test_a_site_without_a_placement_reports_no_rotation(tmp_path: Path) -> None:
+    """Absence must read as zero, not crash: it is the overwhelmingly common case."""
+    model = ifcopenshell.open(str(SAMPLE))
+    model.by_type("IfcSite")[0].ObjectPlacement = None
+    stripped = tmp_path / "no_placement.ifc"
+    model.write(str(stripped))
+
+    assert read_ifc(stripped).site_rotation_deg == pytest.approx(0.0)

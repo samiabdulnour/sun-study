@@ -128,6 +128,21 @@ class IfcModel:
     elements: tuple[IfcElement, ...]
     space_boundaries: dict[str, str] = field(default_factory=dict)
     """Window GlobalId -> space GlobalId, from ``IfcRelSpaceBoundary``."""
+    site_rotation_deg: float = 0.0
+    """How far ``IfcSite``'s placement turns the project frame, degrees CCW.
+
+    Not used by the analysis, which reads world coordinates and takes its
+    bearing from ``TrueNorth`` alone. It exists so a *second* statement of the
+    georeferencing -- Archicad's live one -- can be compared against this file
+    without the comparison depending on which IFC model-position option the
+    export used.
+
+    Archicad's "Survey Point" export writes the north rotation here and leaves
+    ``TrueNorth`` at ``(0,1)``, because the world coordinates it produces are
+    already true-north-aligned. Its "Project Origin" export does the opposite.
+    Both are correct and self-consistent; only their sum is comparable to
+    anything outside the file. See ``archicad.read.cross_check_georeferencing``.
+    """
 
     def orientation(self, timezone: str) -> SiteOrientation:
         """Bind the file's georeferencing to an explicitly chosen timezone.
@@ -212,6 +227,31 @@ def _resolve_true_north(model: ifcopenshell.file) -> float:
         "and re-export. Assuming the project Y axis points north would silently "
         "rotate every result."
     )
+
+
+def _resolve_site_rotation(model: ifcopenshell.file) -> float:
+    """How far ``IfcSite``'s own placement turns the project frame, degrees CCW.
+
+    Archicad's "Survey Point" IFC export puts the north rotation here rather
+    than in ``TrueNorth``, so a file can be perfectly georeferenced while
+    ``TrueNorth`` reads ``(0,1)``. The analysis never needs this -- world
+    coordinates already have it baked in -- but the cross-check against
+    Archicad's live answer does, because Archicad reports north in the
+    *project* frame and this is what separates the two.
+
+    Returns 0 when the site has no placement or an unrotated one, which is
+    both the common case and the safe default: a missing rotation reduces the
+    cross-check to comparing ``TrueNorth`` alone, which is what it did before.
+    """
+    for site in model.by_type("IfcSite"):
+        placement = getattr(site, "ObjectPlacement", None)
+        relative = getattr(placement, "RelativePlacement", None)
+        direction = getattr(relative, "RefDirection", None)
+        ratios = getattr(direction, "DirectionRatios", None)
+        if ratios is None or len(ratios) < 2:
+            continue
+        return float(np.degrees(np.arctan2(float(ratios[1]), float(ratios[0]))))
+    return 0.0
 
 
 def _resolve_location(model: ifcopenshell.file, unit_scale: float) -> tuple[float, float, float]:
@@ -347,4 +387,5 @@ def read_ifc(path: str | Path, *, include: Sequence[str] | None = None) -> IfcMo
         length_unit_scale=unit_scale,
         elements=tuple(elements),
         space_boundaries=_read_space_boundaries(model),
+        site_rotation_deg=_resolve_site_rotation(model),
     )

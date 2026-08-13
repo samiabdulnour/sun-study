@@ -360,27 +360,54 @@ The consequence is that Archicad's own georeferencing is not the source of truth
 the IFC's is. That is deliberate, and it is what makes the north cross-check possible:
 two independent statements of the same fact, with disagreement fatal.
 
-### D23 — The Archicad north convention is assumed, and cross-checked rather than trusted
+### D23 — Archicad's north angle, and why the cross-check compares sums
 
-*Milestone M4. Open until confirmed at a workstation.*
+*Milestone M4. Opened as an assumption; **closed by measurement** on an Archicad 26
+project.*
 
-`GetGeoLocation` returns `north` in radians and documents nothing else about it. The
-add-on sources, the JSON schemas and the Grasshopper components are all silent on
-whether the angle runs clockwise or anticlockwise, and from which axis. One data point
-exists — Tapir's `WallOrientationComponent` subtracts a user-supplied `northRotation`
-from a clockwise-measured model angle — but that input is typed by a human, not read
-from `GetGeoLocation`, so it proves nothing.
+`GetGeoLocation` returns `north` in radians and documents nothing else. The add-on
+sources, the JSON schemas and the Grasshopper components are all silent on whether the
+angle runs clockwise or anticlockwise, and from which axis. This shipped as a named
+guess, `ASSUMED_NORTH_SENSE`, deliberately load-bearing on nothing.
 
-Rather than guess and hope, `ASSUMED_NORTH_SENSE` in `archicad/read.py` states the
-guess in one place and *nothing depends on it*. North for the analysis comes from the
-IFC. The assumed reading is used only by `cross_check_georeferencing`, which compares
-the two and refuses to continue when they disagree. If the sense is backwards, a
-project with a non-zero north fails by exactly twice the angle, and the error message
-says so and asks for a report.
+A real export settled it. Three independent numbers out of one nine-storey AC26 model:
 
-The cost of being wrong is therefore a confusing-but-safe stop on a rotated project,
-not a rotated building. `test_cross_check_recognises_a_flipped_north_sense` pins that
-behaviour on the fixture, whose 30° north makes the two senses distinguishable.
+| Source | Value |
+|---|---|
+| `GetGeoLocation` | `north = 0.856118 rad` = 49.0518° |
+| `IfcSite` `RefDirection` | `(0.755304, 0.655374)` = `(sin 49.0518°, cos 49.0518°)` |
+| Walls, measured in world coordinates | 40.948° = 90° − 49.0518° |
+
+So **`placeInfo.north` is the angle of true north measured counter-clockwise from the
+project +X axis, in radians**, and the bearing of project +Y is `degrees(north) − 90`.
+The mirrored convention predicts walls at 130.9°; they were at 41°. Two further checks
+agree: the offset makes Archicad's default north π/2 rather than 0, which is what
+"true north runs along project +Y" ought to report, and substituting all three numbers
+into the cross-check balances to 1.6 × 10⁻⁵ degrees — the rounding on six decimal
+places of radians.
+
+**The same file exposed a false positive in the cross-check**, which matters more than
+the constant did. Archicad reports north in the *project* frame. An IFC export need not
+be in that frame: the "Survey Point" model position rotates the geometry through
+`IfcSite`'s placement and then writes `TrueNorth` as `(0,1)`, because the world
+coordinates it produces genuinely are north-aligned. Comparing Archicad's angle against
+`TrueNorth` alone rejected a completely correct export — 49° against 0°.
+
+What is comparable is the total rotation from project frame to true north:
+
+```
+project +Y bearing  ==  TrueNorth bearing  -  site placement rotation
+```
+
+That identity holds under both model-position options without having to detect which
+was used, because whichever half of the file carries the angle, the sum is unchanged.
+`ingest.ifc` therefore records `site_rotation_deg` alongside `true_north_bearing_deg`.
+
+**The analysis still uses `TrueNorth` alone**, and must: it reads world coordinates,
+which already have the site placement baked in. Adding the rotation there would count
+it twice. `test_the_site_rotation_does_not_reach_the_analysis` pins that, and
+`test_a_survey_point_export_is_not_reported_as_a_mismatch` pins the false positive
+using the measured numbers above.
 
 ### D16 — There is no `rules/nsw_adg.py`
 
