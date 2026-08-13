@@ -411,13 +411,62 @@ space is used and the fallback is counted rather than hidden.
 
 ---
 
-## 6. Reference comparison against Ladybug — status: **not started** (M6)
+## 6. Reference comparison against Ladybug — status: **in progress** (M6)
+
+### 6.1 Geometry reading verified against a published figure
+
+The reference project's Rhino model was read with `ingest/rhino.py`. Its residential
+tower facade — the surface the published study analysed — measures:
+
+| | Area |
+|---|---:|
+| Computed from the model's Brep render meshes, vertical faces only | **17 780.01 m²** |
+| Published in the study's own summary | **17 780.02 m²** |
+
+A relative difference of 6 parts in ten million, i.e. rounding. That establishes three
+things at once: the Brep render-mesh extraction is faithful, the unit handling is right,
+and the 30° vertical-face filter selects exactly the surface Ladybug analysed. 25 825 of
+25 845 Brep faces carried a cached mesh (99.92%); the 20 without are counted and
+reported.
+
+### 6.2 The reference result decoded per band
+
+The model carries the Ladybug output as seven colour-mapped meshes. Reading their vertex
+colours and integrating area per colour reproduces the published table **exactly**:
+
+| Colour | Decoded | Published | Band |
+|---|---:|---:|---|
+| `#08306B` | 7923.71 | 7923.71 | 0hr |
+| `#4DB6AC` | 3187.20 | 3187.20 | 1–2hrs |
+| `#F4511E` | 2532.10 | 2532.10 | >5hrs |
+| `#FFB74D` | 2409.75 | 2409.75 | 4–5hrs |
+| `#FFD54F` | 641.55 | 641.55 | 3–4hrs |
+| `#E6EE9C` | 601.59 | 601.59 | 2–3hrs |
+| `#2B7ABF` | 484.12 | 484.12 | 0–1hr |
+
+This is a **per-face ground truth**, not a summary comparison: every triangle of the
+analysed facade carries the band Ladybug assigned it. The comparison can therefore be
+made face by face rather than on totals, which would let a positive and a negative error
+cancel.
+
+### 6.3 Blocked on site parameters
+
+None of the three Rhino files carries a location. `EarthAnchorPoint` is unset on all of
+them and `ModelNorth` is Rhino's default `(0,1,0)`, which is indistinguishable from a
+deliberate setting. The model sits in local coordinates near the origin, so there is no
+survey grid to convert from either. Latitude, longitude and true north live in the
+Grasshopper definition and must be supplied before the comparison can run.
+
+They will not be inferred by fitting them until the bands agree — that would tune the
+inputs to the answer and destroy the value of the check.
+
+### 6.4 Still to do
 
 One real project run through both this tool and the existing Grasshopper/Ladybug
 script, with per-apartment differences recorded, a tolerance stated, and every outlier
 explained.
 
-**Until this section is filled in, the tool is a prototype and the README says so.**
-This is the only check that tests the whole chain against something the office already
-trusts. Everything above can pass while the tool still samples the wrong windows: the
-fixture proves the code does what it was told, not that it was told the right thing.
+**Until §6 is complete, the tool is a prototype and the README says so.** This is the
+only check that tests the whole chain against something the office already trusts.
+Everything above can pass while the tool still samples the wrong surfaces: the fixture
+proves the code does what it was told, not that it was told the right thing.

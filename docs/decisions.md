@@ -226,6 +226,27 @@ other.
 
 ## Settled during massing mode
 
+### D20 — `rhino3dm` as a validation-only reader
+
+*Alternative: compare against an IFC re-export of the same scheme.*
+
+The reference Ladybug study was run on `.3dm` geometry. Comparing against an IFC
+re-export of it would introduce geometry differences that appear as a systematic
+offset — indistinguishable from an engine error, in the one check the project's
+credibility rests on. So `ingest/rhino.py` reads the 3dm directly.
+
+`rhino3dm` sits in the dev group beside `pvlib`, is imported lazily, and is a pure
+openNURBS wheel needing no Rhino installation or licence. `core` stays numpy-only. The
+product still ingests IFC; this is not a second supported input.
+
+Two things that took finding. Rhino stores NURBS Breps, which `rhino3dm` cannot
+tessellate — but it *can* reach the render mesh Rhino already cached, and the API is on
+`BrepFace.GetMesh`, not on `Brep`. And a fresh `File3dm()` defaults to **millimetres**,
+so writing metre coordinates without setting the unit system makes every length 1000×
+too small and every area a million times too small.
+
+
+
 ### D17 — Massing stage measures facade *area*, not apartments
 
 *Alternative: extend the per-apartment metric downward. Not possible.*
