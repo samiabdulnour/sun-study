@@ -1,0 +1,117 @@
+# NSW Apartment Design Guide -- Objective 4A-1, solar access.
+#
+# Data, not code. The assessment engine in sun_study.rules.assessment reads this
+# file and has no idea what "ADG" means; changing a threshold here is a data
+# edit and never a code change.
+#
+# Every threshold carries a citation. The wording below is quoted from the NSW
+# Department of Planning technical note "Solar access requirements in SEPP 65",
+# read directly from the published PDF rather than from memory.
+#
+# This file contains only the published criteria. It deliberately contains no
+# office interpretation of the ADG (brief section 10).
+
+name: nsw_adg
+version: "1.0.0"
+title: NSW Apartment Design Guide, Objective 4A-1 solar access
+
+source:
+  document: Apartment Design Guide, Part 4A Solar and Daylight Access
+  objective: >-
+    Objective 4A-1: To optimize the number of apartments receiving sunlight to
+    habitable rooms, primary windows and private open space
+  publisher: NSW Department of Planning and Environment
+  technical_note: Solar access requirements in SEPP 65
+  url: https://www.planning.nsw.gov.au/sites/default/files/2023-03/solar-access-requirements-in-sepp-65.pdf
+  retrieved: "2026-08-13"
+
+assessment:
+  # "Access to sunlight within apartments and private open spaces is measured at
+  # mid winter (21 June) as this is when the sun is lowest in the sky. This
+  # represents the 'worst case' scenario for solar access."
+  date: "06-21"
+  window_start: "09:00"
+  window_end: "15:00"
+  timestep_minutes: 10
+  citation: >-
+    Solar access requirements in SEPP 65, "Solar and daylight access for
+    residential apartment developments"
+
+  # Councils differ on this and some DCPs require an unbroken duration. The ADG
+  # design criteria do not themselves say which applies, so the default is
+  # cumulative and the choice is printed in every output header rather than
+  # left as an invisible assumption. Brief section 5.7.
+  continuity: cumulative
+
+  # 09:00 to 15:00 at a 10 minute step is 37 instants, not 36, because both ends
+  # are included. Trapezoidal weighting makes them sum to exactly 360 minutes;
+  # uniform weighting would report up to 370 and always in the optimistic
+  # direction, directly across the 2 hour threshold. Decision D11.
+  weighting: trapezoidal
+
+# Design criteria 1 and 2 differ only by location, so they are one threshold
+# with two values rather than two rules.
+areas:
+  sydney_metro:
+    label: Sydney Metropolitan Area, and the Newcastle and Wollongong local government areas
+    minimum_sunlight_minutes: 120
+    citation: >-
+      ADG Objective 4A-1, design criterion 1: "Living rooms and private open
+      spaces of at least 70% of apartments in a building receive a minimum of 2
+      hours direct sunlight between 9am and 3pm at mid winter in the Sydney
+      Metropolitan Area and in the Newcastle and Wollongong local government
+      areas"
+  other:
+    label: All other areas
+    minimum_sunlight_minutes: 180
+    citation: >-
+      ADG Objective 4A-1, design criterion 2: "In all other areas, living rooms
+      and private open spaces of at least 70% of apartments in a building
+      receive a minimum of 3 hours direct sunlight between 9am and 3pm at mid
+      winter"
+
+criteria:
+  minimum_compliant_share:
+    value: 0.70
+    citation: >-
+      ADG Objective 4A-1, design criteria 1 and 2: "at least 70% of apartments
+      in a building"
+  maximum_no_sunlight_share:
+    value: 0.15
+    citation: >-
+      ADG Objective 4A-1, design criterion 3: "A maximum of 15% of apartments in
+      a building receive no direct sunlight between 9am and 3pm at mid winter"
+
+# How the published wording is turned into a per-apartment yes or no. These are
+# readings of the criteria, not the criteria themselves, so they are explicit,
+# configurable and reported. Decision D15.
+interpretation:
+  # "Living rooms *and* private open spaces of at least 70% of apartments"
+  # reads as both having to meet the minimum, so the apartment is governed by
+  # whichever is worse.
+  compliance_requires: both
+
+  # Criterion 3 speaks of the apartment receiving no direct sunlight, so an
+  # apartment counts only when nothing it has receives any. "either" would
+  # count an apartment whose balcony is in full sun but whose living room is
+  # not, which is a different and much harsher rule.
+  no_sunlight_requires: both
+
+  # Not every apartment has private open space. Assessing such an apartment on
+  # its living room alone is the common reading; the alternatives are to
+  # exclude it from the denominator or to fail it outright, and which is right
+  # is a project-level question.
+  # One of: living_room_only | excluded | non_compliant
+  apartments_without_open_space: living_room_only
+
+notes:
+  # Quoted from the same technical note. This is why vegetation is excluded
+  # (decision D10) -- it is in the published definition, not merely convention.
+  solar_access_definition: >-
+    "Solar access is the ability of a building to receive direct sunlight
+    without obstruction from other buildings or impediments, not including
+    trees."
+  scope: >-
+    This ruleset encodes design criteria only. The ADG also sets out design
+    guidance under Objective 4A-1 which is not measurable geometrically and is
+    not represented here.

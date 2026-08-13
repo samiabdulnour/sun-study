@@ -12,6 +12,9 @@ license = { text = "MIT" }
 dependencies = [
     "ifcopenshell>=0.8.5",
     "numpy>=1.26",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+    "typer>=0.27.1",
     # Pure-data wheel, no code. Python's stdlib `zoneinfo` reads the *system* tz
     # database first and falls back to this package. Windows ships no system tz
     # database at all, so without this the primary deployment platform cannot
@@ -32,7 +35,11 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "pvlib>=0.10",
+    "types-pyyaml>=6.0.12.20260724",
 ]
+
+[project.scripts]
+sun-study = "sun_study.cli:main"
 
 [build-system]
 requires = ["hatchling"]
