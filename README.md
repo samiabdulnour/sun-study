@@ -37,6 +37,7 @@ pure astronomy from latitude, longitude and time.
 | M1 | `core` engine on synthetic geometry | **Done** — all six §7 analytic cases green |
 | M2 | IFC ingest and scene assembly | **Done** — fixture loads with correct north, units, containment |
 | M3 | ADG ruleset, CSV/JSON output | **Done** — per-apartment results for the fixture |
+| — | Massing mode: facade/ground area bands | **Done** — the metric a massing optimisation maximises |
 | M4 | Archicad read adapter | Not started |
 | M5 | Archicad write-back | Not started |
 | M6 | Validation against Ladybug | Not started |
@@ -67,6 +68,18 @@ uv run sun-study rulesets                                      # thresholds and 
 uv run sun-study run   model.ifc --timezone Australia/Sydney \
     --area sydney_metro --csv results.csv --json results.json
 ```
+
+For massing studies, before there are any apartments:
+
+```bash
+uv run sun-study massing model.ifc --timezone Australia/Sydney \
+    --facade-grid 1.0 --ground-grid 1.0 --csv bands.csv
+```
+
+That reports the share of **facade area** and of **open ground** reaching two hours,
+banded hourly with square metres and percentages — the metric a massing optimisation
+loop maximises. It is not the ADG per-apartment criterion and the output says so:
+before apartments exist the compliance figure cannot be computed at all.
 
 `--area sydney_metro` is the 2-hour criterion; `--area other` is the 3-hour one that
 applies outside Sydney Metro, Newcastle and Wollongong. Every run echoes the resolved

@@ -224,6 +224,55 @@ other.
 
 ---
 
+## Settled during massing mode
+
+### D17 — Massing stage measures facade *area*, not apartments
+
+*Alternative: extend the per-apartment metric downward. Not possible.*
+
+The office's massing decks report **"areas on facade get sunlight hours on 21 Jun
+>2hrs"** as a percentage, and that is the fitness goal an optimisation run maximises
+(29.7% → 38.8% on the reference scheme). It is a share of **square metres**.
+
+The ADG's criterion is a share of *apartments*, and at massing stage there are no
+apartments — no Zones, no windows, just a mass. The per-apartment metric therefore
+cannot be computed at all, and the area share is not an approximation of it but a
+different measurement that happens to use the same 2 hour threshold.
+
+They are never quoted for one another. `sun-study massing` prints an area share and its
+header says in words that it is not a compliance figure; `sun-study run` prints the ADG
+verdict. The threshold still comes from the ruleset, so both stay anchored to the same
+cited number.
+
+### D18 — Samples carry their area, and bands are area-weighted
+
+Every square-metre figure in those decks depends on knowing how much surface each
+sample stands for. `SamplePoints` therefore carries `areas`, and `band_by_area` weights
+by it rather than counting samples. The two agree only when every sample represents the
+same area, which is true of a regular grid on one window and never true of a
+triangulated massing.
+
+The band scheme matches the published one exactly, including two details that are
+load-bearing: `0hr` is held **separate** from `0–2hrs` (a surface receiving nothing is a
+different finding from one receiving forty minutes, and only the former counts for ADG
+criterion 3), and the `>2hrs` roll-up is **inclusive** of exactly two hours because the
+criterion reads "a minimum of 2 hours".
+
+### D19 — Massing runs default to a 1 m grid
+
+*Alternative: keep the 200 mm developed-model default.*
+
+An optimisation run evaluates hundreds of variants. At 200 mm a facade of roughly
+18,000 m² is about 445,000 samples and several minutes per variant — most of a day for
+a full run. At 1 m it is about 18,000 samples and a few seconds.
+
+A test asserts the coarse and fine settings agree on the headline share to within 3
+percentage points, so the fast setting is not reporting a different building. The
+spacing used is printed in the banner and written into every output header, because a
+coarse number quoted as a fine one is exactly the failure this project exists to avoid.
+
+---
+
 ## Settled during M3
 
 ### D15 — Reading the published wording into a per-apartment verdict
