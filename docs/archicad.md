@@ -286,6 +286,37 @@ Then:
 10. **Undo.** Confirm the write-back is a single undo step (Tapir wraps it in
     `ACAPI_CallUndoableCommand`), and that undoing it removes the values.
 
+## Verified against a live Archicad 26
+
+Run on two real projects. What has actually been observed working, as opposed to
+machine-checked against a fake transport:
+
+| | |
+|---|---|
+| Connection, version handshake, project info | works |
+| `GetGeoLocation`, zones, zone details, classifications | works |
+| Property group create and lookup | works, **once definitions carry a `defaultValue`** |
+| Property **value** writes | **blocked** on one project with `APIERR_NOACCESSRIGHT` |
+| Layer create and lookup, element delete | works |
+| `CreateHatches`, `CreateTexts` — fills and legend | **works**: 8 fills and a 7-item legend, replacing the previous run's 15 |
+
+Two traps found the hard way, both now guarded:
+
+**A property definition with no `defaultValue` is rejected** with `APIERR_BADVALUE`
+(-2130313104). The schema does not require the field, but Tapir then sets the variant
+status to null and Archicad refuses the definition. A probe that varied name, type,
+availability and `isEditable` failed on every variation, because the missing default was
+what they all shared.
+
+**`GetLayers` requires `attributeIds`**, so it cannot enumerate — it has to be told which
+layers to describe. Calling it bare is a schema violation and Archicad rejects the whole
+command with code 4002. Use `GetAttributesByType` with `attributeType: "Layer"`.
+
+And one Tapir bug worth knowing: **it reuses a single `err` across the loop over an
+element's properties without resetting it**, so the first genuine failure makes every
+later property on that element report "Failed to get property values" as well. Only the
+first failure per element is a cause.
+
 ### Known unknowns to settle while you are there
 
 - Whether a `boolean` property accepts a display string, and which one
