@@ -506,6 +506,55 @@ def _classification_item_guid(entry: Any) -> str | None:
     return None
 
 
+def classification_item_names(connection: ArchicadConnection) -> dict[str, str]:
+    """Classification item GUID -> a readable ``System / ID Name``.
+
+    Availability is a list of opaque GUIDs, which makes an availability
+    problem unreadable: the error says a property could not be created and the
+    request behind it is a row of identifiers. Resolving them turns that into
+    "available for Unclassified only", which is an answer.
+
+    ``API.GetAllClassificationsInSystem`` is one of Archicad's own commands and
+    returns a tree, so children are walked too -- an element is normally
+    classified against a leaf rather than a top-level heading.
+    """
+    listed = connection.run_official("API.GetAllClassificationSystems")
+    systems = listed.get("classificationSystems") if isinstance(listed, dict) else None
+    if not isinstance(systems, list):
+        return {}
+
+    names: dict[str, str] = {}
+
+    def walk(entries: Any, system: str) -> None:
+        if not isinstance(entries, list):
+            return
+        for entry in entries:
+            item = (entry or {}).get("classificationItem") if isinstance(entry, dict) else None
+            if not isinstance(item, dict):
+                continue
+            identifier = (item.get("classificationItemId") or {}).get("guid")
+            if identifier:
+                label = " ".join(str(item.get(key, "")) for key in ("id", "name")).strip()
+                names[str(identifier)] = f"{system} / {label or '(unnamed)'}"
+            walk(item.get("children"), system)
+
+    for system in systems:
+        if not isinstance(system, dict):
+            continue
+        identifier = (system.get("classificationSystemId") or {}).get("guid")
+        if not identifier:
+            continue
+        response = connection.run_official(
+            "API.GetAllClassificationsInSystem",
+            {"classificationSystemId": {"guid": identifier}},
+        )
+        walk(
+            response.get("classificationItems") if isinstance(response, dict) else None,
+            str(system.get("name", "?")),
+        )
+    return names
+
+
 def classification_items_of(
     connection: ArchicadConnection, guids: list[str]
 ) -> dict[str, set[str]]:

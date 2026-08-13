@@ -33,6 +33,7 @@ from sun_study.archicad.draw import (
 )
 from sun_study.archicad.read import (
     ArchicadZone,
+    classification_item_names,
     classification_items_of,
     cross_check_georeferencing,
     describe_connection,
@@ -44,6 +45,7 @@ from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
     all_properties,
+    ensure_property_group,
     enum_values,
     init_properties,
     match_apartments,
@@ -660,6 +662,122 @@ def init_properties_command(
             f"Classify them and run this again.",
             fg=typer.colors.YELLOW,
         )
+
+
+@app.command("archicad-probe")
+def archicad_probe(
+    port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+) -> None:
+    """Find out why Archicad is refusing to create a property, one variable at a time.
+
+    ``CreatePropertyDefinitions`` answers a rejection with a fixed message and
+    a raw error code, so a failure says which properties were refused but not
+    which *part* of the request it objected to. Nine identical codes narrow
+    nothing.
+
+    This sends several deliberately minimal definitions that differ in exactly
+    one thing each -- the name, the type, the availability -- and prints the
+    code for every one. Whichever variations succeed bracket the cause. It
+    also names the classification items the zones actually carry, because
+    "available for Unclassified" looks identical to a real classification
+    until you resolve the identifiers.
+
+    Anything it manages to create is left behind; delete it from the Property
+    Manager afterwards.
+    """
+    banner()
+    connection = _connect(port)
+
+    try:
+        found = read_zones(connection)
+        if not found:
+            typer.secho("No Zones to probe against.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+        sample = found[:8]
+        classified = classification_items_of(connection, [zone.guid for zone in sample])
+        items = sorted({item for values in classified.values() for item in values})
+        names = classification_item_names(connection)
+
+        typer.secho(
+            f"{len(sample)} zones carry {len(items)} distinct classification items:", bold=True
+        )
+        for item in items:
+            typer.echo(f"    {names.get(item, '(not found in any system)')}   {item}")
+        if not items:
+            typer.secho(
+                "  None. A custom property attaches to an element through its "
+                "classification, so there is nothing to make one available for.",
+                fg=typer.colors.RED,
+            )
+        typer.echo("")
+
+        group_id = ensure_property_group(connection)
+        typer.echo(f"  group {PROPERTY_GROUP_NAME!r} is {group_id}")
+        typer.echo("")
+        _run_probe(connection, group_id, items)
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+
+def _run_probe(connection: ArchicadConnection, group_id: str, items: list[str]) -> None:
+    """Create several one-variable-apart definitions and report each outcome."""
+    available = [{"classificationItemId": {"guid": item}} for item in items]
+    attempts: list[tuple[str, dict[str, Any]]] = [
+        ("plain name, string, no availability", {"name": "SunStudyProbeA", "type": "string"}),
+        (
+            "plain name, string, with availability",
+            {"name": "SunStudyProbeB", "type": "string", "availability": available},
+        ),
+        (
+            "plain name, number, with availability",
+            {"name": "SunStudyProbeC", "type": "number", "availability": available},
+        ),
+        (
+            "name with parentheses, number, with availability",
+            {"name": "SunStudyProbeD (h)", "type": "number", "availability": available},
+        ),
+        (
+            "no isEditable",
+            {"name": "SunStudyProbeE", "type": "string", "availability": available, "skip": True},
+        ),
+    ]
+
+    definitions = []
+    for _, attempt in attempts:
+        definition: dict[str, Any] = {
+            "name": attempt["name"],
+            "description": "sun-study probe, safe to delete",
+            "type": attempt["type"],
+            "availability": attempt.get("availability", []),
+            "group": {"propertyGroupId": {"guid": group_id}},
+        }
+        if not attempt.get("skip"):
+            definition["isEditable"] = True
+        definitions.append({"propertyDefinition": definition})
+
+    response = connection.run_tapir(
+        "CreatePropertyDefinitions", {"propertyDefinitions": definitions}
+    )
+    results = response.get("propertyIds") if isinstance(response, dict) else []
+    if not isinstance(results, list) or len(results) != len(attempts):
+        typer.secho(f"unexpected probe response: {response!r}", fg=typer.colors.RED)
+        return
+
+    for (label, _), result in zip(attempts, results, strict=True):
+        if isinstance(result, dict) and "error" in result:
+            error = result["error"] or {}
+            typer.secho(f"  FAILED  {label}: code {error.get('code', 'none')}", fg=typer.colors.RED)
+        else:
+            typer.secho(f"  worked  {label}", fg=typer.colors.GREEN)
+
+    typer.echo("")
+    typer.secho(
+        "Whichever lines worked bracket the cause. Delete any created "
+        "'SunStudyProbe*' properties from the Property Manager.",
+        fg=typer.colors.YELLOW,
+    )
 
 
 @app.command("archicad-selftest")
