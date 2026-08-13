@@ -10,6 +10,7 @@ license = { text = "MIT" }
 # The approved set for this project (see docs/decisions.md) is numpy, trimesh,
 # ifcopenshell, pydantic, typer, pyyaml. Anything beyond that is a conversation.
 dependencies = [
+    "ifcopenshell>=0.8.5",
     "numpy>=1.26",
     # Pure-data wheel, no code. Python's stdlib `zoneinfo` reads the *system* tz
     # database first and falls back to this package. Windows ships no system tz
@@ -80,3 +81,16 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 [[tool.mypy.overrides]]
 module = ["pvlib.*"]
 ignore_missing_imports = true
+
+# ifcopenshell ships partial type information: its C-extension entry points
+# (geom.settings, iterator) are untyped, so strict mode flags every call into
+# them. The boundary is confined to ingest/ifc.py, which converts everything to
+# typed numpy arrays and dataclasses immediately.
+[[tool.mypy.overrides]]
+module = ["ifcopenshell.*"]
+ignore_missing_imports = true
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = ["sun_study.ingest.ifc"]
+disallow_untyped_calls = false

@@ -98,6 +98,12 @@ class SiteOrientation:
             raise ValueError(f"latitude_deg {self.latitude_deg} outside [-90, 90]")
         if not -180.0 <= self.longitude_deg <= 180.0:
             raise ValueError(f"longitude_deg {self.longitude_deg} outside [-180, 180]")
+        if not self.timezone or not self.timezone.strip():
+            raise ValueError(
+                "timezone must be a non-empty IANA name such as 'Australia/Sydney'. "
+                "There is no default: an unstated zone shifts every sun position by "
+                "whole hours."
+            )
         if not np.isfinite(self.true_north_bearing_deg):
             raise ValueError(f"true_north_bearing_deg {self.true_north_bearing_deg} is not finite")
 
