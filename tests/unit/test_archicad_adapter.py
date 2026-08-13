@@ -646,6 +646,8 @@ class CreatingTransport(FakeTransport):
             {
                 "GetAddOnVersion": {"version": "1.5.7"},
                 "GetAllProperties": _property_catalogue(present),
+                # No group yet, so it has to be created and its id used.
+                "API.GetAllPropertyGroupIds": {"propertyGroupIds": []},
                 "CreatePropertyGroups": {"propertyGroupIds": [{"propertyGroupId": {"guid": "g"}}]},
                 "CreatePropertyDefinitions": {
                     "propertyIds": [
@@ -673,7 +675,10 @@ def test_init_properties_creates_only_what_is_missing() -> None:
 
     definitions = transport.parameters_for("CreatePropertyDefinitions")["propertyDefinitions"]
     assert [d["propertyDefinition"]["name"] for d in definitions] == all_names[2:]
-    assert definitions[0]["propertyDefinition"]["group"] == {"name": PROPERTY_GROUP_NAME}
+    assert definitions[0]["propertyDefinition"]["group"] == {"propertyGroupId": {"guid": "g"}}, (
+        "the group is addressed by identifier, not by name: Tapir resolves a name "
+        "by taking the first match, so duplicate group names would misdirect it"
+    )
     assert definitions[0]["propertyDefinition"]["availability"] == [
         {"classificationItemId": {"guid": "item-a"}},
         {"classificationItemId": {"guid": "item-b"}},
@@ -705,6 +710,7 @@ def test_init_properties_surfaces_a_per_definition_error() -> None:
     connection, _ = connect(
         {
             "GetAllProperties": _property_catalogue([]),
+            "API.GetAllPropertyGroupIds": {"propertyGroupIds": []},
             "CreatePropertyGroups": {"propertyGroupIds": [{"propertyGroupId": {"guid": "g"}}]},
             "CreatePropertyDefinitions": {
                 "propertyIds": [{"propertyId": {"guid": "ok"}}] * (len(APARTMENT_PROPERTIES) - 1)
@@ -1256,3 +1262,86 @@ def test_the_legend_sits_clear_of_the_plan() -> None:
 
     labels = [t["text"] for t in transport.parameters_for("CreateTexts")["textsData"]]
     assert labels[: len(DEFAULT_BANDS)] == [b.label for b in reversed(DEFAULT_BANDS)]
+
+
+def test_an_existing_group_is_reused_rather_than_created_again() -> None:
+    """The bug this fixes: a second group with the same name.
+
+    ``GetAllProperties`` reports each property's group *name*, so a group with
+    no properties in it is invisible -- which an earlier version took as
+    "absent" and created again on every run. Tapir resolves a group by name by
+    taking the first match, so duplicates send definitions somewhere
+    unpredictable, and Archicad rejects the lot.
+    """
+    all_names = [spec.name for spec in APARTMENT_PROPERTIES]
+    connection, transport = connect(
+        {
+            "GetAllProperties": _property_catalogue([]),
+            "API.GetAllPropertyGroupIds": {
+                "propertyGroupIds": [{"propertyGroupId": {"guid": "g"}}]
+            },
+            "API.GetPropertyGroups": {
+                "propertyGroups": [
+                    {
+                        "propertyGroup": {
+                            "propertyGroupId": {"guid": "g"},
+                            "name": PROPERTY_GROUP_NAME,
+                        }
+                    }
+                ]
+            },
+            "CreatePropertyDefinitions": {
+                "propertyIds": [{"propertyId": {"guid": "p"}}] * len(all_names)
+            },
+        }
+    )
+    init_properties(connection, {"zone-1": {"item-a"}})
+
+    assert "CreatePropertyGroups" not in transport.commands(), (
+        "an existing group must never be created a second time"
+    )
+    definitions = transport.parameters_for("CreatePropertyDefinitions")["propertyDefinitions"]
+    assert definitions[0]["propertyDefinition"]["group"] == {"propertyGroupId": {"guid": "g"}}
+
+
+def test_a_rejected_definition_reports_archicads_error_code() -> None:
+    """Tapir's message for a rejected definition is a fixed string.
+
+    It passes Archicad's own GSErrCode through as the code, so dropping that
+    leaves nine identical lines saying nothing about why -- which is exactly
+    what happened on a real project.
+    """
+    connection, _ = connect(
+        {
+            "GetAllProperties": _property_catalogue([]),
+            "API.GetAllPropertyGroupIds": {"propertyGroupIds": []},
+            "CreatePropertyGroups": {"propertyGroupIds": [{"propertyGroupId": {"guid": "g"}}]},
+            "CreatePropertyDefinitions": {
+                "propertyIds": [
+                    {"error": {"code": -2130313081, "message": "failed to create the property"}}
+                ]
+                * len(APARTMENT_PROPERTIES)
+            },
+        }
+    )
+    with pytest.raises(ArchicadError) as caught:
+        init_properties(connection, {"zone-1": {"item-a"}})
+
+    message = str(caught.value)
+    assert "-2130313081" in message, "the code is the whole diagnostic"
+    assert "number" in message, "and the type, since it narrows which ones failed"
+    assert "availability 1 classification items" in message
+
+
+def test_a_group_that_cannot_be_created_says_so_with_its_code() -> None:
+    connection, _ = connect(
+        {
+            "GetAllProperties": _property_catalogue([]),
+            "API.GetAllPropertyGroupIds": {"propertyGroupIds": []},
+            "CreatePropertyGroups": {
+                "propertyGroupIds": [{"error": {"code": 7, "message": "name already used"}}]
+            },
+        }
+    )
+    with pytest.raises(ArchicadError, match="name already used"):
+        init_properties(connection, {"zone-1": {"item-a"}})

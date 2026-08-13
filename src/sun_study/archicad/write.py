@@ -53,10 +53,12 @@ __all__ = [
     "PropertySpec",
     "WriteReport",
     "all_properties",
+    "ensure_property_group",
     "enum_values",
     "existing_properties",
     "init_properties",
     "match_apartments",
+    "property_groups",
     "write_assessment",
 ]
 
@@ -305,6 +307,85 @@ def _availability_items(classifications: dict[str, set[str]]) -> list[str]:
     return sorted(items)
 
 
+def property_groups(connection: ArchicadConnection) -> dict[str, str]:
+    """Group name -> identifier, for the project's user-defined groups.
+
+    ``GetAllProperties`` cannot answer this: it reports the group *name* of
+    each property, so a group holding no properties yet is invisible. That
+    gap is why an earlier version created the group blind and ignored the
+    outcome, which on a re-run makes a second group with the same name and
+    leaves Archicad's by-name lookup picking whichever it finds first.
+
+    ``API.GetAllPropertyGroupIds`` and ``API.GetPropertyGroups`` are two of
+    Archicad's own commands and answer it directly, so groups can be addressed
+    by identifier and created only when genuinely absent.
+    """
+    listed = connection.run_official("API.GetAllPropertyGroupIds", {"propertyType": "UserDefined"})
+    identifiers = listed.get("propertyGroupIds") if isinstance(listed, dict) else None
+    if not isinstance(identifiers, list) or not identifiers:
+        return {}
+
+    response = connection.run_official("API.GetPropertyGroups", {"propertyGroupIds": identifiers})
+    groups = response.get("propertyGroups") if isinstance(response, dict) else None
+    if not isinstance(groups, list):
+        raise ArchicadError(f"GetPropertyGroups returned no groups: {response!r}")
+
+    found: dict[str, str] = {}
+    for entry in groups:
+        group = (entry or {}).get("propertyGroup") if isinstance(entry, dict) else None
+        if not isinstance(group, dict):
+            continue
+        identifier = (group.get("propertyGroupId") or {}).get("guid")
+        name = group.get("name")
+        if identifier and name:
+            found[str(name)] = str(identifier)
+    return found
+
+
+def ensure_property_group(connection: ArchicadConnection) -> str:
+    """This tool's property group, created only if it is genuinely missing."""
+    existing = property_groups(connection).get(PROPERTY_GROUP_NAME)
+    if existing is not None:
+        return existing
+
+    response = connection.run_tapir(
+        "CreatePropertyGroups",
+        {
+            "propertyGroups": [
+                {
+                    "propertyGroup": {
+                        "name": PROPERTY_GROUP_NAME,
+                        "description": (
+                            "Direct sunlight hours and ADG assessment written by "
+                            "sun-study. Values are only as current as the run that "
+                            "wrote them -- see Sun Study Run."
+                        ),
+                    }
+                }
+            ]
+        },
+    )
+    created = response.get("propertyGroupIds") if isinstance(response, dict) else None
+    if isinstance(created, list) and created and isinstance(created[0], dict):
+        if "error" in created[0]:
+            error = created[0]["error"] or {}
+            raise ArchicadError(
+                f"Could not create the {PROPERTY_GROUP_NAME!r} property group: "
+                f"{error.get('message', 'no message')} (code {error.get('code', 'none')})"
+            )
+        identifier = (created[0].get("propertyGroupId") or {}).get("guid")
+        if identifier:
+            return str(identifier)
+
+    resolved = property_groups(connection).get(PROPERTY_GROUP_NAME)
+    if resolved is None:
+        raise ArchicadError(
+            f"Created the {PROPERTY_GROUP_NAME!r} property group but Archicad does "
+            f"not list it, so property definitions have nowhere to go."
+        )
+    return resolved
+
+
 def init_properties(
     connection: ArchicadConnection,
     classifications: dict[str, set[str]],
@@ -336,27 +417,7 @@ def init_properties(
     if not missing:
         return already
 
-    # The group may already exist, and Tapir reports that as a per-item error
-    # rather than a failed command. Attempting it unconditionally and ignoring
-    # the outcome is correct: the definitions below name the group by name, so
-    # either the create or the pre-existing group satisfies them.
-    connection.run_tapir(
-        "CreatePropertyGroups",
-        {
-            "propertyGroups": [
-                {
-                    "propertyGroup": {
-                        "name": PROPERTY_GROUP_NAME,
-                        "description": (
-                            "Direct sunlight hours and ADG assessment written by "
-                            "sun-study. Values are only as current as the run that "
-                            "wrote them -- see Sun Study Run."
-                        ),
-                    }
-                }
-            ]
-        },
-    )
+    group_id = ensure_property_group(connection)
 
     response = connection.run_tapir(
         "CreatePropertyDefinitions",
@@ -371,7 +432,12 @@ def init_properties(
                         "availability": [
                             {"classificationItemId": {"guid": item}} for item in availability
                         ],
-                        "group": {"name": PROPERTY_GROUP_NAME},
+                        # By identifier, not name. Tapir resolves a name by
+                        # scanning the group list and taking the first match,
+                        # so two groups called the same thing -- which an
+                        # earlier version of this could create -- would send
+                        # definitions to whichever came first.
+                        "group": {"propertyGroupId": {"guid": group_id}},
                     }
                 }
                 for spec in missing
@@ -387,14 +453,23 @@ def init_properties(
             f"{len(missing)} definitions; the lists must be parallel."
         )
 
+    # The code is the whole diagnostic here. Tapir's message for a rejected
+    # definition is the fixed string "failed to create the property" -- it
+    # passes Archicad's own GSErrCode through as the *code*, and dropping that
+    # leaves nine identical lines that say nothing about why.
     problems = [
-        f"{spec.name}: {(item.get('error') or {}).get('message', 'unknown error')}"
+        f"{spec.name} ({spec.data_type}): "
+        f"{(item.get('error') or {}).get('message', 'unknown error')} "
+        f"[code {(item.get('error') or {}).get('code', 'none')}]"
         for spec, item in zip(missing, created, strict=True)
         if isinstance(item, dict) and "error" in item
     ]
     if problems:
         raise ArchicadError(
-            "Archicad refused to create some property definitions:\n  " + "\n  ".join(problems)
+            f"Archicad refused to create {len(problems)} of {len(missing)} property "
+            f"definitions in group {PROPERTY_GROUP_NAME!r} "
+            f"(id {group_id}, availability {len(availability)} classification "
+            f"items):\n  " + "\n  ".join(problems)
         )
 
     return existing_properties(connection)
