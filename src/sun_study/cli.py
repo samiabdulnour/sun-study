@@ -7,8 +7,10 @@ threshold before reading a result rather than after quoting one.
 
 from __future__ import annotations
 
+import collections
 import datetime as dt
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -22,6 +24,7 @@ from sun_study.archicad.connection import (
     HttpTransport,
 )
 from sun_study.archicad.read import (
+    ArchicadZone,
     classification_items_of,
     cross_check_georeferencing,
     describe_connection,
@@ -371,12 +374,20 @@ def _connect(port: int) -> ArchicadConnection:
 @app.command("archicad-info")
 def archicad_info(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    zone_names: Annotated[
+        int,
+        typer.Option(
+            "--zone-names",
+            help="How many distinct zone names to list, most common first. 0 for all.",
+        ),
+    ] = 20,
 ) -> None:
     """Check the connection to a running Archicad and echo what it reports.
 
     Run this first. It fails on a missing add-on, an unset project location or
     an unclassified model -- the three things that otherwise surface much later
-    as a confusing error in the middle of a real run.
+    as a confusing error in the middle of a real run. It also lists the zone
+    names, which is how you find out what to pass to ``--living-room``.
     """
     banner()
     connection = _connect(port)
@@ -409,6 +420,35 @@ def archicad_info(
         )
     else:
         typer.echo(f"  all {len(found)} zones are classified")
+
+    _report_zone_names(found, limit=zone_names)
+
+
+def _report_zone_names(found: Sequence[ArchicadZone], *, limit: int) -> None:
+    """The distinct Zone names, most common first.
+
+    This is what tells a person what to pass to ``--living-room``. The default
+    is ``Living Room``, and a real office file is at least as likely to say
+    ``LIVING`` or ``Living/Dining``. Getting that wrong produces zero assessed
+    apartments, which reads as a building with no living rooms rather than as
+    a mistake -- so the names are printed before anyone has to guess.
+    """
+    counts = collections.Counter(zone.name.strip() or "(unnamed)" for zone in found)
+    typer.echo(f"  {len(counts)} distinct zone names")
+
+    shown = counts.most_common() if limit <= 0 else counts.most_common(limit)
+    width = max((len(name) for name, _ in shown), default=0)
+    for name, count in shown:
+        typer.echo(f"    {name:<{width}}  {count:>5}")
+    if 0 < limit < len(counts):
+        typer.echo(f"    ... and {len(counts) - limit} more (--zone-names 0 for all)")
+
+    # The number carries the identity when zones are placed per unit rather
+    # than per room, and the name may then be a type rather than a room. A few
+    # whole labels show which convention this project uses.
+    typer.echo("  example zones (number | name):")
+    for zone in found[:5]:
+        typer.echo(f"    {zone.number or '(no number)'} | {zone.name or '(unnamed)'}")
 
 
 @app.command("init-properties")

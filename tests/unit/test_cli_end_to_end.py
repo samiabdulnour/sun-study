@@ -265,3 +265,46 @@ def test_archicad_run_does_not_write_back_unless_asked() -> None:
 def test_the_archicad_commands_are_registered() -> None:
     names = {command.name for command in app.registered_commands}
     assert {"archicad-info", "init-properties", "archicad-run"} <= names
+
+
+def test_zone_names_are_listed_most_common_first() -> None:
+    """What a person reads to find out what to pass to --living-room.
+
+    The default is "Living Room" and a real office file rarely says that, so
+    a wrong guess yields zero assessed apartments -- which reads as a building
+    with no living rooms rather than as a mistake.
+    """
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.cli import _report_zone_names
+
+    zones = (
+        [ArchicadZone(f"g{i}", "LIVING", f"{i}") for i in range(5)]
+        + [ArchicadZone(f"b{i}", "BED 1", f"{i}") for i in range(3)]
+        + [ArchicadZone("s0", "", "9")]
+    )
+
+    runner_result = CliRunner()
+    with runner_result.isolation() as (out, _err, _):
+        _report_zone_names(zones, limit=2)
+        printed = out.getvalue().decode()
+
+    assert "3 distinct zone names" in printed
+    lines = [line.strip() for line in printed.splitlines() if line.strip()]
+    assert lines[1].startswith("LIVING"), "most common name must come first"
+    assert lines[1].endswith("5")
+    assert lines[2].startswith("BED 1")
+    assert "and 1 more" in lines[3], "a truncated list must say so"
+
+
+def test_all_zone_names_are_listed_when_the_limit_is_zero() -> None:
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.cli import _report_zone_names
+
+    zones = [ArchicadZone("a", "", "1"), ArchicadZone("b", "LIVING", "2")]
+
+    with CliRunner().isolation() as (out, _err, _):
+        _report_zone_names(zones, limit=0)
+        printed = out.getvalue().decode()
+
+    assert "(unnamed)" in printed, "an unnamed zone must be visible, not dropped"
+    assert "more" not in printed
