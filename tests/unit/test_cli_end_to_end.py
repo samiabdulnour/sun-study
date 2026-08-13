@@ -308,3 +308,31 @@ def test_all_zone_names_are_listed_when_the_limit_is_zero() -> None:
 
     assert "(unnamed)" in printed, "an unnamed zone must be visible, not dropped"
     assert "more" not in printed
+
+
+def test_output_survives_a_character_the_console_cannot_encode() -> None:
+    """A real Archicad project killed the CLI with UnicodeEncodeError.
+
+    Windows consoles default to a legacy code page and Python raises on any
+    character it cannot represent, aborting the command and losing everything
+    already printed. The offending name was a property containing a subscript
+    digit -- nobody chose it, and nobody can predict the next one, because an
+    Archicad file carries names from libraries, add-ons and other templates.
+
+    Windows is the primary deployment platform, so this has to degrade.
+    """
+    import io
+    import sys
+
+    from sun_study.cli import main
+
+    legacy = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    original, sys.stdout = sys.stdout, legacy
+    try:
+        with pytest.raises(SystemExit):
+            main()  # no arguments: prints help, and reconfigures the stream
+        legacy.write("subscript ₁ and a degree sign °")
+    finally:
+        sys.stdout = original
+
+    assert legacy.errors == "replace", "main() must relax the stream's error handling"

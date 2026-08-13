@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import collections
 import datetime as dt
+import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -518,15 +519,17 @@ def _report_properties(connection: ArchicadConnection) -> None:
     how its exact group and name get found. Guessing them would produce a
     second column that looks right and drives nothing.
     """
-    groups: dict[str, list[str]] = {}
-    for entry in all_properties(connection):
-        groups.setdefault(entry.group, []).append(entry.name)
+    entries = all_properties(connection)
+    groups: dict[str, list[Any]] = {}
+    for entry in entries:
+        groups.setdefault(entry.group, []).append(entry)
 
-    typer.echo(f"  {len(groups)} property groups")
-    for group, names in sorted(groups.items()):
+    writable = sum(1 for entry in entries if entry.writable)
+    typer.echo(f"  {len(entries)} properties in {len(groups)} groups, {writable} writable")
+    for group, found in sorted(groups.items()):
         typer.secho(f"    {group}", bold=True)
-        for name in sorted(names):
-            typer.echo(f"      {name}")
+        for entry in sorted(found, key=lambda e: e.name):
+            typer.echo(f"      {entry.describe()}")
 
 
 def _report_zone_names(found: Sequence[ArchicadZone], *, limit: int) -> None:
@@ -759,6 +762,23 @@ def archicad_run(
 
 
 def main() -> None:
+    """Entry point. Makes output degrade rather than abort.
+
+    Windows consoles default to a legacy code page, and Python then raises
+    ``UnicodeEncodeError`` on any character it cannot represent -- killing the
+    command mid-listing and losing everything the human was after.
+
+    That is not hypothetical. A real Archicad project carried a property name
+    containing a subscript digit, and listing the project's properties died on
+    it. Nobody chose that character and nobody can predict the next one: an
+    Archicad file is full of names from libraries, add-ons and other people's
+    templates. Windows is the primary deployment platform here, so an
+    unrepresentable character has to become a question mark, not an exception.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:  # pragma: no branch - always present on 3.11+
+            reconfigure(errors="replace")
     app()
 
 

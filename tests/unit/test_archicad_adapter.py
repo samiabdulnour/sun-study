@@ -45,6 +45,7 @@ from sun_study.archicad.read import (
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
+    all_properties,
     existing_properties,
     init_properties,
     write_assessment,
@@ -924,3 +925,73 @@ def test_requests_are_json_serialisable() -> None:
     write_assessment(connection, _assessment(_apartment("apt-1")))
     for payload in transport.sent:
         json.dumps(payload)
+
+
+# -- what a listing has to say about writability --------------------------
+
+
+def _catalogue_entry(**overrides: Any) -> dict[str, Any]:
+    entry = {
+        "propertyId": {"guid": "p1"},
+        "propertyType": "Custom",
+        "propertyGroupName": "Apartments",
+        "propertyName": "Daylight",
+        "propertyCollectionType": "Single",
+        "propertyValueType": "Boolean",
+        "propertyMeasureType": "Default",
+        "propertyIsEditable": True,
+        "isExpressionBased": False,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_a_listing_carries_the_type_not_just_the_name() -> None:
+    """A name alone cannot be written to: the display string depends on type."""
+    connection, _ = connect({"GetAllProperties": {"properties": [_catalogue_entry()]}})
+    entry = all_properties(connection)[0]
+
+    assert entry.group == "Apartments"
+    assert entry.value_type == "Boolean"
+    assert entry.collection_type == "Single"
+    assert entry.writable
+
+
+def test_an_expression_based_property_is_not_writable() -> None:
+    """It derives its value and refuses to be set, but lists like any other.
+
+    Finding that out by attempting a write across ninety apartments is the
+    expensive way.
+    """
+    connection, _ = connect(
+        {"GetAllProperties": {"properties": [_catalogue_entry(isExpressionBased=True)]}}
+    )
+    entry = all_properties(connection)[0]
+
+    assert not entry.writable
+    assert "expression" in entry.describe()
+
+
+def test_a_read_only_property_is_not_writable() -> None:
+    connection, _ = connect(
+        {"GetAllProperties": {"properties": [_catalogue_entry(propertyIsEditable=False)]}}
+    )
+    entry = all_properties(connection)[0]
+
+    assert not entry.writable
+    assert "read-only" in entry.describe()
+
+
+def test_a_listing_still_reads_a_response_without_the_type_fields() -> None:
+    """Older add-on builds may omit them; a listing must degrade, not crash."""
+    minimal = {
+        "propertyId": {"guid": "p1"},
+        "propertyGroupName": "Apartments",
+        "propertyName": "Daylight",
+    }
+    connection, _ = connect({"GetAllProperties": {"properties": [minimal]}})
+    entry = all_properties(connection)[0]
+
+    assert entry.name == "Daylight"
+    assert entry.value_type == ""
+    assert "?" in entry.describe()

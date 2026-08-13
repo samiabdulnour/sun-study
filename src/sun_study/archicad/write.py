@@ -175,6 +175,31 @@ class PropertyDetail:
     kind: str
     """``StaticBuiltIn``, ``DynamicBuiltIn`` or ``Custom``."""
     editable: bool
+    value_type: str = ""
+    """``Integer``, ``Real``, ``String``, ``Boolean``, ``Guid`` or ``Undefined``."""
+    collection_type: str = ""
+    """``Single``, ``List``, ``SingleChoiceEnumeration``, ``MultipleChoiceEnumeration``."""
+    expression_based: bool = False
+    """Computed from an expression, and therefore not writable."""
+
+    @property
+    def writable(self) -> bool:
+        """Whether this tool could put a value here.
+
+        An expression-based property derives its value and refuses to be set;
+        so does one Archicad marks read-only. Both look like ordinary
+        properties in a listing, and discovering the difference by attempting
+        a write across 91 apartments is the expensive way to find out.
+        """
+        return self.editable and not self.expression_based
+
+    def describe(self) -> str:
+        parts = [self.value_type or "?", self.collection_type or "?"]
+        if self.expression_based:
+            parts.append("expression")
+        if not self.editable:
+            parts.append("read-only")
+        return f"{self.name}  [{', '.join(parts)}]"
 
 
 def all_properties(connection: ArchicadConnection) -> tuple[PropertyDetail, ...]:
@@ -207,6 +232,9 @@ def all_properties(connection: ArchicadConnection) -> tuple[PropertyDetail, ...]
                 name=str(entry.get("propertyName", "")),
                 kind=str(entry.get("propertyType", "")),
                 editable=bool(entry.get("propertyIsEditable", False)),
+                value_type=str(entry.get("propertyValueType", "")),
+                collection_type=str(entry.get("propertyCollectionType", "")),
+                expression_based=bool(entry.get("isExpressionBased", False)),
             )
         )
     return tuple(found)
