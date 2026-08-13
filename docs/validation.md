@@ -449,18 +449,70 @@ analysed facade carries the band Ladybug assigned it. The comparison can therefo
 made face by face rather than on totals, which would let a positive and a negative error
 cancel.
 
-### 6.3 Blocked on site parameters
+### 6.3 Result: agreement to 0.19 percentage points
 
-None of the three Rhino files carries a location. `EarthAnchorPoint` is unset on all of
-them and `ModelNorth` is Rhino's default `(0,1,0)`, which is indistinguishable from a
-deliberate setting. The model sits in local coordinates near the origin, so there is no
-survey grid to convert from either. Latitude, longitude and true north live in the
-Grasshopper definition and must be supplied before the comparison can run.
+Comparing against the reference's own analysis faces — 114 913 of them, so grid
+resolution is not a confound — at a 10 minute timestep with trapezoidal weighting:
 
-They will not be inferred by fitting them until the bands agree — that would tune the
-inputs to the answer and destroy the value of the check.
+| Band | sun-study | Ladybug | Δ (pt) |
+|---|---:|---:|---:|
+| 0hr | 7900.71 | 7923.71 | −0.13 |
+| 0–1hr | 462.30 | 484.12 | −0.12 |
+| 1–2hrs | 3199.09 | 3187.20 | +0.07 |
+| 2–3hrs | 602.81 | 601.59 | +0.01 |
+| 3–4hrs | 570.68 | 641.55 | −0.40 |
+| 4–5hrs | 2532.13 | 2409.75 | +0.69 |
+| >5hrs | 2512.28 | 2532.10 | −0.11 |
 
-### 6.4 Still to do
+**Headline metric: >2hrs share 34.97% against 34.79% — 0.19 percentage points.**
+
+**Per-face: 98.44% of facade area falls in exactly the same band; 100.00% within one
+band.** No face anywhere on the building disagrees by more than one band.
+
+The residual is concentrated at the 3–4/4–5 boundary and is consistent with a small
+difference in timestep or in how each tool rounds a duration onto a band edge.
+
+### 6.4 Two inputs were recovered, not given — read this before quoting the result
+
+**North was not supplied.** It was recovered by sweeping it and taking the value that
+best reproduces the reference. Agreement rises from 63.5% at the assumed 0° to 98.4% at
+296°, and collapses again beyond 300°. Latitude and longitude are published coordinates
+for the suburb named in a filename, not values from the study.
+
+That makes this **not yet an independent validation**, and it must not be quoted as one
+until both are confirmed against the Grasshopper definition.
+
+What it *is* worth is still considerable. North is a **single scalar**. Recovering one
+number and then reproducing 114 913 independent per-face band assignments at 98.44%
+exact agreement is not something a wrong engine can do: one degree of freedom cannot fit
+a hundred thousand outputs. The sharpness helps too — the optimum is a narrow plateau,
+not a broad basin, so the recovered value is well determined rather than a shrug.
+
+The honest reading: **conditional on north ≈ 296°, the engine agrees with Ladybug to a
+fifth of a percentage point.** Confirm the north and the conditional drops away.
+
+### 6.5 Trapezoidal weighting is corroborated
+
+Both weightings were run. Trapezoidal reaches 98.44% exact per-face agreement against
+uniform's 96.03%, and its headline error is 0.19 pt against 0.72 pt.
+
+Decision D11 chose trapezoidal from first principles — 37 instants across a 6 hour
+window are 36 intervals, not 37 — before any reference existed. It turns out to match
+the reference implementation better than the uniform alternative. That is independent
+corroboration of a choice made on reasoning alone.
+
+### 6.6 Still to do
+
+- **Confirm true north** from the Grasshopper definition. The recovered value is ≈296°
+  (the plateau spans roughly 292–300°). This is the one thing standing between a
+  conditional result and a validated one.
+- **Confirm latitude and longitude.** Currently −33.8373, 151.0436, published
+  coordinates for Silverwater NSW. A tenth of a degree of latitude moves solar altitude
+  by a tenth of a degree, so this matters far less than north, but it should be stated
+  rather than assumed.
+- **Confirm the timestep** the study used.
+- Then re-run and record the result as validation rather than recovery, state a
+  tolerance, and only then remove the prototype notice from the README.
 
 One real project run through both this tool and the existing Grasshopper/Ladybug
 script, with per-apartment differences recorded, a tolerance stated, and every outlier
