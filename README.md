@@ -13,8 +13,12 @@ hand-typed document.
 > used as a compliance figure in a DA submission**. A DA submission rests on a
 > consultant's report.
 >
-> This notice is removed only when the reference comparison in
-> [`docs/validation.md`](docs/validation.md) is complete and a tolerance is stated.
+> A reference comparison against the office's existing Grasshopper/Ladybug chain now
+> passes within a stated tolerance — 0.19 percentage points on the headline metric, with
+> 98.4% of facade area landing in exactly the same band face by face. That result is
+> **conditional on a true-north value that was recovered rather than supplied**, so this
+> notice stays until north is confirmed against the Grasshopper definition. See
+> [`docs/validation.md`](docs/validation.md) §6.
 
 ---
 
@@ -40,7 +44,7 @@ pure astronomy from latitude, longitude and time.
 | — | Massing mode: facade/ground area bands | **Done** — the metric a massing optimisation maximises |
 | M4 | Archicad read adapter | Not started |
 | M5 | Archicad write-back | Not started |
-| M6 | Validation against Ladybug | Not started |
+| M6 | Validation against Ladybug | **Within tolerance** — 0.19 pt on the headline metric, 98.4% per-face; conditional on confirming north |
 
 ## Architecture
 

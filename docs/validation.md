@@ -501,7 +501,32 @@ window are 36 intervals, not 37 — before any reference existed. It turns out t
 the reference implementation better than the uniform alternative. That is independent
 corroboration of a choice made on reasoning alone.
 
-### 6.6 Still to do
+### 6.6 Stated tolerance
+
+Deliberately generous — roughly ten times the measured residual — so it catches a real
+regression without failing on the noise between two different implementations:
+
+| Check | Tolerance | Measured |
+|---|---|---:|
+| Headline >2hrs area share | **±2 percentage points** | 0.19 |
+| Any individual band share | **±5 percentage points** | 0.69 (worst) |
+| Per-face exact band agreement | **≥90%** of area | 98.44% |
+| Per-face within one band | **≥98%** of area | 100.00% |
+
+Everything passes with a wide margin. Reproduce with:
+
+```bash
+uv run python scripts/compare_with_ladybug.py <model>.3dm \
+    --latitude -33.8373 --longitude 151.0436 --north 296 --timestep 10
+```
+
+**The tolerance holds conditional on north ≈ 296°**, which was recovered rather than
+supplied (§6.4). Confirming north against the Grasshopper definition is what converts
+this from a conditional result into an unqualified one, and it is the only outstanding
+item. Latitude, longitude and the exact timestep would tighten the residual further but
+do not change the conclusion at this tolerance.
+
+### 6.7 Still to do
 
 - **Confirm true north** from the Grasshopper definition. The recovered value is ≈296°
   (the plateau spans roughly 292–300°). This is the one thing standing between a
