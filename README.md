@@ -36,7 +36,7 @@ pure astronomy from latitude, longitude and time.
 | M0 | Skeleton, CI, tooling, `core.solar` | **Done** — validated to 0.1° against NREL/TP-560-34302 |
 | M1 | `core` engine on synthetic geometry | **Done** — all six §7 analytic cases green |
 | M2 | IFC ingest and scene assembly | **Done** — fixture loads with correct north, units, containment |
-| M3 | ADG ruleset, CSV/JSON output | Not started |
+| M3 | ADG ruleset, CSV/JSON output | **Done** — per-apartment results for the fixture |
 | M4 | Archicad read adapter | Not started |
 | M5 | Archicad write-back | Not started |
 | M6 | Validation against Ladybug | Not started |
@@ -58,6 +58,36 @@ import creeping into `core`.
 
 If a compliance rule or a geometry operation ends up inside the Archicad adapter, it is
 in the wrong place.
+
+## Usage
+
+```bash
+uv run sun-study info  model.ifc --timezone Australia/Sydney   # what the tool reads
+uv run sun-study rulesets                                      # thresholds and citations
+uv run sun-study run   model.ifc --timezone Australia/Sydney \
+    --area sydney_metro --csv results.csv --json results.json
+```
+
+`--area sydney_metro` is the 2-hour criterion; `--area other` is the 3-hour one that
+applies outside Sydney Metro, Newcastle and Wollongong. Every run echoes the resolved
+site, north bearing, ruleset version, continuity setting and room-matching rule before
+printing a single number, so a wrong assumption is visible before a figure gets quoted.
+
+Try it on the committed fixture:
+
+```bash
+uv run sun-study run tests/fixtures/sample_building.ifc --timezone Australia/Sydney
+```
+
+## Rules are data
+
+Thresholds live in [`src/sun_study/rules/rulesets/nsw_adg.yaml`](src/sun_study/rules/rulesets/nsw_adg.yaml)
+with a citation for every number, quoted from the NSW Department of Planning technical
+note. The assessment engine reads a ruleset and does not know what the ADG is, so a
+council DCP requiring three *continuous* hours is a new YAML file and no new code — and
+a test proves it.
+
+Citations are enforced by the schema: a ruleset with a blank citation fails to load.
 
 ## Development
 

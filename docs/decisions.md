@@ -115,7 +115,11 @@ dataclass default is the easiest way for a guess to become invisible.
 
 ---
 
-## Open — needed before M2 (IFC ingest)
+## Implemented with the proposed defaults — still awaiting confirmation
+
+These are live in the code as `SceneConfig` fields, each echoed in the run banner and
+in every output header. They are **defaults, not answers**: the code no longer blocks
+on them, but the numbers it prints depend on them being right for the project.
 
 ### D6 — What counts as a "living room window"
 
@@ -123,9 +127,16 @@ dataclass default is the easiest way for a guess to become invisible.
 tell us. Options: Zone category convention, a window property flag, or a naming
 convention.
 
-*Proposed default:* Zone category on the parent `IfcSpace`, with the mapping declared
-per project in the run config rather than hardcoded, and the resolved mapping echoed
-in the output header. A window inherits "living room" from the space it serves.
+*Implemented as proposed.* `SceneConfig.living_room_space_names`, default
+`("Living Room",)`, matched case-insensitively against the parent `IfcSpace`'s
+`LongName` **and** `Name`; a window inherits "living room" from the space it serves.
+Override with `--living-room`, repeatable.
+
+Matching both fields matters. Archicad puts the Zone category in `LongName` and the
+apartment identifier in `Name`, and an earlier version that checked only `Name` matched
+nothing — which reads as *a compliant building with no living rooms*, not as a
+configuration error. `test_a_non_matching_room_name_assesses_nothing` keeps that
+failure visible, and the run banner always prints the count assessed.
 
 *Also needs deciding:* what happens to a studio apartment where the living space and
 bedroom are one Zone, and to a space with no category set. Proposed: fail loudly and
@@ -136,33 +147,46 @@ list the offending Zone GUIDs rather than silently assessing or silently skippin
 Zones are cleanest, but offices do not always zone balconies. A slab-based fallback
 needs a rule for which slabs count.
 
-*Proposed default:* Zones where present. Where absent, fall back to slabs on a
-configured layer, and **report the count of apartments resolved by each route in the
-output header** so a silent fallback cannot be mistaken for a clean run.
+*Partly implemented.* Slabs whose name starts with a configured prefix (default
+`"Balcony"`) are private open space, attached to the apartment they serve, with the
+resolution route counted in `Scene.provenance`. The Zone-based route is not built yet;
+the fixture has no balcony Zones to develop it against.
+
+Attaching a balcony to its apartment needed more than nearest-neighbour — see
+[`validation.md`](validation.md) §5.6 for the equidistance trap that silently gave the
+upper storeys no open space at all.
 
 ### D8 — Glazing extent
 
 Whole window opening versus glazed area net of frame.
 
-*Proposed default:* whole opening. Frames are typically ignored in this kind of
-assessment, it is the more conservative reading, and the IFC opening is what is
-reliably available. To be confirmed and recorded in the output.
+*Implemented as proposed.* The whole `IfcWindow` solid's dominant outward face is
+gridded, so the assessed area is the opening rather than the glazed area net of frame.
+
+One limitation worth stating: a curved or heavily faceted window is treated as its
+largest flat face, which is wrong for curtain walling. Recorded here rather than
+discovered later.
 
 ### D9 — Context building extent
 
 Radius cutoff, and whether approved-but-unbuilt developments are included.
 
-*Proposed default:* configurable radius, no default value — the run must state one.
-Approved-but-unbuilt excluded unless explicitly listed. Both stated in the output.
+*Implemented, default unlimited.* `--context-radius` drops occluders beyond that many
+metres, measured from the analysed spaces rather than the file origin, which in Archicad
+is often an arbitrary survey point. With no radius given the header says "context radius
+unlimited" rather than staying silent. Approved-but-unbuilt developments are whatever
+the IFC contains; there is no separate mechanism yet.
 
 ### D10 — Vegetation
 
-*Proposed default:* excluded, always, and said so explicitly in the output header
-rather than left as an unstated assumption.
+*Implemented, and it has a published basis.* Vegetation is excluded and the header says
+so. This is not merely convention: the NSW technical note defines solar access as
+sunlight "without obstruction from other buildings or impediments, **not including
+trees**", so excluding vegetation is what the regulation asks for.
 
 ---
 
-## Open — needed before M3 (aggregation and rules)
+## Implemented, defaults still awaiting confirmation
 
 ### D11 — Sample weighting across the assessment window
 
@@ -189,9 +213,56 @@ Whichever is chosen must be stated in the output header, not left implicit.
 
 ### D12 — `continuity`: cumulative versus continuous
 
-Councils differ; some DCPs require an unbroken duration.
+**Implemented as proposed; still open for confirmation.** `cumulative` is set in
+`rules/rulesets/nsw_adg.yaml`, printed in every output header, and carried on every
+result record alongside the ruleset name and version. Switching to `continuous` is a
+one-line YAML edit and needs no code change, which is proven by a test.
 
-*Proposed default:* `cumulative`, set in the ruleset YAML, printed in every output
-header, and carried on every result record alongside the ruleset name and version. It
-must never be an invisible assumption, because the same building passes under one
-reading and fails under the other.
+Councils differ; some DCPs require an unbroken duration. It must never be an invisible
+assumption, because the same building passes under one reading and fails under the
+other.
+
+---
+
+## Settled during M3
+
+### D15 — Reading the published wording into a per-apartment verdict
+
+*Milestone M3.*
+
+The ADG states the criteria but not how to turn them into a yes or no for one
+apartment. Three readings are needed, and because they are readings rather than
+regulation they live in a separate `interpretation:` block in the ruleset, are
+configurable, and are printed in every output header next to — but visibly distinct
+from — the criteria themselves.
+
+**`compliance_requires: both`.** "Living rooms *and* private open spaces of at least
+70% of apartments" reads as both having to meet the minimum, so an apartment is
+governed by whichever of the two is worse. The fixture's L00-A is exactly this case:
+its balcony clears two hours, its living room does not, and it fails.
+
+**`no_sunlight_requires: both`.** Criterion 3 speaks of the *apartment* receiving no
+direct sunlight, so it counts only when nothing the apartment has receives any.
+`either` would count an apartment whose balcony is in full sun but whose living room is
+not, which is a materially harsher rule.
+
+**`apartments_without_open_space: living_room_only`.** Not every apartment has private
+open space. Assessing such an apartment on its living room alone is the common reading;
+the alternatives are to exclude it from the denominator or to fail it outright, and
+which is right is a project-level question. A studio with no balcony is a different
+case from one whose balcony never sees the sun, so the two are never collapsed —
+`None` and `0.0` stay distinct all the way into the CSV, where the former is blank.
+
+### D16 — There is no `rules/nsw_adg.py`
+
+*Milestone M3. Deviation from the brief's architecture sketch, stated deliberately.*
+
+The brief's §4 layout lists `rules/nsw_adg.py` for "ADG assessment logic", but §5.7
+says "the engine reads a ruleset; it does not know what 'ADG' means". Those pull in
+different directions and §5.7 is the sharper statement, so the code follows it: the
+engine is `rules/assessment.py` and everything ADG-specific is data in
+`rules/rulesets/nsw_adg.yaml`.
+
+A module named after one jurisdiction is exactly where the next council's threshold
+ends up hardcoded. Adding a DCP that requires three continuous hours should be a new
+YAML file and no new code, and a test proves it is.

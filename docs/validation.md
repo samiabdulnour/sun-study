@@ -1,6 +1,6 @@
 # Validation
 
-> **The tool is a prototype until the reference comparison in §5 is done.** Nothing it
+> **The tool is a prototype until the reference comparison in §6 is done.** Nothing it
 > prints is a submission number until then, and the README, the CLI banner and every
 > exported file say so.
 
@@ -306,7 +306,112 @@ timestamp is pinned, since IfcOpenShell otherwise stamps the current time.
 `test_committed_fixture_matches_its_generator` regenerates it and compares bytes, which
 catches both a hand-edited fixture and a generator changed without regenerating.
 
-## 5. Reference comparison against Ladybug — status: **not started** (M6)
+## 5. Rules and reporting — status: **done**
+
+### 5.1 The thresholds are the published ones
+
+Quoted from the NSW Department of Planning technical note *Solar access requirements in
+SEPP 65*, read from the [published PDF](https://www.planning.nsw.gov.au/sites/default/files/2023-03/solar-access-requirements-in-sepp-65.pdf)
+rather than from memory. Objective 4A-1 sets three design criteria:
+
+| # | Criterion | Encoded as |
+|---|---|---|
+| 1 | ≥70% of apartments get ≥**2 h** between 9am–3pm mid winter, **Sydney Metro / Newcastle / Wollongong** | `areas.sydney_metro` = 120 min |
+| 2 | **In all other areas**, ≥70% get ≥**3 h** | `areas.other` = 180 min |
+| 3 | ≤15% of apartments receive **no** direct sunlight | `maximum_no_sunlight_share` = 0.15 |
+
+**Criterion 2 is easy to miss.** A tool that only knows the 2-hour figure passes
+buildings outside Sydney Metro that should fail, so both are encoded and `--area`
+selects between them.
+
+Mid winter is 21 June, stated in the note itself: *"measured at mid winter (21 June) as
+this is when the sun is lowest in the sky... the 'worst case' scenario"*.
+
+Every threshold carries its citation, and that is **enforced by the schema** — a
+ruleset with a blank citation fails to load. A number in a compliance tool that nobody
+can trace to a published document is worse than no number at all.
+
+Vegetation exclusion (D10) turns out to have a published basis rather than being mere
+convention: *"Solar access is the ability of a building to receive direct sunlight
+without obstruction from other buildings or impediments, **not including trees**."*
+
+### 5.2 The engine does not know what the ADG is
+
+Thresholds, the window, the continuity setting and the citations all live in
+`rules/rulesets/nsw_adg.yaml`. `rules/assessment.py` reads a validated `Ruleset` and
+knows only about durations and shares.
+
+There is deliberately **no `nsw_adg.py`**. The brief's architecture sketch listed one,
+but §5.7 is the sharper statement of the same idea — *"the engine reads a ruleset; it
+does not know what 'ADG' means"* — and a module named after one jurisdiction is exactly
+where a threshold ends up hardcoded. `test_changing_a_threshold_is_a_data_edit_not_a_code_change`
+proves the point by inventing a council DCP requiring 3 *continuous* hours, entirely in
+YAML, and checking a building that passes the ADG fails it.
+
+Unknown keys are rejected too, so a misspelled `continuty:` fails loudly instead of
+being silently ignored while the author believes they changed a setting.
+
+### 5.3 Interpretation is separated from the criteria
+
+Three readings are needed that the published wording does not settle. They are choices,
+so they sit in a separate `interpretation:` block, are reported in every output header,
+and are recorded as decision D15:
+
+- **`compliance_requires: both`** — "living rooms *and* private open spaces" reads as
+  both having to meet the minimum, so an apartment is governed by whichever is worse.
+- **`no_sunlight_requires: both`** — criterion 3 speaks of the *apartment* receiving no
+  sunlight, so it counts only when nothing it has receives any.
+- **`apartments_without_open_space: living_room_only`** — a studio with no balcony is a
+  different case from one whose balcony never sees the sun, and collapsing them fails
+  it for the wrong reason.
+
+### 5.4 Results carry their assumptions
+
+Both exports carry the disclaimer, the ruleset identifier and version, all citations,
+the continuity and weighting settings, the resolved site and north bearing, and the
+scene provenance. A results file separated from those is not a weaker record — it is an
+unreproducible one that looks exactly like a good one.
+
+The CSV writes them as `#` comment lines above the table, because a CSV gets opened in
+Excel, pasted into a report and emailed on. A missing open space is written **blank,
+not zero**: no balcony and a balcony in permanent shade are different findings.
+
+### 5.5 End to end on the fixture
+
+`sun-study run tests/fixtures/sample_building.ifc --timezone Australia/Sydney`:
+
+| Apartment | Living room | Open space | Governing | Verdict |
+|---|---:|---:|---:|---|
+| L00-A | 106.1 | 127.3 | 106.1 | fail |
+| L00-B | 207.0 | 291.1 | 207.0 | pass |
+| L01-A | 297.2 | 256.5 | 256.5 | pass |
+| L01-B | 360.0 | 360.0 | 360.0 | pass |
+
+**3/4 = 75% ≥ 70% target, and 0% ≤ 15% dark cap — complies.** L00-A is the useful case:
+its balcony clears two hours but its living room does not, and `compliance_requires:
+both` correctly governs it on the living room.
+
+Note the fixture does **not** discriminate between the 2-hour and 3-hour criteria — no
+apartment's governing figure falls in the 120–180 band — so the area setting is covered
+by a behavioural test rather than by the fixture. That is stated in the test so nobody
+misreads it as coverage.
+
+### 5.6 One assignment bug worth recording
+
+Balconies are parented to the apartment they serve so window and open-space results
+join on one key. Nearest-bounding-box gets this wrong in a way that looks right: a
+balcony sits at its own apartment's floor level, which is *also* flush against the
+ceiling of the apartment below, so the two are **exactly equidistant** and the winner
+is decided by iteration order. In the fixture that attributed both upper balconies to
+the ground-floor apartments and left the upper floors with no open space at all.
+
+The disambiguator is vertical — the apartment stands on top of its balcony, so its
+floor should be level with the slab's top surface. Where nothing qualifies the nearest
+space is used and the fallback is counted rather than hidden.
+
+---
+
+## 6. Reference comparison against Ladybug — status: **not started** (M6)
 
 One real project run through both this tool and the existing Grasshopper/Ladybug
 script, with per-apartment differences recorded, a tolerance stated, and every outlier
