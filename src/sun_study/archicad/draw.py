@@ -176,20 +176,29 @@ def ensure_layer(connection: ArchicadConnection, name: str) -> int:
 
 
 def _layer_index(connection: ArchicadConnection, name: str) -> int | None:
-    response = connection.run_tapir("GetLayers")
-    layers = response.get("layers") if isinstance(response, dict) else None
-    if not isinstance(layers, list):
-        raise ArchicadError(f"GetLayers returned no layer list: {response!r}")
+    """The numeric index of a layer, by name.
+
+    ``GetAttributesByType`` rather than ``GetLayers``: the latter *requires*
+    ``attributeIds``, so it cannot answer "what layers are there" -- it needs
+    to be told which ones to describe. Calling it with no parameters is a
+    schema violation and Archicad rejects the whole command, which is how this
+    first went wrong. ``GetAttributesByType`` enumerates, and returns exactly
+    the index and name needed here.
+    """
+    response = connection.run_tapir("GetAttributesByType", {"attributeType": "Layer"})
+    attributes = response.get("attributes") if isinstance(response, dict) else None
+    if not isinstance(attributes, list):
+        raise ArchicadError(f"GetAttributesByType returned no layer list: {response!r}")
 
     wanted = name.casefold()
-    for layer in layers:
-        attribute = (layer or {}).get("layerAttribute") if isinstance(layer, dict) else None
+    for attribute in attributes:
         if not isinstance(attribute, dict):
-            attribute = layer if isinstance(layer, dict) else None
-        if isinstance(attribute, dict) and str(attribute.get("name", "")).casefold() == wanted:
-            index = attribute.get("index")
-            if isinstance(index, (int, float)):
-                return int(index)
+            continue
+        if str(attribute.get("name", "")).casefold() != wanted:
+            continue
+        index = attribute.get("index")
+        if isinstance(index, (int, float)):
+            return int(index)
     return None
 
 

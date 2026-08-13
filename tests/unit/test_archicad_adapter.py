@@ -1098,8 +1098,8 @@ def _zone(guid: str, *, outline: bool = True, holes: int = 0, storey: int | None
 
 def _draw_responses(*, layer_index: int = 7, **overrides: Any) -> dict[str, Any]:
     responses: dict[str, Any] = {
-        "GetLayers": {
-            "layers": [
+        "GetAttributesByType": {
+            "attributes": [
                 {"attributeId": {"guid": "l"}, "index": layer_index, "name": DEFAULT_LAYER_NAME}
             ]
         },
@@ -1376,3 +1376,25 @@ def test_the_default_value_matches_the_declared_type() -> None:
     assert default_property_value("integer")["basicDefaultValue"]["value"] == 0
     assert default_property_value("boolean")["basicDefaultValue"]["value"] is False
     assert default_property_value("area")["basicDefaultValue"]["value"] == 0.0
+
+
+def test_layers_are_enumerated_not_asked_for_by_id() -> None:
+    """``GetLayers`` requires ``attributeIds``, so it cannot answer this.
+
+    Calling it with no parameters violates its schema and Archicad rejects the
+    whole command -- code 4002, "validation failed on rule 'required'" -- so
+    the layer lookup has to enumerate instead of asking by identifier it does
+    not yet have.
+    """
+    connection, transport = connect(_draw_responses(layer_index=12))
+    draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+
+    assert "GetLayers" not in transport.commands()
+    assert transport.parameters_for("GetAttributesByType") == {"attributeType": "Layer"}
+    hatches = transport.parameters_for("CreateHatches")["hatchesData"]
+    assert all(fill["layerIndex"] == 12 for fill in hatches)
