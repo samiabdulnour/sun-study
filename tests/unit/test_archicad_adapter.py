@@ -1103,6 +1103,17 @@ def _draw_responses(*, layer_index: int = 7, **overrides: Any) -> dict[str, Any]
                 {"attributeId": {"guid": "l"}, "index": layer_index, "name": DEFAULT_LAYER_NAME}
             ]
         },
+        "GetLayers": {
+            "layers": [
+                {
+                    "attributeId": {"guid": "l"},
+                    "index": layer_index,
+                    "name": DEFAULT_LAYER_NAME,
+                    "isHidden": False,
+                    "isLocked": False,
+                }
+            ]
+        },
         "GetElementsByType": {"elements": []},
         "CreateHatches": {"elements": [{"elementId": {"guid": "h"}}] * 99},
         "CreateTexts": {"elements": [{"elementId": {"guid": "t"}}] * 99},
@@ -1394,8 +1405,11 @@ def test_layers_are_enumerated_not_asked_for_by_id() -> None:
         zone_by_apartment={"apt-1": "z1"},
     )
 
-    assert "GetLayers" not in transport.commands()
+    # GetLayers may be called, but only once an identifier is in hand.
     assert transport.parameters_for("GetAttributesByType") == {"attributeType": "Layer"}
+    assert transport.parameters_for("GetLayers") == {
+        "attributeIds": [{"attributeId": {"guid": "l"}}]
+    }, "GetLayers requires attributeIds; calling it bare is rejected as code 4002"
     hatches = transport.parameters_for("CreateHatches")["hatchesData"]
     assert all(fill["layerIndex"] == 12 for fill in hatches)
 
@@ -1443,3 +1457,60 @@ def test_only_the_first_failure_per_element_is_reported_as_a_cause() -> None:
     assert "Apt B / Living Room Sunlight (h)" in described
     assert "Apt A / Meets Minimum" not in described
     assert "5 failures over 2 elements" in described
+
+
+def test_a_hidden_results_layer_is_called_out() -> None:
+    """A successful run onto a hidden layer looks exactly like one that did nothing.
+
+    The command reports fills drawn and the drawing does not change, which is
+    the most demoralising possible outcome and the easiest to misread as a bug
+    in the tool.
+    """
+    responses = _draw_responses()
+    responses["GetLayers"] = {
+        "layers": [
+            {
+                "attributeId": {"guid": "l"},
+                "index": 7,
+                "name": DEFAULT_LAYER_NAME,
+                "isHidden": True,
+                "isLocked": False,
+            }
+        ]
+    }
+    connection, _ = connect(responses)
+    report = draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1", storey=4)],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+
+    assert report.layer.hidden
+    assert "THE LAYER IS HIDDEN" in report.describe()
+    assert "storey index 4" in report.describe(), (
+        "the other reason nothing appears: a plan on a different storey"
+    )
+
+
+def test_an_unreadable_layer_state_does_not_stop_the_drawing() -> None:
+    """Not knowing the visibility is a worse reason to fail than drawing anyway."""
+
+    class NoLayerDetail(FakeTransport):
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            if (
+                payload.get("parameters", {}).get("addOnCommandId", {}).get("commandName")
+                == "GetLayers"
+            ):
+                return {"succeeded": False, "error": {"code": 1, "message": "nope"}}
+            return super().send(payload)
+
+    transport = NoLayerDetail({"GetAddOnVersion": {"version": "1.5.7"}, **_draw_responses()})
+    report = draw_assessment(
+        ArchicadConnection(transport),
+        _assessment(_apartment("apt-1")),
+        [_zone("z1")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+    assert report.fills_drawn == 1
+    assert not report.layer.hidden

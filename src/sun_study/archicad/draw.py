@@ -41,6 +41,7 @@ __all__ = [
     "DEFAULT_LAYER_NAME",
     "BandStyle",
     "DrawReport",
+    "LayerState",
     "band_for",
     "clear_layer",
     "draw_assessment",
@@ -91,7 +92,9 @@ class DrawReport:
     fills_drawn: int
     fills_removed: int
     legend_items: int
-    layer_index: int
+    layer: LayerState
+    storeys: tuple[int, ...]
+    """Which storeys carry fills. A plan on any other one shows nothing."""
     zones_without_outline: tuple[str, ...]
     zones_with_holes: tuple[str, ...]
     zones_with_arcs: tuple[str, ...]
@@ -104,13 +107,26 @@ class DrawReport:
     def describe(self) -> str:
         lines = [
             f"drew {self.fills_drawn} apartment fills and a {self.legend_items} item "
-            f"legend on layer index {self.layer_index}"
+            f"legend on layer index {self.layer.index}"
             + (
                 f", replacing {self.fills_removed} from a previous run"
                 if self.fills_removed
                 else ""
             )
         ]
+        # The two reasons a successful run looks like it did nothing.
+        if self.layer.hidden:
+            lines.append(
+                "  THE LAYER IS HIDDEN, so none of this is on screen. Show it in "
+                "Layer Settings, or in the layer combination you are working in."
+            )
+        if self.layer.locked:
+            lines.append("  The layer is locked, so the fills cannot be selected or edited.")
+        if self.storeys:
+            shown = ", ".join(str(storey) for storey in self.storeys)
+            lines.append(
+                f"  drawn on storey index {shown} -- a plan on any other storey shows nothing"
+            )
         if self.unmatched:
             lines.append(
                 f"  {len(self.unmatched)} assessed apartments had no zone to draw: "
@@ -150,23 +166,44 @@ def band_for(minutes: float, bands: Sequence[BandStyle]) -> BandStyle:
     return bands[-1]
 
 
-def ensure_layer(connection: ArchicadConnection, name: str) -> int:
-    """Create the results layer if it is missing, and return its index.
+@dataclass(frozen=True)
+class LayerState:
+    """A results layer, and whether anything drawn on it will be seen."""
 
-    ``CreateHatches`` wants a numeric layer index while ``CreateLayers`` deals
-    in names and attribute ids, so the layer list is read back either way.
-    Existing layers are never overwritten: the layer may carry settings
-    somebody chose, and this tool has no business resetting them.
+    index: int
+    identifier: str
+    hidden: bool = False
+    locked: bool = False
+
+    @property
+    def invisible(self) -> bool:
+        return self.hidden or self.locked
+
+
+def ensure_layer(connection: ArchicadConnection, name: str) -> LayerState:
+    """Find or create the results layer, and report whether it is visible.
+
+    Visibility matters more than it sounds. A freshly created layer is not
+    necessarily shown by the layer combination that happens to be active, and
+    a hidden layer makes a successful run look exactly like one that did
+    nothing: the command reports fills drawn, and the drawing does not change.
+
+    Existing layers are never modified. The layer may carry settings somebody
+    chose deliberately, so this reports the state and leaves the decision to a
+    person.
     """
-    existing = _layer_index(connection, name)
+    existing = _find_layer(connection, name)
     if existing is not None:
         return existing
 
     connection.run_tapir(
         "CreateLayers",
-        {"layerDataArray": [{"name": name}], "overwriteExisting": False},
+        {
+            "layerDataArray": [{"name": name, "isHidden": False, "isLocked": False}],
+            "overwriteExisting": False,
+        },
     )
-    created = _layer_index(connection, name)
+    created = _find_layer(connection, name)
     if created is None:
         raise ArchicadError(
             f"Created layer {name!r} but Archicad does not list it. Drawing "
@@ -175,15 +212,14 @@ def ensure_layer(connection: ArchicadConnection, name: str) -> int:
     return created
 
 
-def _layer_index(connection: ArchicadConnection, name: str) -> int | None:
-    """The numeric index of a layer, by name.
+def _find_layer(connection: ArchicadConnection, name: str) -> LayerState | None:
+    """A layer by name, with its index, identifier and visibility.
 
-    ``GetAttributesByType`` rather than ``GetLayers``: the latter *requires*
-    ``attributeIds``, so it cannot answer "what layers are there" -- it needs
-    to be told which ones to describe. Calling it with no parameters is a
-    schema violation and Archicad rejects the whole command, which is how this
-    first went wrong. ``GetAttributesByType`` enumerates, and returns exactly
-    the index and name needed here.
+    Two calls, because neither answers alone. ``GetAttributesByType``
+    enumerates but reports only id, index and name; ``GetLayers`` carries
+    ``isHidden`` and ``isLocked`` but *requires* ``attributeIds``, so it cannot
+    be used to search -- calling it bare is a schema violation and Archicad
+    rejects the whole command.
     """
     response = connection.run_tapir("GetAttributesByType", {"attributeType": "Layer"})
     attributes = response.get("attributes") if isinstance(response, dict) else None
@@ -197,9 +233,40 @@ def _layer_index(connection: ArchicadConnection, name: str) -> int | None:
         if str(attribute.get("name", "")).casefold() != wanted:
             continue
         index = attribute.get("index")
-        if isinstance(index, (int, float)):
-            return int(index)
+        identifier = (attribute.get("attributeId") or {}).get("guid")
+        if not isinstance(index, (int, float)) or not identifier:
+            continue
+        return _layer_visibility(connection, int(index), str(identifier))
     return None
+
+
+def _layer_visibility(connection: ArchicadConnection, index: int, identifier: str) -> LayerState:
+    """Whether the layer is hidden or locked, defaulting to visible.
+
+    A build that will not answer must not make the run stop: not knowing the
+    visibility is a worse reason to fail than drawing onto a hidden layer.
+    """
+    try:
+        response = connection.run_tapir(
+            "GetLayers", {"attributeIds": [{"attributeId": {"guid": identifier}}]}
+        )
+    except ArchicadError:
+        return LayerState(index, identifier)
+
+    layers = response.get("layers") if isinstance(response, dict) else None
+    first = layers[0] if isinstance(layers, list) and layers else None
+    if not isinstance(first, dict) or "error" in first:
+        return LayerState(index, identifier)
+
+    attribute = first.get("layerAttribute") if "layerAttribute" in first else first
+    if not isinstance(attribute, dict):
+        return LayerState(index, identifier)
+    return LayerState(
+        index,
+        identifier,
+        hidden=bool(attribute.get("isHidden", False)),
+        locked=bool(attribute.get("isLocked", False)),
+    )
 
 
 def clear_layer(connection: ArchicadConnection, layer_index: int) -> int:
@@ -313,7 +380,8 @@ def draw_assessment(
         "CreateHatches, which draws the result fills,",
     )
 
-    layer_index = ensure_layer(connection, layer_name)
+    layer = ensure_layer(connection, layer_name)
+    layer_index = layer.index
     removed = clear_layer(connection, layer_index)
 
     by_guid = {zone.guid: zone for zone in zones}
@@ -361,7 +429,8 @@ def draw_assessment(
         fills_drawn=len(fills),
         fills_removed=removed,
         legend_items=len(legend_fills),
-        layer_index=layer_index,
+        layer=layer,
+        storeys=tuple(sorted({int(f["floorInd"]) for f in fills if "floorInd" in f})),
         zones_without_outline=tuple(no_outline),
         zones_with_holes=tuple(with_holes),
         zones_with_arcs=tuple(with_arcs),
