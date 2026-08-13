@@ -47,11 +47,17 @@ properties: the measured hours, the verdict, and the provenance.
 It is also the single convention that most changes the compliance percentage, so it
 belongs in §5.10 beside the `Daylight` instruction.
 
-> **Pin the meaning while you are writing it down.** Does `_L` mark *living room*
-> glazing, or *habitable room* glazing including bedrooms? ADG 4A-1 is about living
-> rooms. Including bedroom glazing raises the compliance figure and would not survive
-> review. The tool will echo whichever reading is configured on every run, but it cannot
-> choose for you.
+> **`_L` marks habitable rooms — rooms that require sunlight — not living rooms
+> specifically.** Confirmed by the practice. It is a room-level marker, unrelated to the
+> unit-level `Liveable` and `Adaptable/Livable` properties, which record the accessible
+> housing standard.
+>
+> **ADG 4A-1 is about living rooms**, so the two are not the same question. An apartment
+> whose bedroom faces north and whose living room faces south passes on the bedroom's
+> sun if they are pooled. Every run prints an openings-per-apartment spread for exactly
+> this reason: one or two per apartment is a living-room set, three or four in a
+> two-bedroom apartment is a habitable-room set. Narrowing to living rooms needs a
+> second marker the model does not carry yet — see [D24](decisions.md).
 
 ---
 

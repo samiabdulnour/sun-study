@@ -46,6 +46,7 @@ from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
     all_properties,
+    enum_values,
     existing_properties,
     init_properties,
     write_assessment,
@@ -995,3 +996,72 @@ def test_a_listing_still_reads_a_response_without_the_type_fields() -> None:
     assert entry.name == "Daylight"
     assert entry.value_type == ""
     assert "?" in entry.describe()
+
+
+def test_enumeration_values_are_read_from_the_definition() -> None:
+    """An enum accepts its defined display strings and nothing else.
+
+    'Yes' written to a property whose values are 'Y' and 'N' does not land,
+    and does not error in a way a careless caller notices. So the accepted
+    strings are read from Archicad rather than assumed.
+    """
+    connection, transport = connect(
+        {
+            "API.GetDetailsOfProperties": {
+                "propertyDefinitions": [
+                    {
+                        "propertyDefinition": {
+                            "propertyId": {"guid": "p1"},
+                            "name": "Daylight",
+                            "type": "singleEnum",
+                            "possibleEnumValues": [
+                                {"enumValue": {"displayValue": "Y", "nonLocalizedValue": "Y"}},
+                                {"enumValue": {"displayValue": "N", "nonLocalizedValue": "N"}},
+                            ],
+                        }
+                    }
+                ]
+            }
+        }
+    )
+    assert enum_values(connection, ["p1"]) == {"p1": ("Y", "N")}
+    assert transport.sent[0]["parameters"] == {"properties": [{"propertyId": {"guid": "p1"}}]}
+
+
+def test_enumeration_values_are_matched_on_identifier_not_position() -> None:
+    """A partial or reordered response must not attach one property's values
+    to another -- writing 'Y' into an hours band would be silently plausible."""
+    connection, _ = connect(
+        {
+            "API.GetDetailsOfProperties": {
+                "propertyDefinitions": [
+                    {
+                        "propertyDefinition": {
+                            "propertyId": {"guid": "second"},
+                            "possibleEnumValues": [{"enumValue": {"displayValue": "2-3 hrs"}}],
+                        }
+                    }
+                ]
+            }
+        }
+    )
+    assert enum_values(connection, ["first", "second"]) == {"second": ("2-3 hrs",)}
+
+
+def test_a_non_enumerated_property_reports_no_values() -> None:
+    connection, _ = connect(
+        {
+            "API.GetDetailsOfProperties": {
+                "propertyDefinitions": [
+                    {"propertyDefinition": {"propertyId": {"guid": "p1"}, "type": "string"}}
+                ]
+            }
+        }
+    )
+    assert enum_values(connection, ["p1"]) == {"p1": ()}
+
+
+def test_asking_for_no_enumerations_makes_no_call() -> None:
+    connection, transport = connect({})
+    assert enum_values(connection, []) == {}
+    assert transport.sent == []

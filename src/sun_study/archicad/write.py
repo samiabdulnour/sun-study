@@ -37,6 +37,7 @@ landed.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +52,7 @@ __all__ = [
     "PropertySpec",
     "WriteReport",
     "all_properties",
+    "enum_values",
     "existing_properties",
     "init_properties",
     "write_assessment",
@@ -238,6 +240,51 @@ def all_properties(connection: ArchicadConnection) -> tuple[PropertyDetail, ...]
             )
         )
     return tuple(found)
+
+
+def enum_values(
+    connection: ArchicadConnection, identifiers: Sequence[str]
+) -> dict[str, tuple[str, ...]]:
+    """Property identifier -> the display strings its enumeration accepts.
+
+    Needed before anything can be written to an existing enumerated property.
+    ``SetPropertyValuesOfElements`` takes a display string, and for an
+    enumeration Archicad matches it against the defined values -- so ``"Yes"``
+    written to a property whose values are ``Y`` and ``N`` does not land. It
+    also does not error in a way a careless caller would notice, which is why
+    the values are read rather than assumed.
+
+    ``API.GetDetailsOfProperties`` is one of Archicad's own commands, not a
+    Tapir one; ``GetAllProperties`` reports that a property *is* an enumeration
+    but not what it may contain. Results are matched on the identifier they
+    come back with rather than on position, so a partial or reordered response
+    cannot quietly attach one property's values to another.
+    """
+    if not identifiers:
+        return {}
+
+    response = connection.run_official(
+        "API.GetDetailsOfProperties",
+        {"properties": [{"propertyId": {"guid": guid}} for guid in identifiers]},
+    )
+    rows = response.get("propertyDefinitions") if isinstance(response, dict) else None
+    if not isinstance(rows, list):
+        raise ArchicadError(f"GetDetailsOfProperties returned no definitions: {response!r}")
+
+    found: dict[str, tuple[str, ...]] = {}
+    for row in rows:
+        definition = (row or {}).get("propertyDefinition") if isinstance(row, dict) else None
+        if not isinstance(definition, dict):
+            continue
+        identifier = (definition.get("propertyId") or {}).get("guid")
+        if not identifier:
+            continue
+        values = [
+            str((item or {}).get("enumValue", {}).get("displayValue", ""))
+            for item in definition.get("possibleEnumValues") or []
+        ]
+        found[str(identifier)] = tuple(value for value in values if value)
+    return found
 
 
 def existing_properties(connection: ArchicadConnection) -> dict[str, str]:

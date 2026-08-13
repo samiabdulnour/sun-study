@@ -17,7 +17,7 @@ apartment percentage that nobody questions.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -232,7 +232,30 @@ class Scene:
             f"  occluders {self.occluders.triangle_count} triangles | "
             f"{len(self.window_samples)} window samples | "
             f"{len(self.open_space_samples)} open space samples\n"
-            f"  window to space resolution: {routes or 'none'}"
+            f"  window to space resolution: {routes or 'none'}\n"
+            f"  {self._openings_summary()}"
+        )
+
+    def _openings_summary(self) -> str:
+        """How many openings each apartment got, and what that implies.
+
+        Printed rather than buried in the provenance because it is the one
+        line that says which criterion the run is actually answering. Marking
+        only living-room glazing gives most apartments one or two openings;
+        marking every room that requires sunlight gives a two-bedroom
+        apartment three or four, and folding those together lets an apartment
+        pass ADG 4A-1 on sun its living room never sees.
+        """
+        histogram = self.provenance.get("openings_per_apartment") or {}
+        if not isinstance(histogram, dict) or not histogram:
+            return "openings per apartment: none assessed"
+
+        total = sum(histogram.values())
+        weighted = sum(count * apartments for count, apartments in histogram.items())
+        spread = ", ".join(f"{count}x{apartments}" for count, apartments in histogram.items())
+        return (
+            f"openings per apartment: {spread} "
+            f"(mean {weighted / total:.2f} across {total} apartments)"
         )
 
 
@@ -468,6 +491,35 @@ def _require_matches(
     )
 
 
+def _openings_per_apartment(
+    assignments: Sequence[WindowAssignment], apartments: Collection[str | None]
+) -> dict[int, int]:
+    """How many openings each apartment got, as a histogram of counts.
+
+    Reported because it is the cheapest way to tell what a marking convention
+    actually marks, and that changes which ADG criterion the result answers.
+
+    A convention that marks only living-room glazing gives most apartments one
+    or two openings -- a balcony slider and perhaps a window. One that marks
+    every room requiring sunlight gives a two-bedroom apartment three or four.
+    The distinction is invisible in a compliance percentage and decisive for
+    it: ADG 4A-1 is about living rooms, and folding bedroom glazing in lets an
+    apartment pass on sun its living room never sees.
+
+    Keyed by opening count, valued by how many apartments had that many.
+    """
+    per_apartment: dict[str, int] = {}
+    for assignment in assignments:
+        if assignment.space_id is None or assignment.space_id not in apartments:
+            continue
+        per_apartment[assignment.space_id] = per_apartment.get(assignment.space_id, 0) + 1
+
+    histogram: dict[int, int] = {}
+    for count in per_apartment.values():
+        histogram[count] = histogram.get(count, 0) + 1
+    return dict(sorted(histogram.items()))
+
+
 def _on_layer(element: IfcElement, layers: Sequence[str]) -> bool:
     """Whether an element sits on one of the named Archicad layers.
 
@@ -677,6 +729,7 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         "windows_skipped": skipped,
         "spaces_total": len(spaces),
         "living_rooms_matched": len(living_rooms),
+        "openings_per_apartment": _openings_per_apartment(assignments, living_rooms),
         "balconies_matched": len(balcony_groups),
         "open_space_unattached": unattached_open_space,
         "open_space_resolution": open_space_routes,

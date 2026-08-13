@@ -439,11 +439,29 @@ Matching a bare final letter would sweep in a bathroom door.
 **`_read_space_boundaries` had to learn about doors too**, or every marked slider would
 fall through to the geometric fallback.
 
-*Not settled by the tool:* whether such a marker means *living room* or *habitable
-room including bedrooms*. ADG 4A-1 is about living rooms, and the wider reading raises
-the compliance figure. The tool cannot tell the difference and does not try; it states
-the configured suffix in the run header and leaves the meaning to the practice that
-owns the convention.
+**What the marker means, confirmed by the practice that uses it:** `_L` marks the
+openings of *rooms that require sunlight* — habitable rooms. It is a **room-level**
+marker and is unrelated to the unit-level `Liveable` / `Adaptable/Livable` properties in
+the same project, which record the accessible-housing standard.
+
+**That is wider than ADG 4A-1, which is about living rooms specifically**, and the
+difference is not academic. An apartment whose bedroom faces north and whose living room
+faces south passes on the bedroom's sun if the two are pooled. The arithmetic in the
+reference project points the same way: 252 marked openings across roughly 91 apartments
+is 2.8 each, where living-room-only would give one or two — a slider and perhaps a
+window — and living-plus-bedrooms predicts about 257.
+
+So the tool reports the distribution rather than assuming either reading.
+`_openings_per_apartment` histograms how many marked openings each apartment received
+and prints it in the run banner, because that single line says which criterion the
+result actually answers and it is invisible in a compliance percentage. Two openings per
+apartment is a living-room convention; three or four in a two-bedroom apartment is a
+habitable-room one.
+
+Narrowing habitable-room glazing down to living rooms needs a second signal the model
+does not yet carry. The balcony slider is a good proxy — the room you step out from is
+the living room in nearly every apartment — but it is a proxy, and it is not offered as
+a default.
 
 ### D25 — Scene selection can key on Archicad layers
 

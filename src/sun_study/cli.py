@@ -37,6 +37,7 @@ from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
     all_properties,
+    enum_values,
     init_properties,
     write_assessment,
 )
@@ -524,12 +525,29 @@ def _report_properties(connection: ArchicadConnection) -> None:
     for entry in entries:
         groups.setdefault(entry.group, []).append(entry)
 
+    # An enumeration only accepts one of its defined display strings, and
+    # GetAllProperties says a property is one without saying what it holds.
+    # Only the custom ones are asked about: the built-in enumerations are
+    # Archicad's own and are never write targets.
+    enumerated = [
+        entry.identifier
+        for entry in entries
+        if "Enumeration" in entry.collection_type and entry.kind == "Custom"
+    ]
+    try:
+        values = enum_values(connection, enumerated)
+    except ArchicadError as error:  # pragma: no cover - needs a live Archicad
+        typer.secho(f"  (could not read enumeration values: {error})", fg=typer.colors.YELLOW)
+        values = {}
+
     writable = sum(1 for entry in entries if entry.writable)
     typer.echo(f"  {len(entries)} properties in {len(groups)} groups, {writable} writable")
     for group, found in sorted(groups.items()):
         typer.secho(f"    {group}", bold=True)
         for entry in sorted(found, key=lambda e: e.name):
-            typer.echo(f"      {entry.describe()}")
+            allowed = values.get(entry.identifier, ())
+            suffix = f"  accepts: {' / '.join(allowed)}" if allowed else ""
+            typer.echo(f"      {entry.describe()}{suffix}")
 
 
 def _report_zone_names(found: Sequence[ArchicadZone], *, limit: int) -> None:

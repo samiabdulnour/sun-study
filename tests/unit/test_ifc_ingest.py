@@ -857,3 +857,30 @@ def test_no_layer_filter_still_works_on_a_file_without_layers() -> None:
     """The overwhelmingly common case must not be made to fail."""
     scene = build_scene(read_ifc(SAMPLE), SceneConfig(timezone="Australia/Sydney"))
     assert scene.provenance["spaces_total"] == 4
+
+
+def test_the_openings_per_apartment_spread_is_reported(tmp_path: Path) -> None:
+    """The one line that says which criterion a run actually answers.
+
+    A marker on living-room glazing gives most apartments one or two openings.
+    A marker on every room requiring sunlight gives a two-bedroom apartment
+    three or four. Pooling the second into an ADG 4A-1 figure lets an
+    apartment pass on sun its living room never sees, and nothing in a
+    compliance percentage shows the difference.
+    """
+    scene = _suffix_scene(_mark_openings(SAMPLE, tmp_path / "marked.ifc"))
+
+    # The fixture marks one opening in each of two apartments.
+    assert scene.provenance["openings_per_apartment"] == {1: 2}
+    assert "openings per apartment: 1x2 (mean 1.00 across 2 apartments)" in scene.describe()
+
+
+def test_apartments_with_no_openings_are_not_counted_in_the_spread() -> None:
+    """A mean dragged down by unglazed spaces would misread the convention."""
+    scene = build_scene(
+        read_ifc(SAMPLE),
+        SceneConfig(timezone="Australia/Sydney", living_room_space_names=()),
+    )
+    histogram = scene.provenance["openings_per_apartment"]
+    assert isinstance(histogram, dict)
+    assert 0 not in histogram
