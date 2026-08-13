@@ -53,6 +53,7 @@ __all__ = [
     "PropertySpec",
     "WriteReport",
     "all_properties",
+    "default_property_value",
     "ensure_property_group",
     "enum_values",
     "existing_properties",
@@ -300,6 +301,34 @@ def existing_properties(connection: ArchicadConnection) -> dict[str, str]:
     }
 
 
+def default_property_value(data_type: str) -> dict[str, Any]:
+    """A property definition's starting value, which Archicad insists on.
+
+    Omitting ``defaultValue`` looks harmless -- the schema does not require it
+    -- but Tapir then sets the variant's status to ``API_VariantStatusNull``
+    and ``ACAPI_Property_CreatePropertyDefinition`` rejects the whole
+    definition with ``APIERR_BADVALUE`` (-2130313104, 0x81060070).
+
+    That was found the hard way: nine definitions refused on a real project
+    with one identical code, and a probe that varied the name, the type, the
+    availability and ``isEditable`` failed every time, because the missing
+    default was the one thing all of them shared.
+
+    An empty string and a zero are the neutral starting points. They are never
+    read -- every property is overwritten with a measured value or left
+    deliberately undefined -- so the choice only has to be valid, not
+    meaningful.
+    """
+    blank: dict[str, Any] = {"type": data_type, "status": "normal", "value": ""}
+    if data_type in {"number", "length", "area", "volume", "angle"}:
+        blank["value"] = 0.0
+    elif data_type == "integer":
+        blank["value"] = 0
+    elif data_type == "boolean":
+        blank["value"] = False
+    return {"basicDefaultValue": blank}
+
+
 def _availability_items(classifications: dict[str, set[str]]) -> list[str]:
     items: set[str] = set()
     for values in classifications.values():
@@ -429,6 +458,7 @@ def init_properties(
                         "description": spec.description,
                         "type": spec.data_type,
                         "isEditable": True,
+                        "defaultValue": default_property_value(spec.data_type),
                         "availability": [
                             {"classificationItemId": {"guid": item}} for item in availability
                         ],

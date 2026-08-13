@@ -45,6 +45,7 @@ from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
     all_properties,
+    default_property_value,
     ensure_property_group,
     enum_values,
     init_properties,
@@ -742,6 +743,15 @@ def _run_probe(connection: ArchicadConnection, group_id: str, items: list[str]) 
             "no isEditable",
             {"name": "SunStudyProbeE", "type": "string", "availability": available, "skip": True},
         ),
+        (
+            "WITH a default value (the suspected fix)",
+            {
+                "name": "SunStudyProbeF",
+                "type": "string",
+                "availability": available,
+                "default": True,
+            },
+        ),
     ]
 
     definitions = []
@@ -755,6 +765,8 @@ def _run_probe(connection: ArchicadConnection, group_id: str, items: list[str]) 
         }
         if not attempt.get("skip"):
             definition["isEditable"] = True
+        if attempt.get("default"):
+            definition["defaultValue"] = default_property_value(str(attempt["type"]))
         definitions.append({"propertyDefinition": definition})
 
     response = connection.run_tapir(
@@ -793,6 +805,20 @@ def archicad_selftest(
         list[str] | None,
         typer.Option("--pen", help="Override a band's fill pen as 'label=index'. Repeatable."),
     ] = None,
+    properties: Annotated[
+        bool,
+        typer.Option(
+            "--properties/--no-properties",
+            help=(
+                "Also create and write the Sun Study properties. Turn off to "
+                "test the drawing on its own -- fills need no properties."
+            ),
+        ),
+    ] = True,
+    draw: Annotated[
+        bool,
+        typer.Option("--draw/--no-draw", help="Also draw the fills and legend."),
+    ] = True,
 ) -> None:
     """Exercise the whole Archicad round trip with invented numbers.
 
@@ -831,33 +857,39 @@ def archicad_selftest(
         assessment, match = _synthetic_assessment(chosen, band_styles(pen))
         typer.echo(f"  testing against {len(chosen)} of {len(found)} zones")
 
-        classified = classification_items_of(connection, [zone.guid for zone in chosen])
-        init_properties(connection, classified)
-        typer.echo(f"  properties ready in group {PROPERTY_GROUP_NAME!r}")
+        if properties:
+            classified = classification_items_of(connection, [zone.guid for zone in chosen])
+            init_properties(connection, classified)
+            typer.echo(f"  properties ready in group {PROPERTY_GROUP_NAME!r}")
 
-        written = write_assessment(
-            connection, assessment, match=match, run_stamp="SELFTEST -- not a measurement"
-        )
-        typer.secho(
-            written.describe(),
-            fg=typer.colors.GREEN if written.complete else typer.colors.RED,
-            bold=True,
-        )
+            written = write_assessment(
+                connection, assessment, match=match, run_stamp="SELFTEST -- not a measurement"
+            )
+            typer.secho(
+                written.describe(),
+                fg=typer.colors.GREEN if written.complete else typer.colors.RED,
+                bold=True,
+            )
 
-        drawn = draw_assessment(
-            connection,
-            assessment,
-            chosen,
-            zone_by_apartment=match.by_apartment,
-            bands=band_styles(pen),
-            layer_name=layer,
-            title="SELF TEST -- invented values",
-        )
-        typer.secho(
-            drawn.describe(),
-            fg=typer.colors.GREEN if drawn.complete else typer.colors.RED,
-            bold=True,
-        )
+        # Independent of the properties on purpose. A fill is geometry on a
+        # layer; it needs no property, no classification and no schedule, so a
+        # problem with the property system must not stand between a person and
+        # the drawing.
+        if draw:
+            drawn = draw_assessment(
+                connection,
+                assessment,
+                chosen,
+                zone_by_apartment=match.by_apartment,
+                bands=band_styles(pen),
+                layer_name=layer,
+                title="SELF TEST -- invented values",
+            )
+            typer.secho(
+                drawn.describe(),
+                fg=typer.colors.GREEN if drawn.complete else typer.colors.RED,
+                bold=True,
+            )
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error

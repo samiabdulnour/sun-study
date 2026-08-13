@@ -52,6 +52,7 @@ from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
     all_properties,
+    default_property_value,
     enum_values,
     existing_properties,
     init_properties,
@@ -1345,3 +1346,33 @@ def test_a_group_that_cannot_be_created_says_so_with_its_code() -> None:
     )
     with pytest.raises(ArchicadError, match="name already used"):
         init_properties(connection, {"zone-1": {"item-a"}})
+
+
+def test_every_definition_carries_a_default_value() -> None:
+    """Omitting it is rejected with APIERR_BADVALUE, and looks harmless.
+
+    The schema does not require ``defaultValue``, but Tapir then sets the
+    variant's status to null and Archicad refuses the whole definition with
+    -2130313104. Nine properties failed that way on a real project, and a
+    probe varying the name, type, availability and isEditable failed every
+    time -- the missing default was the one thing they all shared.
+    """
+    all_names = [spec.name for spec in APARTMENT_PROPERTIES]
+    transport = CreatingTransport([], all_names)
+    init_properties(ArchicadConnection(transport), {"zone-1": {"item-a"}})
+
+    definitions = transport.parameters_for("CreatePropertyDefinitions")["propertyDefinitions"]
+    for entry in definitions:
+        default = entry["propertyDefinition"]["defaultValue"]["basicDefaultValue"]
+        assert default["status"] == "normal", "a null status is what Archicad rejects"
+        assert default["type"] == entry["propertyDefinition"]["type"]
+        assert "value" in default
+
+
+def test_the_default_value_matches_the_declared_type() -> None:
+    """A string default on a number property would be rejected the same way."""
+    assert default_property_value("string")["basicDefaultValue"]["value"] == ""
+    assert default_property_value("number")["basicDefaultValue"]["value"] == 0.0
+    assert default_property_value("integer")["basicDefaultValue"]["value"] == 0
+    assert default_property_value("boolean")["basicDefaultValue"]["value"] is False
+    assert default_property_value("area")["basicDefaultValue"]["value"] == 0.0
