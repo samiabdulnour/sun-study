@@ -34,7 +34,7 @@ pure astronomy from latitude, longitude and time.
 | Milestone | Deliverable | State |
 |---|---|---|
 | M0 | Skeleton, CI, tooling, `core.solar` | **Done** — validated to 0.1° against NREL/TP-560-34302 |
-| M1 | `core` engine on synthetic geometry | Not started |
+| M1 | `core` engine on synthetic geometry | **Done** — all six §7 analytic cases green |
 | M2 | IFC ingest and scene assembly | Not started |
 | M3 | ADG ruleset, CSV/JSON output | Not started |
 | M4 | Archicad read adapter | Not started |
@@ -91,6 +91,18 @@ independent published sources, both transcribed from the primary documents:
 A third check cross-references `pvlib`'s independent SPA implementation across a year
 of positions at seven latitudes. `pvlib` is a validation reference only and is never a
 runtime dependency.
+
+The geometry engine is checked the same way. All six analytic cases from the brief are
+green: shadow lengths and overhang shadow lines land within 1 cm of closed-form
+trigonometry, rotating the scene and true north together leaves results invariant to
+1e−9, and a south-facing Sydney facade returns exactly zero midwinter sun — the tripwire
+for inverted north handling. The BVH is checked differentially against brute force on
+randomised scenes at every leaf size.
+
+The ray caster is pure numpy with no native extension, so it installs on a Windows
+workstation without a compiler. That makes it the production backend rather than a CI
+fallback, so its speed is measured too: about 38k rays/s, roughly 20 seconds for a
+200 apartment job (`uv run python scripts/benchmark_occlusion.py`).
 
 See [`docs/validation.md`](docs/validation.md) for measured residuals, and
 [`docs/decisions.md`](docs/decisions.md) for the domain assumptions that change the

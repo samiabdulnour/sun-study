@@ -74,6 +74,45 @@ Near the horizon the two differ by about half a degree, which is roughly one sun
 diameter — not negligible for a 9am midwinter assessment. `apparent=False` is available
 and the choice will be stated in the output header.
 
+### D13 — `core` stays numpy-only, and the numpy ray caster is the real backend
+
+*Milestone M1. Alternative: `trimesh` + `embreex` as the primary occlusion engine.*
+
+This is a deployment decision. The tool has to run on office Windows workstations
+alongside Archicad 26, and a native ray tracer that needs a compiler to install is a
+tool that does not deploy. `core.occlusion` is therefore a pure-numpy BVH with no build
+step — the production path, not a fallback that only keeps CI green.
+
+The consequence is that its performance is a real concern rather than an academic one,
+so it is measured (`scripts/benchmark_occlusion.py`) and the leaf size is tuned from the
+measurement rather than guessed. About 38k rays/s on a 96k-triangle scene, roughly 20
+seconds for a 200 apartment job. See [`validation.md`](validation.md) §2.2.
+
+The whole of `core` is held to standard library plus numpy, enforced by
+`test_architecture.py`. `trimesh` and `ifcopenshell` arrive at M2 confined to `ingest`,
+where a failure to install stops geometry loading rather than the analysis engine. An
+embree fast path can be added later behind the same `Occluder` interface; nothing will
+depend on it existing.
+
+*Still to settle, before M4:* how the tool is actually delivered to a workstation —
+`uv tool install` from the repository, a pinned virtual environment, or a frozen
+executable. Not urgent, but it should be decided before the Archicad adapter lands
+rather than after.
+
+### D14 — Sun vectors are consumed in the model frame, never in ENU
+
+*Milestone M1.*
+
+`core.analysis.sunlit_matrix` takes sun vectors in the same frame as the geometry, and
+`core.orientation` is the only thing that converts ENU into that frame. Passing raw ENU
+vectors alongside a rotated model is the single easiest way to produce a confident wrong
+answer, so the conversion has one home, an explicit derivation in the module docstring,
+and cardinal-point tests that pin the sign.
+
+Two consequences worth stating: the model frame must be Z-up, because the below-horizon
+test is on the +Z component; and `SiteOrientation` has no default for any field, since a
+dataclass default is the easiest way for a guess to become invisible.
+
 ---
 
 ## Open — needed before M2 (IFC ingest)
@@ -126,6 +165,11 @@ rather than left as an unstated assumption.
 ## Open — needed before M3 (aggregation and rules)
 
 ### D11 — Sample weighting across the assessment window
+
+**Implemented with the proposed default; still needs your confirmation.**
+`core.analysis` offers `TRAPEZOIDAL` (the default) and `UNIFORM`, and the choice travels
+on every `SunlightResult`. Switching the default is a one-line change until a ruleset
+depends on it.
 
 Not in the brief's list, but found while writing `assessment_times`, and it is the same
 class of error.
