@@ -131,6 +131,13 @@ the analysis needs the windows and the zones in the same coordinate system.
 
 ## Step 3 — run
 
+If more than one Archicad is open, check which port your project is on first — each
+instance gets its own, and the default 19723 belongs to whichever started first:
+
+```powershell
+sun-study archicad-ports
+```
+
 With the project open in Archicad and the Tapir add-on installed:
 
 ```powershell

@@ -334,6 +334,20 @@ it reports just id, index and name, so reading any detail is always two calls.
 `GetPenTables` also accepts `fields`, which is worth using: each pen table carries 255
 pens, and finding out which of several tables is active should not pull all of them.
 
+**Archicad gives each running instance its own port.** The JSON API is on 19723 only for
+the *first* Archicad open on the machine; a second lands on 19724, and so on up to 19742
+(Tapir's own client pins the range at `range(19723, 19743)`). Switching projects by
+opening the new one alongside the old therefore moves it off the default port, and once
+the first instance is closed the default answers nothing at all — `WinError 10061`,
+"actively refused". That reads as "Archicad is not running" and sends people to the Work
+Environment setting, which was never off. `sun-study archicad-ports` lists every live
+instance with its open project, and a refused connection now scans and says where
+Archicad actually is.
+
+The scan is real network I/O and runs **only** when the CLI has decided to tell a human.
+An earlier version did it inside the transport's error path, which made every failed
+call pay for a twenty-port scan and took the test suite from 14s to 146s.
+
 **A pen table can put two bands on one pen.** Matching each band to its nearest pen
 independently is the obvious implementation and it is wrong: on a real office table the
 3–4 and 4–5 hour bands both took pen 124, because their reference colours are 30 apart

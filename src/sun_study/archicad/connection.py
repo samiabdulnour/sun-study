@@ -38,22 +38,34 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 __all__ = [
+    "PORT_RANGE",
     "ArchicadConnection",
     "ArchicadError",
     "ArchicadNotRunningError",
     "CommandFailedError",
     "HttpTransport",
+    "Instance",
     "TapirUnavailableError",
     "Transport",
+    "find_instances",
+    "where_archicad_actually_is",
 ]
 
 DEFAULT_HOST = "http://127.0.0.1"
 DEFAULT_PORT = 19723
 TAPIR_NAMESPACE = "TapirCommand"
+
+#: Every port Archicad can put its JSON API on. Each running instance claims
+#: one, in order, so the second Archicad open on a machine is on 19724 and a
+#: tool hard-wired to 19723 talks to the wrong project -- or, once the first
+#: instance is closed, to nothing at all. Range taken from Tapir's own client
+#: (``sandbox/python-package/src/tapir_py/core.py``: ``range(19723, 19743)``).
+PORT_RANGE = range(DEFAULT_PORT, 19743)
 
 #: Tapir add-on version this package was written against, from the repository
 #: at the time (``archicad-addon/Sources/AddOnVersion.hpp``).
@@ -114,6 +126,11 @@ class HttpTransport:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read()
         except urllib.error.URLError as exc:
+            # Deliberately does not scan for other instances here. Building an
+            # error message must not do network I/O: this path is hit on every
+            # failed call, and a twenty-port scan per failure turns one dead
+            # connection into a very slow one. The CLI scans once, when it has
+            # decided to tell a human. See `where_archicad_actually_is`.
             raise ArchicadNotRunningError(
                 f"Could not reach Archicad's JSON API at {self.url} ({exc.reason}). "
                 f"Check that Archicad is running with a project open, and that the "
@@ -134,6 +151,100 @@ class HttpTransport:
                 f"Archicad returned something that is not JSON: {body[:200]!r}"
             ) from exc
         return decoded
+
+
+@dataclass(frozen=True)
+class Instance:
+    """One running Archicad, found by scanning the port range."""
+
+    port: int
+    project: str = ""
+    """The open project's name, blank if it could not be read."""
+
+    def describe(self) -> str:
+        return f"port {self.port}" + (f" -- {self.project}" if self.project else "")
+
+
+def find_instances(
+    host: str = DEFAULT_HOST,
+    ports: Iterable[int] = PORT_RANGE,
+    *,
+    timeout_seconds: float = 0.4,
+) -> tuple[Instance, ...]:
+    """Every Archicad answering on the JSON API, with the project each has open.
+
+    Archicad gives each running instance its own port in order, so a second
+    project opened alongside the first is on 19724 and the default port either
+    reaches the wrong project or, once the first is closed, nothing at all.
+    That failure reads as "Archicad is not running" and sends people to check
+    a setting that was never off, so the answer is to go and look.
+
+    Deliberately impatient. This runs on a path that has already failed, and
+    twenty ports at the normal timeout would be a very long wait to be told
+    something simple.
+    """
+    found: list[Instance] = []
+    for port in ports:
+        probe = HttpTransport(host=host, port=port, timeout_seconds=timeout_seconds)
+        try:
+            alive = probe.send({"command": "API.IsAlive", "parameters": {}})
+        except ArchicadError:
+            continue
+        if not alive.get("succeeded"):
+            continue
+        found.append(Instance(port=port, project=_project_name(probe)))
+    return tuple(found)
+
+
+def _project_name(probe: HttpTransport) -> str:
+    """The open project's name, or blank.
+
+    Best effort: an instance with no project open still answers ``IsAlive``,
+    and knowing a port is live is most of the value even without a name.
+    """
+    try:
+        response = probe.send(
+            {
+                "command": "API.ExecuteAddOnCommand",
+                "parameters": {
+                    "addOnCommandId": {
+                        "commandNamespace": TAPIR_NAMESPACE,
+                        "commandName": "GetProjectInfo",
+                    },
+                    "addOnCommandParameters": {},
+                },
+            }
+        )
+    except ArchicadError:
+        return ""
+    inner = (response.get("result") or {}).get("addOnCommandResponse") or {}
+    if not isinstance(inner, dict):
+        return ""
+    name = inner.get("projectName") or inner.get("projectPath") or ""
+    return str(name) if isinstance(name, str) else ""
+
+
+def where_archicad_actually_is(
+    tried: int, host: str = DEFAULT_HOST, ports: Iterable[int] = PORT_RANGE
+) -> str:
+    """Where Archicad *is* listening, if anywhere, or ``""`` if that adds nothing.
+
+    Called once by the CLI after a connection has already failed, never from
+    the transport. The default message sends people to the Work Environment
+    setting, which is the wrong place whenever the real cause is a second
+    Archicad holding the port -- so this goes and looks before letting that
+    advice stand.
+    """
+    others = [instance for instance in find_instances(host, ports) if instance.port != tried]
+    if not others:
+        return ""
+    listed = "; ".join(instance.describe() for instance in others)
+    return (
+        f"Archicad IS answering, on another port: {listed}. Each running instance "
+        f"gets its own port, so a second project opened alongside the first does not "
+        f"take {PORT_RANGE.start}. Re-run with --port {others[0].port}, or close the "
+        f"other instances and reopen this project."
+    )
 
 
 class ArchicadConnection:

@@ -21,9 +21,13 @@ import typer
 from sun_study import __version__
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
+    PORT_RANGE,
     ArchicadConnection,
     ArchicadError,
+    ArchicadNotRunningError,
     HttpTransport,
+    find_instances,
+    where_archicad_actually_is,
 )
 from sun_study.archicad.draw import (
     DEFAULT_BANDS,
@@ -578,10 +582,50 @@ def _connect(port: int) -> ArchicadConnection:
     connection = ArchicadConnection(HttpTransport(port=port))
     try:
         connection.require_tapir()
+    except ArchicadNotRunningError as error:
+        # Only here, and only once. The port scan is real network I/O, so it
+        # belongs on the path that has already decided to tell a human --
+        # not inside the transport, where every failed call would pay for it.
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        elsewhere = where_archicad_actually_is(port)
+        if elsewhere:
+            typer.secho(elsewhere, fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(code=2) from error
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
     return connection
+
+
+@app.command("archicad-ports")
+def archicad_ports() -> None:
+    """List every running Archicad and the project each has open.
+
+    Archicad gives each running instance its own port in order, so a second
+    project opened alongside the first lands on 19724. A tool pointed at the
+    default then reaches the wrong project, or -- once the first instance is
+    closed -- nothing at all, which reads as "Archicad is not running" and
+    sends people to check a setting that was never off.
+    """
+    banner()
+    typer.echo(f"scanning ports {PORT_RANGE.start}-{PORT_RANGE.stop - 1} on this machine...")
+    instances = find_instances()
+    if not instances:
+        typer.secho(
+            "No Archicad is answering on any port. Check that it is running with a "
+            "project open, and that the JSON interface is enabled in Options > Work "
+            "Environment > Model Compare and JSON Interface.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=2)
+
+    for instance in instances:
+        default = "  (the default)" if instance.port == DEFAULT_PORT else ""
+        typer.secho(f"  {instance.describe()}{default}", bold=True)
+    if len(instances) > 1 or instances[0].port != DEFAULT_PORT:
+        typer.echo("")
+        typer.echo("Point a command at one of these with --port, e.g.:")
+        typer.echo(f"  sun-study archicad-info --port {instances[-1].port}")
 
 
 @app.command("archicad-info")

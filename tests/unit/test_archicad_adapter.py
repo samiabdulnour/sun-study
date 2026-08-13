@@ -13,8 +13,13 @@ Tapir's own sources rather than recalled, and the source is named in the test.
 
 from __future__ import annotations
 
+import contextlib
+import http.server
 import json
 import math
+import threading
+import time
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -22,13 +27,18 @@ from typing import Any
 import pytest
 
 from sun_study.archicad.connection import (
+    DEFAULT_PORT,
     MINIMUM_TAPIR_VERSION,
+    PORT_RANGE,
     TAPIR_NAMESPACE,
     ArchicadConnection,
     ArchicadError,
     CommandFailedError,
     HttpTransport,
+    Instance,
     TapirUnavailableError,
+    find_instances,
+    where_archicad_actually_is,
 )
 from sun_study.archicad.draw import (
     DEFAULT_BANDS,
@@ -248,6 +258,133 @@ def test_unreachable_archicad_names_the_setting_to_check() -> None:
     transport = HttpTransport(host="http://127.0.0.1", port=1, timeout_seconds=0.5)
     with pytest.raises(ArchicadError, match="JSON"):
         transport.send({"command": "API.GetAllClassificationSystems", "parameters": {}})
+
+
+def test_a_failed_send_does_not_go_scanning_for_other_instances() -> None:
+    """Building an error message must not do network I/O.
+
+    An earlier version scanned all twenty ports here, so one dead connection
+    cost a scan per failed call and the suite went from 14s to 146s. The scan
+    belongs on the path that has decided to talk to a human, not on every
+    failure.
+    """
+    transport = HttpTransport(host="http://127.0.0.1", port=1, timeout_seconds=0.5)
+    started = time.monotonic()
+    with pytest.raises(ArchicadError):
+        transport.send({"command": "API.IsAlive", "parameters": {}})
+    assert time.monotonic() - started < 2.0, "a refused connection must fail immediately"
+
+
+# -- finding which Archicad to talk to ------------------------------------
+
+
+class _FakeArchicad(http.server.BaseHTTPRequestHandler):
+    """Answers the two commands the port scan uses, and nothing else."""
+
+    project_name = "2400_SAMPLE1"
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        if payload.get("command") == "API.IsAlive":
+            body = {"succeeded": True, "result": {"isAlive": True}}
+        else:
+            body = {
+                "succeeded": True,
+                "result": {"addOnCommandResponse": {"projectName": self.project_name}},
+            }
+        encoded = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        """Silence, or the suite's output is buried in request logs.
+
+        The parameter shadows a builtin because ``http.server`` names it that.
+        """
+
+
+@contextlib.contextmanager
+def _fake_archicad() -> Iterator[int]:
+    server = http.server.HTTPServer(("127.0.0.1", 0), _FakeArchicad)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(server.server_address[1])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_live_instance_is_found_and_names_its_project() -> None:
+    """The port is only half the answer -- with several Archicads open, the
+    project name is what tells a person which one they want."""
+    with _fake_archicad() as port:
+        found = find_instances(ports=[port])
+    assert found == (Instance(port=port, project="2400_SAMPLE1"),)
+    assert found[0].describe() == f"port {port} -- 2400_SAMPLE1"
+
+
+def test_a_dead_port_is_skipped_rather_than_raising() -> None:
+    """Most of the twenty ports are dead in any normal scan."""
+    with _fake_archicad() as port:
+        found = find_instances(ports=[1, port], timeout_seconds=0.5)
+    assert [instance.port for instance in found] == [port]
+
+
+def test_an_instance_that_will_not_name_its_project_is_still_reported() -> None:
+    """An Archicad with no project open answers IsAlive and nothing else.
+    Knowing the port is live is most of the value."""
+
+    class Nameless(_FakeArchicad):
+        project_name = ""
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Nameless)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = int(server.server_address[1])
+        found = find_instances(ports=[port])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert found == (Instance(port=port, project=""),)
+    assert found[0].describe() == f"port {port}"
+
+
+def test_the_port_hint_names_the_other_instance_and_the_flag_to_use() -> None:
+    """The whole point: 'actively refused' sends people to a Work Environment
+    setting that was never off, when the real cause is a second Archicad."""
+    with _fake_archicad() as port:
+        hint = where_archicad_actually_is(tried=1, ports=[port])
+    assert "2400_SAMPLE1" in hint
+    assert f"--port {port}" in hint
+
+
+def test_the_port_hint_says_nothing_when_it_has_nothing_to_add() -> None:
+    """With no other instance the default message is already right, and a
+    second paragraph reporting a fruitless search is noise."""
+    assert where_archicad_actually_is(tried=1, ports=[]) == ""
+
+
+def test_the_port_actually_tried_is_not_offered_as_the_alternative() -> None:
+    """Suggesting the port that just failed would be absurd. It can appear in
+    the scan when the failure was mid-run rather than at connect."""
+    with _fake_archicad() as port:
+        assert where_archicad_actually_is(tried=port, ports=[port]) == ""
+
+
+def test_the_scanned_range_is_the_one_archicad_uses() -> None:
+    """From Tapir's own client: range(19723, 19743). Scanning fewer ports
+    silently fails to find the instance a person is looking at."""
+    assert PORT_RANGE == range(19723, 19743)
+    assert DEFAULT_PORT == 19723
 
 
 # -- georeferencing -------------------------------------------------------
