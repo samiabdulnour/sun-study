@@ -165,10 +165,27 @@ class WriteReport:
                 f"  {len(self.zones_ambiguous)} apartments matched several elements "
                 f"and were skipped: " + ", ".join(self.zones_ambiguous[:5])
             )
-        for failure in self.failures[:10]:
+        # One real failure per element, not one per value. Tapir reuses a
+        # single `err` across the loop over an element's properties and never
+        # resets it, so the first genuine failure makes every property after
+        # it report "Failed to get property values for element" as well.
+        # Printing all of them buries the eight causes under forty-eight
+        # symptoms.
+        first: dict[str, str] = {}
+        for failure in self.failures:
+            element, _, _ = failure.partition(" / ")
+            first.setdefault(element, failure)
+
+        for failure in list(first.values())[:8]:
             lines.append(f"  FAILED {failure}")
-        if len(self.failures) > 10:
-            lines.append(f"  ... and {len(self.failures) - 10} more failures")
+        if len(first) > 8:
+            lines.append(f"  ... and {len(first) - 8} more elements failed")
+        if len(self.failures) > len(first):
+            lines.append(
+                f"  ({len(self.failures)} failures over {len(first)} elements; only the "
+                f"first per element is a real cause -- Tapir does not reset its error "
+                f"between an element's properties, so the rest follow from it)"
+            )
         return "\n".join(lines)
 
 
@@ -540,6 +557,37 @@ def _values_for(
     }
 
 
+#: Archicad error codes worth translating, because the raw number is the only
+#: thing Tapir passes through and the generic message says nothing useful.
+#: Values read off Graphisoft's published error code table.
+ERROR_CODE_NOTES: dict[int, str] = {
+    -2130312909: (
+        "APIERR_NOACCESSRIGHT -- Archicad refused write access to the element. "
+        "On a solo file that is not about Teamwork: the usual causes are a "
+        "locked element, a locked layer, or an element belonging to a hotlinked "
+        "module, which is read-only in the host file and can only be changed in "
+        "the module's own source"
+    ),
+    -2130312910: "APIERR_NOTMINE -- the element is reserved by another Teamwork user",
+    -2130313104: (
+        "APIERR_BADVALUE -- a value in the request was rejected; a property "
+        "definition with no defaultValue fails this way"
+    ),
+    -2130312908: "APIERR_BADPROPERTY -- the property is not valid for this element",
+}
+
+
+def explain_code(code: Any) -> str:
+    """A readable note for an Archicad error code, or the bare code.
+
+    Tapir's own messages are fixed strings -- "Failed to set property value for
+    element" tells a reader nothing about why -- so the code is the whole
+    diagnostic, and a bare number sends everyone looking up the same table.
+    """
+    note = ERROR_CODE_NOTES.get(code) if isinstance(code, int) else None
+    return f"{code}: {note}" if note else f"code {code}"
+
+
 def _execution_problem(result: Any, label: str) -> str | None:
     """The reason one value did not land, or ``None`` when it did.
 
@@ -552,7 +600,7 @@ def _execution_problem(result: Any, label: str) -> str | None:
         return None
     if isinstance(result, dict) and result.get("success") is False:
         error = result.get("error") or {}
-        return f"{label}: {error.get('message', 'no message')} (code {error.get('code', 'none')})"
+        return f"{label}: {error.get('message', 'no message')} [{explain_code(error.get('code'))}]"
     if isinstance(result, dict) and not result:
         return (
             f"{label}: Archicad did not report a result, which means the property "

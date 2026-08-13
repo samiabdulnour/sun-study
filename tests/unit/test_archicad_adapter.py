@@ -1398,3 +1398,48 @@ def test_layers_are_enumerated_not_asked_for_by_id() -> None:
     assert transport.parameters_for("GetAttributesByType") == {"attributeType": "Layer"}
     hatches = transport.parameters_for("CreateHatches")["hatchesData"]
     assert all(fill["layerIndex"] == 12 for fill in hatches)
+
+
+def test_a_known_error_code_is_translated_not_relayed() -> None:
+    """Tapir's messages are fixed strings, so the code is the whole diagnostic.
+
+    A bare number sends every reader to the same lookup table.
+    """
+    from sun_study.archicad.write import explain_code
+
+    assert "APIERR_NOACCESSRIGHT" in explain_code(-2130312909)
+    assert "hotlinked" in explain_code(-2130312909), "the likely cause on a solo file"
+    assert "APIERR_BADVALUE" in explain_code(-2130313104)
+    assert explain_code(12345) == "code 12345", "an unknown code is still shown"
+
+
+def test_only_the_first_failure_per_element_is_reported_as_a_cause() -> None:
+    """Tapir reuses one `err` across an element's properties without resetting.
+
+    So the first genuine failure makes every later property on that element
+    report "Failed to get property values" too. Printing all of them buries
+    eight causes under forty-eight symptoms.
+    """
+    from sun_study.archicad.write import WriteReport
+
+    report = WriteReport(
+        values_written=0,
+        values_skipped=0,
+        zones_written=("a", "b"),
+        zones_unmatched=(),
+        zones_ambiguous=(),
+        failures=(
+            "Apt A / Living Room Sunlight (h): Failed to set property value",
+            "Apt A / Governing Sunlight (h): Failed to get property values",
+            "Apt A / Meets Minimum: Failed to get property values",
+            "Apt B / Living Room Sunlight (h): Failed to set property value",
+            "Apt B / Meets Minimum: Failed to get property values",
+        ),
+    )
+    described = report.describe()
+
+    assert described.count("FAILED") == 2, "one line per element, not one per value"
+    assert "Apt A / Living Room Sunlight (h)" in described
+    assert "Apt B / Living Room Sunlight (h)" in described
+    assert "Apt A / Meets Minimum" not in described
+    assert "5 failures over 2 elements" in described
