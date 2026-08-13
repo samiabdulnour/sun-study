@@ -91,6 +91,13 @@ column is the add-on version the command first appeared in.
 | `CreatePropertyGroups` | 1.0.7 | Tapir | `sun-study init-properties` |
 | `CreatePropertyDefinitions` | 1.0.9 | Tapir | `sun-study init-properties` |
 | `SetPropertyValuesOfElements` | 1.0.6 | Tapir | Writing the results |
+| `GetAttributesByType` | 1.1.3 | Tapir | Finding the results layer and the pen tables |
+| `GetLayers` | 1.5.4 | Tapir | Whether the results layer is hidden or locked |
+| `CreateLayers` | 1.5.4 | Tapir | Creating the results layer |
+| `GetPenTables` | 1.5.4 | Tapir | Matching band colours to the office's own pens |
+| `CreateHatches` | 1.5.7 | Tapir | The apartment fills and legend swatches |
+| `CreateTexts` | 1.5.7 | Tapir | The legend labels |
+| `DeleteElements` | 1.0.7 | Tapir | Clearing the previous run |
 
 `GetAllClassificationSystems` is one of **Archicad's own** commands, not a Tapir one.
 Tapir has no getter for classification systems — only for an element's classification
@@ -311,6 +318,13 @@ what they all shared.
 **`GetLayers` requires `attributeIds`**, so it cannot enumerate — it has to be told which
 layers to describe. Calling it bare is a schema violation and Archicad rejects the whole
 command with code 4002. Use `GetAttributesByType` with `attributeType: "Layer"`.
+
+That is a family, not a one-off: every `Get<Attribute>s` command added in 1.5.4 —
+`GetPenTables`, `GetFills`, `GetSurfaces`, `GetProfiles`, `GetComposites` and the rest —
+takes the same required `attributeIds`. `GetAttributesByType` is the only enumerator, and
+it reports just id, index and name, so reading any detail is always two calls.
+`GetPenTables` also accepts `fields`, which is worth using: each pen table carries 255
+pens, and finding out which of several tables is active should not pull all of them.
 
 And one Tapir bug worth knowing: **it reuses a single `err` across the loop over an
 element's properties without resetting it**, so the first genuine failure makes every

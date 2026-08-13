@@ -28,8 +28,9 @@ underneath are the ones that print if the top layer is ever hidden.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
@@ -42,10 +43,13 @@ __all__ = [
     "BandStyle",
     "DrawReport",
     "LayerState",
+    "Pen",
     "band_for",
     "clear_layer",
     "draw_assessment",
     "ensure_layer",
+    "match_pens",
+    "pen_table",
 ]
 
 #: Everything this tool draws goes here, and nothing else does. That is what
@@ -69,19 +73,29 @@ class BandStyle:
     fill_pen: int
     background_pen: int = 19
     contour_pen: int = 1
+    rgb: tuple[int, int, int] = (0, 0, 0)
+    """The colour this band *should* be, 0-255.
+
+    Taken from the reference study's own legend, decoded during the Ladybug
+    validation by integrating area per colour until the published table
+    reproduced exactly. Kept alongside the pen index because a pen number is
+    meaningless outside one project's pen table, while the colour is the thing
+    everybody actually agreed on -- and it is what lets a pen be *chosen*
+    rather than guessed.
+    """
 
 
 #: A starting point, not an answer. Pen indices mean whatever the project's pen
 #: table says they mean, so these are almost certainly wrong for any given
 #: office and are meant to be overridden. The run prints the mapping it used.
 DEFAULT_BANDS: tuple[BandStyle, ...] = (
-    BandStyle("0 hrs", 1e-9, fill_pen=91),
-    BandStyle("0-1 hrs", 60.0, fill_pen=92),
-    BandStyle("1-2 hrs", 120.0, fill_pen=93),
-    BandStyle("2-3 hrs", 180.0, fill_pen=94),
-    BandStyle("3-4 hrs", 240.0, fill_pen=95),
-    BandStyle("4-5 hrs", 300.0, fill_pen=96),
-    BandStyle("5+ hrs", float("inf"), fill_pen=97),
+    BandStyle("0 hrs", 1e-9, fill_pen=91, rgb=(8, 48, 107)),
+    BandStyle("0-1 hrs", 60.0, fill_pen=92, rgb=(43, 122, 191)),
+    BandStyle("1-2 hrs", 120.0, fill_pen=93, rgb=(77, 182, 172)),
+    BandStyle("2-3 hrs", 180.0, fill_pen=94, rgb=(230, 238, 156)),
+    BandStyle("3-4 hrs", 240.0, fill_pen=95, rgb=(255, 213, 79)),
+    BandStyle("4-5 hrs", 300.0, fill_pen=96, rgb=(255, 183, 77)),
+    BandStyle("5+ hrs", float("inf"), fill_pen=97, rgb=(244, 81, 30)),
 )
 
 
@@ -149,6 +163,163 @@ class DrawReport:
                 f"straight segments between their nodes"
             )
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Pen:
+    """One pen from the project's pen table."""
+
+    index: int
+    rgb: tuple[int, int, int]
+    description: str = ""
+
+
+def pen_table(connection: ArchicadConnection) -> tuple[Pen, ...]:
+    """The pens of the pen table Archicad is using for the model.
+
+    Three calls, for the same reason ``_find_layer`` takes two.
+    ``GetAttributesByType`` enumerates but reports only id, index and name;
+    ``GetPenTables`` carries the pens but *requires* ``attributeIds``, so it
+    cannot be used to search -- calling it bare is a schema violation and
+    Archicad rejects the whole command.
+
+    The middle call asks only for ``isActiveForModel``. A project can hold
+    several pen tables and each carries 255 pens, so pulling every pen of
+    every table to find out which one governs the drawing is a lot of JSON for
+    one boolean. ``fields`` exists precisely to avoid that, and the pens are
+    fetched once the table is known.
+
+    Colours come back as 0-1 floats and are scaled to 0-255 here, because
+    every other colour in this project -- the reference legend, the band
+    definitions -- is in 0-255 and mixing the two scales silently produces
+    near-black.
+    """
+    attributes = connection.run_tapir("GetAttributesByType", {"attributeType": "PenTable"})
+    listed = attributes.get("attributes") if isinstance(attributes, dict) else None
+    identifiers = [
+        str((attribute.get("attributeId") or {}).get("guid"))
+        for attribute in (listed or [])
+        if isinstance(attribute, dict) and (attribute.get("attributeId") or {}).get("guid")
+    ]
+    if not identifiers:
+        raise ArchicadError(f"The project lists no pen tables: {attributes!r}")
+
+    identifier = _active_pen_table(connection, identifiers)
+    response = connection.run_tapir(
+        "GetPenTables",
+        {"attributeIds": [{"attributeId": {"guid": identifier}}], "fields": ["pens"]},
+    )
+    table = _first_pen_table(response)
+    if table is None:
+        raise ArchicadError(f"GetPenTables returned no usable pen table: {response!r}")
+
+    pens: list[Pen] = []
+    for pen in table.get("pens") or []:
+        colour = (pen or {}).get("color") if isinstance(pen, dict) else None
+        index = (pen or {}).get("index") if isinstance(pen, dict) else None
+        if not isinstance(colour, dict) or not isinstance(index, (int, float)):
+            continue
+        pens.append(
+            Pen(
+                index=int(index),
+                rgb=(
+                    _channel(colour, "red"),
+                    _channel(colour, "green"),
+                    _channel(colour, "blue"),
+                ),
+                description=str(pen.get("description", "")),
+            )
+        )
+    if not pens:
+        raise ArchicadError(f"The active pen table carried no pens: {response!r}")
+    return tuple(pens)
+
+
+def _channel(colour: dict[str, Any], name: str) -> int:
+    """One 0-1 colour channel as 0-255, clamped."""
+    return max(0, min(255, round(255 * float(colour.get(name, 0.0)))))
+
+
+def _active_pen_table(connection: ArchicadConnection, identifiers: Sequence[str]) -> str:
+    """Which pen table is in effect for the model.
+
+    Falls back to the first one listed. A project with one pen table -- the
+    common case -- gives the same answer either way, and a build that will not
+    report ``isActiveForModel`` is a worse reason to refuse to draw than
+    picking the only table there is.
+    """
+    if len(identifiers) == 1:
+        return identifiers[0]
+    try:
+        response = connection.run_tapir(
+            "GetPenTables",
+            {
+                "attributeIds": [{"attributeId": {"guid": guid}} for guid in identifiers],
+                "fields": ["isActiveForModel"],
+            },
+        )
+    except ArchicadError:
+        return identifiers[0]
+
+    tables = response.get("penTables") if isinstance(response, dict) else None
+    for position, entry in enumerate(tables or []):
+        table = _unwrap_pen_table(entry)
+        if table is not None and table.get("isActiveForModel"):
+            guid = (table.get("attributeId") or {}).get("guid")
+            return str(guid) if guid else identifiers[position]
+    return identifiers[0]
+
+
+def _unwrap_pen_table(entry: Any) -> dict[str, Any] | None:
+    """One ``penTables`` entry, or ``None`` if it is an error item."""
+    if not isinstance(entry, dict) or "error" in entry:
+        return None
+    inner = entry.get("penTableAttribute")
+    return inner if isinstance(inner, dict) else entry
+
+
+def _first_pen_table(response: Any) -> dict[str, Any] | None:
+    tables = response.get("penTables") if isinstance(response, dict) else None
+    if not isinstance(tables, list) or not tables:
+        return None
+    return _unwrap_pen_table(tables[0])
+
+
+def _distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
+    """How far apart two colours are.
+
+    Plain Euclidean in RGB. A perceptual metric would rank near-misses better,
+    but the job here is picking the obvious match out of a palette of a few
+    hundred, and the distance is reported so a poor one is visible rather than
+    silently accepted.
+    """
+    return math.dist(left, right)
+
+
+def match_pens(
+    bands: Sequence[BandStyle], pens: Sequence[Pen]
+) -> tuple[tuple[BandStyle, ...], dict[str, float]]:
+    """Re-point each band at the closest pen in the project's own table.
+
+    A pen index means nothing outside the pen table it came from, so a
+    hard-coded default is guaranteed wrong somewhere. The colour, on the other
+    hand, is the thing the reference study and this tool already agree on --
+    so the colour is the input and the pen is derived.
+
+    Returns the re-pointed bands and how far each had to reach, because a
+    palette with no yellow in it will still return *something* and the
+    distance is the only sign that the answer is poor.
+    """
+    if not pens:
+        return tuple(bands), {}
+
+    matched: list[BandStyle] = []
+    distances: dict[str, float] = {}
+    for band in bands:
+        best = min(pens, key=lambda pen: _distance(band.rgb, pen.rgb))
+        matched.append(replace(band, fill_pen=best.index))
+        distances[band.label] = _distance(band.rgb, best.rgb)
+    return tuple(matched), distances
 
 
 def band_for(minutes: float, bands: Sequence[BandStyle]) -> BandStyle:

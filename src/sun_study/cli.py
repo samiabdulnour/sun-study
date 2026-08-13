@@ -30,6 +30,8 @@ from sun_study.archicad.draw import (
     DEFAULT_LAYER_NAME,
     BandStyle,
     draw_assessment,
+    match_pens,
+    pen_table,
 )
 from sun_study.archicad.read import (
     ArchicadZone,
@@ -233,6 +235,54 @@ def run(
     report_assessment(result, timezone=timezone, area=area, csv_out=csv_out, json_out=json_out)
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)
+
+
+def resolve_bands(
+    connection: ArchicadConnection, overrides: list[str] | None
+) -> tuple[BandStyle, ...]:
+    """Band styles pointed at real pens from the project's own pen table.
+
+    A pen index means nothing outside the table it came from, so a hard-coded
+    default is guaranteed wrong in somebody's project. The band *colours* are
+    the part everyone already agrees on -- they come from the reference
+    study's legend -- so the colour is the input and the pen is looked up.
+
+    Explicit ``--pen`` overrides win, and are applied after matching so a
+    person can correct one band without losing the rest.
+    """
+    # Validate first, so a typo fails before the pen table is read and its
+    # mapping printed -- an error under a wall of output reads as noise.
+    overridden = band_styles(overrides)
+    try:
+        pens = pen_table(connection)
+    except ArchicadError as error:
+        typer.secho(
+            f"  could not read the pen table ({error}); using default pen indices, "
+            f"which are a guess",
+            fg=typer.colors.YELLOW,
+        )
+        return overridden
+
+    styles, distances = match_pens(DEFAULT_BANDS, pens)
+    typer.echo(f"  matched band colours against {len(pens)} pens in the project's pen table:")
+    for band in styles:
+        gap = distances.get(band.label, 0.0)
+        quality = "exact" if gap < 12 else ("close" if gap < 60 else "POOR MATCH")
+        typer.echo(
+            f"    {band.label:<8} rgb{band.rgb} -> pen {band.fill_pen:<4} {quality}"
+            + (f" (off by {gap:.0f})" if gap >= 12 else "")
+        )
+    if any(value >= 60 for value in distances.values()):
+        typer.secho(
+            "  A poor match means the pen table has no pen near that colour. "
+            "Override it with --pen 'label=index'.",
+            fg=typer.colors.YELLOW,
+        )
+
+    if not overrides:
+        return styles
+    wanted = {band.label: band.fill_pen for band in overridden}
+    return tuple(replace(band, fill_pen=wanted.get(band.label, band.fill_pen)) for band in styles)
 
 
 def band_styles(overrides: list[str] | None) -> tuple[BandStyle, ...]:
@@ -881,7 +931,7 @@ def archicad_selftest(
                 assessment,
                 chosen,
                 zone_by_apartment=match.by_apartment,
-                bands=band_styles(pen),
+                bands=resolve_bands(connection, pen),
                 layer_name=layer,
                 title="SELF TEST -- invented values",
             )
@@ -1172,7 +1222,7 @@ def archicad_run(
         if draw:
             typer.echo("")
             try:
-                styles = band_styles(pen)
+                styles = resolve_bands(connection, pen)
                 drawn = draw_assessment(
                     connection,
                     result.assessment,

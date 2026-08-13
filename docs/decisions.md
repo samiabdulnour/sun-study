@@ -512,9 +512,8 @@ ignore the pen table, and be unfixable by the person holding the drawing.
 **Pens, not colours, and that is a feature.** `CreateHatches` takes pen *indices*. A
 practice runs a pen table — `00 FA Pens` in the reference office — and a diagram drawn
 from it stays consistent with everything else on the sheet, where an imported analysis
-palette would not. So band-to-pen is configuration, the defaults are a stated guess, and
-the run echoes the mapping it used with a note to check it. A wrong pen index produces a
-plausible diagram in the wrong colours, which nothing downstream catches.
+palette would not. Which pen carries which band is then read out of the project itself
+rather than configured; see [D27](#d27--the-pen-is-derived-from-the-colour-not-configured).
 
 An override naming a band that does not exist is an error rather than a no-op: `--pen
 '2-3 hours=42'` — "hours", not "hrs" — would otherwise draw the defaults and look
@@ -538,6 +537,40 @@ curved zone edges become straight segments between their nodes.
 **Version gating is separate.** `CreateHatches` needs 1.5.7 where the rest of the
 package needs 1.5.1, so `require_tapir_at_least` gates drawing on its own. Someone who
 wants the numbers should not be blocked by a picture they did not ask for.
+
+### D27 — The pen is derived from the colour, not configured
+
+*Milestone M5. Supersedes the "defaults are a stated guess" half of [D26](#d26--the-diagram-is-drawn-natively-on-the-floor-plan-on-its-own-layer).*
+
+A pen index means nothing outside the pen table it came from. Pen 92 is a mid blue in
+one office and a hairline black in the next, so any hard-coded default is guaranteed
+wrong in somebody's project — and wrong in the worst way, because it draws a complete,
+plausible diagram in colours nobody chose. Nothing downstream catches that. Asking every
+new user to supply seven `--pen` numbers before their first run is the other way to be
+wrong: it makes the tool feel broken out of the box.
+
+The colour is the part that everybody already agrees on. The seven band colours were
+decoded from the reference study's own legend during the Ladybug validation — by
+integrating area per colour until the published table reproduced exactly — so they are
+measured, not chosen. So the colour is the input and the pen is looked up: read the
+project's active pen table over `GetPenTables`, and give each band the nearest pen by
+Euclidean RGB distance.
+
+**The distance is reported, because `min()` always answers.** A palette with no yellow
+in it still returns *a* pen for the 3–4 hour band, and the only sign that the answer is
+poor is how far it had to reach. Each run prints the mapping with a quality label —
+`exact`, `close`, `POOR MATCH` — and a poor match names the `--pen` override that fixes
+it. Explicit overrides are applied after matching, so one band can be corrected without
+losing the other six.
+
+Plain Euclidean RGB, not a perceptual metric. The job is picking the obvious match out
+of a palette of a few hundred, not ranking near-misses, and a metric nobody can compute
+in their head is harder to argue with when it is wrong.
+
+Two failure modes are deliberately not fatal. A project that lists no pen table warns and
+keeps the guessed defaults rather than refusing to draw. And when several pen tables
+exist but the build will not say which is active, the first is used — not knowing is a
+worse reason to stop than drawing from the table that is almost always the only one.
 
 ### D16 — There is no `rules/nsw_adg.py`
 

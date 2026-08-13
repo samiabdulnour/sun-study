@@ -33,8 +33,12 @@ from sun_study.archicad.connection import (
 from sun_study.archicad.draw import (
     DEFAULT_BANDS,
     DEFAULT_LAYER_NAME,
+    BandStyle,
+    Pen,
     band_for,
     draw_assessment,
+    match_pens,
+    pen_table,
 )
 from sun_study.archicad.read import (
     GeoreferencingMismatchError,
@@ -65,40 +69,70 @@ from sun_study.rules.ruleset import Continuity
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "sample_building.ifc"
 
 
+class Sequential:
+    """Different answers to repeated calls of one command.
+
+    Only needed where a command is legitimately called more than once with
+    different parameters -- ``GetPenTables``, which is asked for the active
+    flag and then for that table's pens. The last answer repeats, so a test
+    does not have to count calls it does not care about.
+    """
+
+    def __init__(self, *responses: dict[str, Any]) -> None:
+        assert responses, "Sequential needs at least one response"
+        self.responses = list(responses)
+        self.calls = 0
+
+    def next(self) -> dict[str, Any]:
+        answer = self.responses[min(self.calls, len(self.responses) - 1)]
+        self.calls += 1
+        return answer
+
+
 class FakeTransport:
     """Answers from a script, and records exactly what it was asked.
 
     Keyed by command name -- for Tapir calls, the *inner* command name -- so a
     test reads as a list of the exchanges it expects rather than as a queue
-    whose order has to be maintained by hand.
+    whose order has to be maintained by hand. A ``Sequential`` value covers
+    the few commands that are called twice with different parameters.
     """
 
     def __init__(self, responses: dict[str, Any]) -> None:
         self.responses = responses
         self.sent: list[dict[str, Any]] = []
 
+    def _answer(self, command: str, kind: str) -> dict[str, Any]:
+        if command not in self.responses:
+            raise AssertionError(f"unscripted {kind} command {command!r}")
+        scripted = self.responses[command]
+        return scripted.next() if isinstance(scripted, Sequential) else scripted
+
     def send(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.sent.append(payload)
         command = payload["command"]
         if command == "API.ExecuteAddOnCommand":
             inner = payload["parameters"]["addOnCommandId"]["commandName"]
-            if inner not in self.responses:
-                raise AssertionError(f"unscripted Tapir command {inner!r}")
-            return {"succeeded": True, "result": {"addOnCommandResponse": self.responses[inner]}}
-        if command not in self.responses:
-            raise AssertionError(f"unscripted official command {command!r}")
-        return {"succeeded": True, "result": self.responses[command]}
+            return {
+                "succeeded": True,
+                "result": {"addOnCommandResponse": self._answer(inner, "Tapir")},
+            }
+        return {"succeeded": True, "result": self._answer(command, "official")}
 
-    def parameters_for(self, command: str) -> dict[str, Any]:
-        """The add-on parameters of the one call to ``command``."""
-        matches = [
-            payload["parameters"]["addOnCommandParameters"]
+    def all_parameters_for(self, command: str) -> list[dict[str, Any]]:
+        """The add-on parameters of every call to ``command``, in order."""
+        return [
+            dict(payload["parameters"]["addOnCommandParameters"])
             for payload in self.sent
             if payload["command"] == "API.ExecuteAddOnCommand"
             and payload["parameters"]["addOnCommandId"]["commandName"] == command
         ]
+
+    def parameters_for(self, command: str) -> dict[str, Any]:
+        """The add-on parameters of the one call to ``command``."""
+        matches = self.all_parameters_for(command)
         assert len(matches) == 1, f"expected one {command} call, got {len(matches)}"
-        return dict(matches[0])
+        return matches[0]
 
     def commands(self) -> list[str]:
         return [
@@ -1274,6 +1308,183 @@ def test_the_legend_sits_clear_of_the_plan() -> None:
 
     labels = [t["text"] for t in transport.parameters_for("CreateTexts")["textsData"]]
     assert labels[: len(DEFAULT_BANDS)] == [b.label for b in reversed(DEFAULT_BANDS)]
+
+
+# -- matching bands to the office's own pens ------------------------------
+
+
+def _pens(*pens: tuple[int, tuple[float, float, float], str]) -> dict[str, Any]:
+    """A ``GetPenTables`` answer carrying pens, colours as Archicad's 0-1 floats.
+
+    The shape is from ``GetPenTablesCommand::Execute`` in
+    ``archicad-addon/Sources/AttributeCommands.cpp``: a flat object per table,
+    not one wrapped in a ``penTableAttribute`` key.
+    """
+    return {
+        "penTables": [
+            {
+                "attributeId": {"guid": "p1"},
+                "index": 1,
+                "name": "00 FA Pens",
+                "pens": [
+                    {
+                        "index": index,
+                        "color": {"red": red, "green": green, "blue": blue},
+                        "width": 0.18,
+                        "description": description,
+                    }
+                    for index, (red, green, blue), description in pens
+                ],
+            }
+        ]
+    }
+
+
+def _pen_tables_listed(*guids: str) -> dict[str, Any]:
+    return {
+        "attributes": [
+            {"attributeId": {"guid": guid}, "index": position, "name": f"table {guid}"}
+            for position, guid in enumerate(guids, start=1)
+        ]
+    }
+
+
+def test_pen_colours_are_scaled_from_archicads_0_to_1_into_0_to_255() -> None:
+    """The trap: Archicad reports colour as floats, every other colour in this
+    project is 0-255, and mixing the scales silently produces near-black."""
+    connection, _ = connect(
+        {
+            "GetAttributesByType": _pen_tables_listed("p1"),
+            "GetPenTables": _pens((91, (1.0, 0.0, 0.5), "red-ish")),
+        }
+    )
+    assert pen_table(connection) == (Pen(index=91, rgb=(255, 0, 128), description="red-ish"),)
+
+
+def test_the_pen_table_is_found_by_enumerating_first() -> None:
+    """The trap that bit GetLayers: GetPenTables *requires* attributeIds, so
+    calling it bare to see what exists is a schema violation and Archicad
+    rejects the whole command rather than the parameter."""
+    connection, transport = connect(
+        {
+            "GetAttributesByType": _pen_tables_listed("p1"),
+            "GetPenTables": _pens((1, (0.0, 0.0, 0.0), "")),
+        }
+    )
+    pen_table(connection)
+
+    assert transport.parameters_for("GetAttributesByType") == {"attributeType": "PenTable"}
+    assert transport.parameters_for("GetPenTables") == {
+        "attributeIds": [{"attributeId": {"guid": "p1"}}],
+        "fields": ["pens"],
+    }
+
+
+def test_one_pen_table_is_not_asked_which_is_active() -> None:
+    """With a single table the answer cannot change, and the flag costs a call."""
+    connection, transport = connect(
+        {
+            "GetAttributesByType": _pen_tables_listed("p1"),
+            "GetPenTables": _pens((1, (0.0, 0.0, 0.0), "")),
+        }
+    )
+    pen_table(connection)
+    assert len(transport.all_parameters_for("GetPenTables")) == 1
+
+
+def test_the_pen_table_active_for_the_model_wins() -> None:
+    """A project can carry several pen tables. The one that governs what gets
+    drawn is the only one whose indices mean anything.
+
+    The active flag is asked for on its own first, because every table carries
+    255 pens and pulling all of them to read one boolean is a lot of JSON.
+    """
+    active = {
+        "penTables": [
+            {"attributeId": {"guid": "p1"}, "index": 1, "isActiveForModel": False},
+            {"attributeId": {"guid": "p2"}, "index": 2, "isActiveForModel": True},
+        ]
+    }
+    connection, transport = connect(
+        {
+            "GetAttributesByType": _pen_tables_listed("p1", "p2"),
+            "GetPenTables": Sequential(active, _pens((7, (1.0, 1.0, 1.0), "white"))),
+        }
+    )
+    assert pen_table(connection) == (Pen(index=7, rgb=(255, 255, 255), description="white"),)
+
+    probe, fetch = transport.all_parameters_for("GetPenTables")
+    assert probe["fields"] == ["isActiveForModel"], "the probe must not pull 2 x 255 pens"
+    assert fetch["attributeIds"] == [{"attributeId": {"guid": "p2"}}]
+
+
+def test_an_unreported_active_flag_falls_back_to_the_first_table() -> None:
+    """Not knowing which table is active is a worse reason to refuse to draw
+    than drawing from the first one, which is usually the only one."""
+    connection, _ = connect(
+        {
+            "GetAttributesByType": _pen_tables_listed("p1", "p2"),
+            "GetPenTables": Sequential(
+                {"penTables": [{"error": {"code": 1, "message": "no"}}]},
+                _pens((3, (0.0, 1.0, 0.0), "green")),
+            ),
+        }
+    )
+    assert pen_table(connection) == (Pen(index=3, rgb=(0, 255, 0), description="green"),)
+
+
+def test_a_project_with_no_pen_table_is_an_error_not_an_empty_palette() -> None:
+    """An empty palette would silently leave every band on its guessed pen."""
+    connection, _ = connect({"GetAttributesByType": {"attributes": []}})
+    with pytest.raises(ArchicadError, match="no pen tables"):
+        pen_table(connection)
+
+
+def test_a_pen_table_that_answers_with_no_pens_is_an_error() -> None:
+    connection, _ = connect(
+        {
+            "GetAttributesByType": _pen_tables_listed("p1"),
+            "GetPenTables": {"penTables": [{"attributeId": {"guid": "p1"}, "index": 1}]},
+        }
+    )
+    with pytest.raises(ArchicadError, match="no pens"):
+        pen_table(connection)
+
+
+def test_each_band_takes_the_closest_pen_by_colour() -> None:
+    """A pen index means nothing outside the table it came from, so the colour
+    is the input and the pen number is derived from it."""
+    bands = (
+        BandStyle("cold", 60.0, fill_pen=1, rgb=(8, 48, 107)),
+        BandStyle("hot", float("inf"), fill_pen=1, rgb=(244, 81, 30)),
+    )
+    pens = (
+        Pen(index=40, rgb=(10, 50, 110)),
+        Pen(index=41, rgb=(0, 255, 0)),
+        Pen(index=42, rgb=(240, 80, 30)),
+    )
+    matched, distances = match_pens(bands, pens)
+
+    assert [band.fill_pen for band in matched] == [40, 42]
+    assert distances["cold"] < 6.0
+    assert distances["hot"] < 5.0
+    assert [band.label for band in matched] == ["cold", "hot"], "only the pen changes"
+
+
+def test_a_palette_missing_a_colour_still_answers_but_the_distance_says_so() -> None:
+    """min() over a palette always returns something. The distance is the only
+    sign that a band landed on a pen nobody would have chosen by hand."""
+    bands = (BandStyle("yellow", 60.0, fill_pen=1, rgb=(255, 213, 79)),)
+    matched, distances = match_pens(bands, (Pen(index=5, rgb=(0, 0, 0)),))
+
+    assert matched[0].fill_pen == 5
+    assert distances["yellow"] > 100.0
+
+
+def test_an_empty_palette_leaves_the_default_pens_alone() -> None:
+    matched, distances = match_pens(DEFAULT_BANDS, ())
+    assert matched == DEFAULT_BANDS
+    assert distances == {}
 
 
 def test_an_existing_group_is_reused_rather_than_created_again() -> None:

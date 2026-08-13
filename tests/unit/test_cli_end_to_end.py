@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -367,6 +368,85 @@ def test_a_pen_override_needs_a_number() -> None:
 
     with pytest.raises(typer.BadParameter, match="whole-number"):
         band_styles(["2-3 hrs=orange"])
+
+
+class _PenTransport:
+    """Enough of a transport to answer a version check and one pen table.
+
+    ``pens=None`` stands for a project that lists no pen table at all, which
+    is the path where the CLI must warn and keep its guessed defaults rather
+    than refuse to draw.
+    """
+
+    def __init__(self, pens: list[dict[str, Any]] | None) -> None:
+        self.pens = pens
+
+    def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = payload["parameters"]["addOnCommandId"]["commandName"]
+        return {"succeeded": True, "result": {"addOnCommandResponse": self._answer(name)}}
+
+    def _answer(self, name: str) -> dict[str, Any]:
+        if name == "GetAddOnVersion":
+            return {"version": "1.5.7"}
+        if name == "GetAttributesByType":
+            if self.pens is None:
+                return {"attributes": []}
+            return {"attributes": [{"attributeId": {"guid": "p1"}, "index": 1, "name": "pens"}]}
+        assert name == "GetPenTables", name
+        return {"penTables": [{"attributeId": {"guid": "p1"}, "index": 1, "pens": self.pens}]}
+
+
+def _pen(index: int, rgb: tuple[float, float, float]) -> dict[str, Any]:
+    red, green, blue = rgb
+    return {
+        "index": index,
+        "color": {"red": red, "green": green, "blue": blue},
+        "width": 0.18,
+        "description": "",
+    }
+
+
+def test_bands_are_pointed_at_the_projects_own_pens() -> None:
+    """The defaults are a guess; the project's pen table is the truth."""
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.cli import resolve_bands
+
+    connection = ArchicadConnection(
+        _PenTransport([_pen(200, (8 / 255, 48 / 255, 107 / 255)), _pen(201, (1.0, 1.0, 1.0))])
+    )
+    styles = {band.label: band.fill_pen for band in resolve_bands(connection, None)}
+    assert styles["0 hrs"] == 200, "the dark blue band takes the dark blue pen"
+
+
+def test_an_explicit_pen_override_beats_the_colour_match() -> None:
+    """Matching is a convenience. A person who names a pen has a reason."""
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.cli import resolve_bands
+
+    connection = ArchicadConnection(_PenTransport([_pen(200, (8 / 255, 48 / 255, 107 / 255))]))
+    styles = {band.label: band.fill_pen for band in resolve_bands(connection, ["0 hrs=42"])}
+    assert styles["0 hrs"] == 42
+
+
+def test_a_typo_in_pen_fails_before_the_pen_table_is_even_read() -> None:
+    """An error printed under a wall of matching output reads as noise."""
+    import typer
+
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.cli import resolve_bands
+
+    transport = _PenTransport([_pen(1, (0.0, 0.0, 0.0))])
+    with pytest.raises(typer.BadParameter):
+        resolve_bands(ArchicadConnection(transport), ["2-3 hours=42"])
+
+
+def test_an_unreadable_pen_table_warns_and_keeps_the_defaults() -> None:
+    """An old add-on or a project with no pen table must not stop the drawing."""
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.archicad.draw import DEFAULT_BANDS
+    from sun_study.cli import resolve_bands
+
+    assert resolve_bands(ArchicadConnection(_PenTransport(None)), None) == DEFAULT_BANDS
 
 
 def test_drawing_is_opt_in_like_writing() -> None:

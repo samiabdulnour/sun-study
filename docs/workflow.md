@@ -154,16 +154,27 @@ the Zone's own outline and placed on the Zone's own storey, plus a legend. It al
 one layer (`Sun Study.Results` by default), and re-running deletes the previous set
 before drawing the new one.
 
-Colours are **pen indices**, because that is what `CreateHatches` takes. The defaults are
-a guess; map them to the office pens with `--pen`, repeatable:
+Colours are **pen indices**, because that is what `CreateHatches` takes — so the run
+reads the project's own pen table and gives each band the pen closest to the reference
+study's colour for it. Nothing to configure, and the mapping is printed:
 
-```powershell
---pen "0 hrs=91" --pen "2-3 hrs=42" --pen "5+ hrs=47"
+```
+  matched band colours against 255 pens in the project's pen table:
+    0 hrs    rgb(8, 48, 107)   -> pen 91   exact
+    2-3 hrs  rgb(230, 238, 156)-> pen 94   close (off by 21)
 ```
 
-The run prints the mapping it used. **Check it against the pen table** — a wrong index
-draws a perfectly plausible diagram in the wrong colours, and nothing downstream catches
-that. An override naming a band that does not exist is an error, not a no-op.
+**Read the labels.** `POOR MATCH` means the pen table has no pen near that colour, and
+the band landed on whatever was least far away. Override any band with `--pen`,
+repeatable, applied after matching so the other six keep their matches:
+
+```powershell
+--pen "2-3 hrs=42" --pen "5+ hrs=47"
+```
+
+An override naming a band that does not exist is an error, not a no-op — `--pen
+"2-3 hours=42"`, with "hours" rather than "hrs", would otherwise draw the defaults and
+look entirely correct.
 
 Two limits it reports rather than hides: an apartment wrapping a lift core is drawn over
 the void, because a hatch is a single contour; and curved zone edges become straight
