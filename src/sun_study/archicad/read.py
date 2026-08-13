@@ -157,12 +157,29 @@ class GeoLocation:
 
 @dataclass(frozen=True)
 class ArchicadZone:
-    """One Zone element, enough of it to join to a result and write back."""
+    """One Zone element, enough of it to join to a result and draw on a plan."""
 
     guid: str
     name: str
     number: str
     storey_index: int | None = None
+    outline: tuple[tuple[float, float], ...] = ()
+    """The zone's own 2D boundary, in project coordinates and metres.
+
+    Its real shape, not a bounding box, so a fill drawn from it lands exactly
+    on the apartment. Empty when Archicad reported no outline, which is a
+    reason to skip that zone rather than approximate it.
+    """
+    hole_count: int = 0
+    """Voids in the outline -- a lift core or light well the apartment wraps.
+
+    ``CreateHatches`` takes a single contour and no holes, so a zone with one
+    can only be drawn solid, covering the void. Counted rather than ignored so
+    the run can say how many diagrams are affected instead of quietly
+    colouring over a lift shaft.
+    """
+    arc_count: int = 0
+    """Curved segments in the outline, likewise flattened to straight ones."""
 
     @property
     def label(self) -> str:
@@ -331,6 +348,27 @@ def _element_guids(response: Any, command: str) -> list[str]:
     return guids
 
 
+def _outline(points: Any) -> tuple[tuple[float, float], ...]:
+    """A zone's 2D boundary, dropping a repeated closing point.
+
+    Archicad's polygons are closed, and ``CreateHatches`` says explicitly not
+    to repeat the first point at the end. Passing it through would put a
+    zero-length edge in every fill.
+    """
+    if not isinstance(points, list):
+        return ()
+
+    corners: list[tuple[float, float]] = []
+    for point in points:
+        if not isinstance(point, dict) or "x" not in point or "y" not in point:
+            return ()
+        corners.append((float(point["x"]), float(point["y"])))
+
+    if len(corners) > 1 and corners[0] == corners[-1]:
+        corners.pop()
+    return tuple(corners) if len(corners) >= 3 else ()
+
+
 def zones(connection: ArchicadConnection) -> tuple[ArchicadZone, ...]:
     """Every Zone in the project, with its name and number.
 
@@ -369,6 +407,9 @@ def zones(connection: ArchicadConnection) -> tuple[ArchicadZone, ...]:
                 name=str(detail.get("name", "")),
                 number=str(detail.get("numberStr", "")),
                 storey_index=int(floor) if isinstance(floor, (int, float)) else None,
+                outline=_outline(detail.get("polygonOutline")),
+                hole_count=len(detail.get("holes") or []),
+                arc_count=len(detail.get("polygonArcs") or []),
             )
         )
     return tuple(sorted(result, key=lambda zone: (zone.number, zone.name, zone.guid)))

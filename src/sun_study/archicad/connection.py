@@ -207,6 +207,23 @@ class ArchicadConnection:
         problem, rather than as an unexplained failure on whichever command
         happens to be the first one that needs a newer add-on.
         """
+        return self.require_tapir_at_least(
+            MINIMUM_TAPIR_VERSION,
+            "GetElementsByIFCIds, which maps IFC GlobalIds onto Archicad elements,",
+        )
+
+    def require_tapir_at_least(self, minimum: tuple[int, ...], because: str) -> str:
+        """Confirm the add-on is new enough for one particular feature.
+
+        Separate from ``require_tapir`` so an optional capability can need a
+        newer build without locking everyone else out. Drawing needs 1.5.7 for
+        ``CreateHatches``; reading and writing numbers need only 1.5.1, and
+        someone who wants the numbers should not be blocked by a picture they
+        did not ask for.
+
+        ``because`` names the command that sets the floor, so the message says
+        what the update actually buys.
+        """
         version = self.tapir_version
         try:
             parts = tuple(int(p) for p in version.split(".")[:3])
@@ -215,12 +232,11 @@ class ArchicadConnection:
                 f"Could not read the Tapir add-on version from {version!r}."
             ) from exc
 
-        if parts < MINIMUM_TAPIR_VERSION:
-            needed = ".".join(str(p) for p in MINIMUM_TAPIR_VERSION)
+        if parts < minimum:
+            needed = ".".join(str(p) for p in minimum)
             raise TapirUnavailableError(
-                f"Tapir {version} is installed but this tool needs at least {needed}. "
-                f"GetElementsByIFCIds, which maps IFC GlobalIds onto Archicad "
-                f"elements, arrived in {needed}. Update the add-on from "
+                f"Tapir {version} is installed but this needs at least {needed}. "
+                f"{because} arrived in {needed}. Update the add-on from "
                 f"https://github.com/ENZYME-APD/tapir-archicad-automation/releases"
             )
         return version

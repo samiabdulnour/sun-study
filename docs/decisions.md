@@ -496,6 +496,49 @@ balcony slab is a solid whose walking surface is its top face. A balcony Zone is
 every sample a metre into the storey overhead and still returns plausible hours. A Zone
 is therefore gridded on its floor, with the sample normals flipped back up.
 
+### D26 — The diagram is drawn natively, on the floor plan, on its own layer
+
+*Milestone M5. Alternative: render an image and place it on the sheet.*
+
+A number in a schedule is the record; a coloured plan is what gets looked at. So the
+tool draws one — but as Archicad elements, not as a picture.
+
+`CreateHatches` (Tapir 1.5.7) takes a polygon, and `GetDetailsOfElements` returns each
+Zone's `polygonOutline`, so the fill is the apartment's real shape rather than a
+bounding box. Each lands on the Zone's own `floorIndex`, which gives a per-storey
+diagram set rather than one flattened plan. An exported image would print at one scale,
+ignore the pen table, and be unfixable by the person holding the drawing.
+
+**Pens, not colours, and that is a feature.** `CreateHatches` takes pen *indices*. A
+practice runs a pen table — `00 FA Pens` in the reference office — and a diagram drawn
+from it stays consistent with everything else on the sheet, where an imported analysis
+palette would not. So band-to-pen is configuration, the defaults are a stated guess, and
+the run echoes the mapping it used with a note to check it. A wrong pen index produces a
+plausible diagram in the wrong colours, which nothing downstream catches.
+
+An override naming a band that does not exist is an error rather than a no-op: `--pen
+'2-3 hours=42'` — "hours", not "hrs" — would otherwise draw the defaults and look
+entirely correct.
+
+**Re-running replaces.** Everything goes on one dedicated layer and the previous run's
+Hatches and Texts are deleted first. Without that a second run doubles up: the new fills
+land exactly on the old, the plan looks unchanged, and the stale colours underneath are
+what print if the top layer is ever hidden. Deletion is scoped to the two element types
+this tool creates, so anything else a person put on the layer survives.
+
+**The join is shared with the write-back.** `match_apartments` runs once and feeds both
+the property values and the fills. Two independent joins over the same data would agree
+almost always, and the time they did not would be a diagram whose colours belonged to
+the neighbouring apartments.
+
+Two limits, reported rather than hidden. `CreateHatches` takes a single contour, so an
+apartment wrapping a lift core is drawn over the void — the run says how many. And
+curved zone edges become straight segments between their nodes.
+
+**Version gating is separate.** `CreateHatches` needs 1.5.7 where the rest of the
+package needs 1.5.1, so `require_tapir_at_least` gates drawing on its own. Someone who
+wants the numbers should not be blocked by a picture they did not ask for.
+
 ### D16 — There is no `rules/nsw_adg.py`
 
 *Milestone M3. Deviation from the brief's architecture sketch, stated deliberately.*

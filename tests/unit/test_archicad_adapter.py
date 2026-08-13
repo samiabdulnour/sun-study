@@ -30,6 +30,12 @@ from sun_study.archicad.connection import (
     HttpTransport,
     TapirUnavailableError,
 )
+from sun_study.archicad.draw import (
+    DEFAULT_BANDS,
+    DEFAULT_LAYER_NAME,
+    band_for,
+    draw_assessment,
+)
 from sun_study.archicad.read import (
     GeoreferencingMismatchError,
     classification_items_of,
@@ -1065,3 +1071,188 @@ def test_asking_for_no_enumerations_makes_no_call() -> None:
     connection, transport = connect({})
     assert enum_values(connection, []) == {}
     assert transport.sent == []
+
+
+# -- drawing the result on the plan ---------------------------------------
+
+
+def _zone(guid: str, *, outline: bool = True, holes: int = 0, storey: int | None = 0) -> Any:
+    from sun_study.archicad.read import ArchicadZone
+
+    return ArchicadZone(
+        guid=guid,
+        name="Living",
+        number=guid.upper(),
+        storey_index=storey,
+        outline=((0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)) if outline else (),
+        hole_count=holes,
+    )
+
+
+def _draw_responses(*, layer_index: int = 7, **overrides: Any) -> dict[str, Any]:
+    responses: dict[str, Any] = {
+        "GetLayers": {
+            "layers": [
+                {"attributeId": {"guid": "l"}, "index": layer_index, "name": DEFAULT_LAYER_NAME}
+            ]
+        },
+        "GetElementsByType": {"elements": []},
+        "CreateHatches": {"elements": [{"elementId": {"guid": "h"}}] * 99},
+        "CreateTexts": {"elements": [{"elementId": {"guid": "t"}}] * 99},
+    }
+    responses.update(overrides)
+    return responses
+
+
+def test_a_fill_uses_the_zones_own_outline_and_storey() -> None:
+    connection, transport = connect(_draw_responses())
+    report = draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1", storey=3)],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+
+    hatches = transport.parameters_for("CreateHatches")["hatchesData"]
+    apartment_fill = hatches[0]
+    assert apartment_fill["coordinates"] == [
+        {"x": 0.0, "y": 0.0},
+        {"x": 4.0, "y": 0.0},
+        {"x": 4.0, "y": 3.0},
+        {"x": 0.0, "y": 3.0},
+    ]
+    assert apartment_fill["layerIndex"] == 7
+    assert apartment_fill["floorInd"] == 3, "each apartment is drawn on its own storey"
+    assert report.fills_drawn == 1
+    assert report.legend_items == len(DEFAULT_BANDS)
+
+
+def test_the_band_boundary_belongs_to_the_band_above() -> None:
+    """Exactly two hours is '2-3 hrs'. The ADG reads 'at least two hours', and
+    disagreeing by one band at exactly the threshold is the worst place to."""
+    assert band_for(120.0, DEFAULT_BANDS).label == "2-3 hrs"
+    assert band_for(119.999, DEFAULT_BANDS).label == "1-2 hrs"
+    assert band_for(0.0, DEFAULT_BANDS).label == "0 hrs"
+    assert band_for(1e9, DEFAULT_BANDS).label == "5+ hrs"
+
+
+def test_the_previous_run_is_deleted_before_drawing() -> None:
+    """Without this a second run doubles up: the new fills land on the old
+    ones, the plan looks unchanged, and stale colours print from underneath."""
+    stale = [{"elementId": {"guid": "old-1"}}, {"elementId": {"guid": "old-2"}}]
+    connection, transport = connect(
+        _draw_responses(
+            GetElementsByType={"elements": stale},
+            GetDetailsOfElements={"detailsOfElements": [{"layerIndex": 7}, {"layerIndex": 99}]},
+            DeleteElements={"success": True},
+        )
+    )
+    report = draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+
+    deleted = transport.parameters_for("DeleteElements")["elements"]
+    assert deleted == [{"elementId": {"guid": "old-1"}}] * 2, (
+        "only elements on the results layer are deleted, from both Hatch and Text"
+    )
+    assert report.fills_removed == 2
+    assert transport.commands().index("DeleteElements") < transport.commands().index(
+        "CreateHatches"
+    )
+
+
+def test_something_else_on_the_layer_is_not_touched() -> None:
+    connection, transport = connect(
+        _draw_responses(
+            GetElementsByType={"elements": [{"elementId": {"guid": "keep"}}]},
+            GetDetailsOfElements={"detailsOfElements": [{"layerIndex": 99}]},
+        )
+    )
+    draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+    assert "DeleteElements" not in transport.commands()
+
+
+def test_a_zone_with_no_outline_is_skipped_and_named() -> None:
+    connection, _ = connect(_draw_responses())
+    report = draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1", outline=False)],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+    assert report.fills_drawn == 0
+    assert report.zones_without_outline == ("Z1 Living",)
+    assert not report.complete
+
+
+def test_a_zone_with_holes_is_drawn_but_reported() -> None:
+    """CreateHatches takes a single contour, so an apartment wrapping a lift
+    core gets coloured over the void. Saying so beats drawing it silently."""
+    connection, _ = connect(_draw_responses())
+    report = draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1", holes=1)],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+    assert report.fills_drawn == 1
+    assert report.zones_with_holes == ("Z1 Living",)
+    assert "drawn solid" in report.describe()
+
+
+def test_a_per_element_failure_is_raised_not_swallowed() -> None:
+    """A half-drawn diagram reporting success is worse than none: the missing
+    apartments look like apartments that were never assessed."""
+    connection, _ = connect(
+        _draw_responses(
+            CreateHatches={
+                "elements": [
+                    {"elementId": {"guid": "h"}},
+                    {"error": {"code": 5, "message": "invalid polygon"}},
+                ]
+            }
+        )
+    )
+    with pytest.raises(ArchicadError, match="invalid polygon"):
+        draw_assessment(
+            connection,
+            _assessment(_apartment("apt-1")),
+            [_zone("z1")],
+            zone_by_apartment={"apt-1": "z1"},
+        )
+
+
+def test_drawing_needs_a_newer_add_on_than_the_numbers_do() -> None:
+    """CreateHatches arrived in 1.5.7. Someone who only wants numbers should
+    not be blocked by a picture they did not ask for, so the gate is separate."""
+    transport = FakeTransport({"GetAddOnVersion": {"version": "1.5.4"}})
+    connection = ArchicadConnection(transport)
+
+    assert connection.require_tapir() == "1.5.4", "1.5.4 is fine for reading and writing"
+    with pytest.raises(TapirUnavailableError, match="CreateHatches"):
+        draw_assessment(connection, _assessment(_apartment("a")), [], zone_by_apartment={})
+
+
+def test_the_legend_sits_clear_of_the_plan() -> None:
+    connection, transport = connect(_draw_responses())
+    draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+    swatches = transport.parameters_for("CreateHatches")["hatchesData"][1:]
+    assert all(point["x"] >= 9.0 for fill in swatches for point in fill["coordinates"]), (
+        "the legend must not land on top of the zones, which end at x=4"
+    )
+
+    labels = [t["text"] for t in transport.parameters_for("CreateTexts")["textsData"]]
+    assert labels[: len(DEFAULT_BANDS)] == [b.label for b in reversed(DEFAULT_BANDS)]

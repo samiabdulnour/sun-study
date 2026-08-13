@@ -48,6 +48,7 @@ from sun_study.rules.assessment import BuildingAssessment
 __all__ = [
     "APARTMENT_PROPERTIES",
     "PROPERTY_GROUP_NAME",
+    "ApartmentMatch",
     "PropertyDetail",
     "PropertySpec",
     "WriteReport",
@@ -55,6 +56,7 @@ __all__ = [
     "enum_values",
     "existing_properties",
     "init_properties",
+    "match_apartments",
     "write_assessment",
 ]
 
@@ -455,19 +457,65 @@ def _execution_problem(result: Any, label: str) -> str | None:
     return f"{label}: unrecognised execution result {result!r}"
 
 
+@dataclass(frozen=True)
+class ApartmentMatch:
+    """Which Archicad element each assessed apartment belongs to.
+
+    Computed once and handed to everything that needs it, so the schedule and
+    the coloured plan cannot disagree about which apartment is which. Two
+    independent joins over the same data would agree almost always, and the
+    time they did not would be a diagram whose colours belonged to the
+    neighbours.
+    """
+
+    by_apartment: dict[str, str]
+    unmatched: tuple[str, ...]
+    """Apartments in the results with no element in the project."""
+    ambiguous: tuple[str, ...]
+    """Apartments matching more than one element, so the target is unclear."""
+
+
+def match_apartments(
+    connection: ArchicadConnection, assessment: BuildingAssessment
+) -> ApartmentMatch:
+    """Join assessed apartments onto Archicad elements by IFC GlobalId.
+
+    An apartment that matches nothing, or that matches several elements, is
+    reported rather than guessed at: both mean the export and the project have
+    drifted apart, and putting a number on the wrong Zone is worse than
+    putting none.
+    """
+    found = elements_by_ifc_ids(
+        connection, [apartment.apartment_id for apartment in assessment.apartments]
+    )
+
+    matched: dict[str, str] = {}
+    unmatched: list[str] = []
+    ambiguous: list[str] = []
+    for apartment in assessment.apartments:
+        guids = found.get(apartment.apartment_id, [])
+        label = apartment.apartment_name or apartment.apartment_id
+        if not guids:
+            unmatched.append(label)
+        elif len(guids) > 1:
+            ambiguous.append(label)
+        else:
+            matched[apartment.apartment_id] = guids[0]
+
+    return ApartmentMatch(matched, tuple(unmatched), tuple(ambiguous))
+
+
 def write_assessment(
     connection: ArchicadConnection,
     assessment: BuildingAssessment,
     *,
+    match: ApartmentMatch | None = None,
     run_stamp: str | None = None,
 ) -> WriteReport:
     """Write one building assessment onto the project's Zones.
 
-    Apartments are matched to elements by the IFC GlobalId they were analysed
-    under, through ``GetElementsByIFCIds``. An apartment that matches nothing,
-    or that matches several elements, is reported rather than guessed at: both
-    mean the export and the project have drifted apart, and writing a number
-    onto the wrong Zone is worse than writing none.
+    ``match`` is computed if not supplied. Pass the same one used for drawing
+    so both describe the same apartments.
     """
     stamp = run_stamp or dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
     properties = existing_properties(connection)
@@ -479,26 +527,19 @@ def write_assessment(
             + ". Run 'sun-study init-properties' first."
         )
 
-    apartment_ids = [apartment.apartment_id for apartment in assessment.apartments]
-    matches = elements_by_ifc_ids(connection, apartment_ids)
+    resolved = match if match is not None else match_apartments(connection, assessment)
+    unmatched = list(resolved.unmatched)
+    ambiguous = list(resolved.ambiguous)
 
     payload: list[dict[str, Any]] = []
     labels: list[str] = []
     written_zones: list[str] = []
-    unmatched: list[str] = []
-    ambiguous: list[str] = []
     skipped = 0
 
     for apartment in assessment.apartments:
-        guids = matches.get(apartment.apartment_id, [])
-        if not guids:
-            unmatched.append(apartment.apartment_name or apartment.apartment_id)
+        guid = resolved.by_apartment.get(apartment.apartment_id)
+        if guid is None:
             continue
-        if len(guids) > 1:
-            ambiguous.append(apartment.apartment_name or apartment.apartment_id)
-            continue
-
-        guid = guids[0]
         written_zones.append(guid)
         for name, value in _values_for(assessment, apartment, stamp).items():
             if value is None:

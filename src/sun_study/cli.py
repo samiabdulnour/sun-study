@@ -12,6 +12,7 @@ import datetime as dt
 import sys
 import tempfile
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -23,6 +24,12 @@ from sun_study.archicad.connection import (
     ArchicadConnection,
     ArchicadError,
     HttpTransport,
+)
+from sun_study.archicad.draw import (
+    DEFAULT_BANDS,
+    DEFAULT_LAYER_NAME,
+    BandStyle,
+    draw_assessment,
 )
 from sun_study.archicad.read import (
     ArchicadZone,
@@ -39,6 +46,7 @@ from sun_study.archicad.write import (
     all_properties,
     enum_values,
     init_properties,
+    match_apartments,
     write_assessment,
 )
 from sun_study.disclaimer import DISCLAIMER, STATUS
@@ -222,6 +230,39 @@ def run(
     report_assessment(result, timezone=timezone, area=area, csv_out=csv_out, json_out=json_out)
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)
+
+
+def band_styles(overrides: list[str] | None) -> tuple[BandStyle, ...]:
+    """The drawing bands, with any ``--pen label=index`` overrides applied.
+
+    An override naming a band that does not exist is an error rather than a
+    no-op. A silently ignored ``--pen '2-3 hours=42'`` -- note "hours", not
+    "hrs" -- produces a diagram in the default colours that looks exactly like
+    one in the requested colours, and the person who typed it has no reason to
+    look twice.
+    """
+    if not overrides:
+        return DEFAULT_BANDS
+
+    known = {band.label: band for band in DEFAULT_BANDS}
+    wanted: dict[str, int] = {}
+    for entry in overrides:
+        label, separator, value = entry.partition("=")
+        label = label.strip()
+        if not separator or label not in known:
+            raise typer.BadParameter(
+                f"--pen {entry!r} does not name a band. Expected 'label=index' with "
+                f"one of: " + ", ".join(repr(name) for name in known)
+            )
+        try:
+            wanted[label] = int(value)
+        except ValueError as error:
+            raise typer.BadParameter(f"--pen {entry!r} needs a whole-number pen index") from error
+
+    return tuple(
+        replace(band, fill_pen=wanted[band.label]) if band.label in wanted else band
+        for band in DEFAULT_BANDS
+    )
 
 
 def scene_config(
@@ -672,6 +713,31 @@ def archicad_run(
         bool,
         typer.Option("--write/--no-write", help="Write the results back onto the project's Zones."),
     ] = False,
+    draw: Annotated[
+        bool,
+        typer.Option(
+            "--draw/--no-draw",
+            help=(
+                "Draw the result on the floor plan: one coloured fill per apartment "
+                "plus a legend, on a dedicated layer. Replaces the previous run's."
+            ),
+        ),
+    ] = False,
+    layer: Annotated[
+        str,
+        typer.Option("--layer", help="Archicad layer to draw the result on."),
+    ] = DEFAULT_LAYER_NAME,
+    pen: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--pen",
+            help=(
+                "Override a band's fill pen as 'label=index', e.g. '2-3 hrs=42'. "
+                "Repeatable. Pen indices mean whatever the project's pen table "
+                "says, so the defaults are a guess and the run echoes what it used."
+            ),
+        ),
+    ] = None,
     ifc_out: Annotated[
         Path | None,
         typer.Option("--ifc-out", help="Keep the exported IFC here instead of discarding it."),
@@ -751,10 +817,20 @@ def archicad_run(
         report_assessment(result, timezone=timezone, area=area, csv_out=csv_out, json_out=json_out)
 
         partial = False
+        if write or draw:
+            # One join, shared. Two independent ones would agree almost always,
+            # and the time they did not would be a diagram whose colours
+            # belonged to the neighbouring apartments.
+            try:
+                match = match_apartments(connection, result.assessment)
+            except ArchicadError as error:
+                typer.secho(str(error), fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2) from error
+
         if write:
             typer.echo("")
             try:
-                written = write_assessment(connection, result.assessment)
+                written = write_assessment(connection, result.assessment, match=match)
             except ArchicadError as error:
                 typer.secho(str(error), fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=2) from error
@@ -771,6 +847,36 @@ def archicad_run(
                     "built on them will be missing rows.",
                     fg=typer.colors.RED,
                 )
+
+        if draw:
+            typer.echo("")
+            try:
+                styles = band_styles(pen)
+                drawn = draw_assessment(
+                    connection,
+                    result.assessment,
+                    read_zones(connection),
+                    zone_by_apartment=match.by_apartment,
+                    bands=styles,
+                    layer_name=layer,
+                    title=f"Solar access {result.assessment.ruleset_identifier}",
+                )
+            except ArchicadError as error:
+                typer.secho(str(error), fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2) from error
+
+            partial = partial or not drawn.complete
+            typer.secho(
+                drawn.describe(),
+                fg=typer.colors.GREEN if drawn.complete else typer.colors.RED,
+                bold=True,
+            )
+            typer.echo("  band to pen: " + ", ".join(f"{b.label}={b.fill_pen}" for b in styles))
+            typer.secho(
+                "  Check the colours against the project's pen table. A wrong pen "
+                "index draws a plausible diagram in the wrong colours.",
+                fg=typer.colors.YELLOW,
+            )
 
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)

@@ -336,3 +336,43 @@ def test_output_survives_a_character_the_console_cannot_encode() -> None:
         sys.stdout = original
 
     assert legacy.errors == "replace", "main() must relax the stream's error handling"
+
+
+def test_a_pen_override_replaces_only_the_named_band() -> None:
+    from sun_study.cli import band_styles
+
+    styles = {band.label: band.fill_pen for band in band_styles(["2-3 hrs=42"])}
+    assert styles["2-3 hrs"] == 42
+    assert styles["0 hrs"] != 42, "the other bands keep their defaults"
+
+
+def test_a_pen_override_naming_no_band_is_an_error() -> None:
+    """A silently ignored override draws the default colours and looks right.
+
+    '2-3 hours' instead of '2-3 hrs' is the obvious typo, and nobody would
+    look twice at a diagram that came out coloured.
+    """
+    import typer
+
+    from sun_study.cli import band_styles
+
+    with pytest.raises(typer.BadParameter, match="2-3 hours"):
+        band_styles(["2-3 hours=42"])
+
+
+def test_a_pen_override_needs_a_number() -> None:
+    import typer
+
+    from sun_study.cli import band_styles
+
+    with pytest.raises(typer.BadParameter, match="whole-number"):
+        band_styles(["2-3 hrs=orange"])
+
+
+def test_drawing_is_opt_in_like_writing() -> None:
+    """Both change a colleague's project file."""
+    import inspect
+
+    from sun_study.cli import archicad_run
+
+    assert inspect.signature(archicad_run).parameters["draw"].default is False

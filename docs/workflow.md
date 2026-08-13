@@ -141,13 +141,33 @@ uv run sun-study archicad-run --timezone Australia/Sydney `
     --livable-suffix "_L" `
     --apartment-zone-layer "06 | Zone.SEPP 65" `
     --open-space-zone-layer "06 | Zone.Balcony" `
-    --write
+    --write --draw
 ```
 
 `--livable-suffix` matches windows **and** doors, so balcony sliders count. The layer
 names must be typed exactly as Archicad holds them — a filter that matches nothing stops
 the run and prints the layers the file does contain, rather than reporting a building
 with no apartments.
+
+`--draw` puts the answer on the floor plan: one coloured fill per apartment, taken from
+the Zone's own outline and placed on the Zone's own storey, plus a legend. It all goes on
+one layer (`Sun Study.Results` by default), and re-running deletes the previous set
+before drawing the new one.
+
+Colours are **pen indices**, because that is what `CreateHatches` takes. The defaults are
+a guess; map them to the office pens with `--pen`, repeatable:
+
+```powershell
+--pen "0 hrs=91" --pen "2-3 hrs=42" --pen "5+ hrs=47"
+```
+
+The run prints the mapping it used. **Check it against the pen table** — a wrong index
+draws a perfectly plausible diagram in the wrong colours, and nothing downstream catches
+that. An override naming a band that does not exist is an error, not a no-op.
+
+Two limits it reports rather than hides: an apartment wrapping a lift core is drawn over
+the void, because a hatch is a single contour; and curved zone edges become straight
+segments between their nodes.
 
 `archicad-run` exports through the translator, reads the IFC, cross-checks the
 georeferencing against Archicad's own answer, assesses, and writes back. Nothing is
