@@ -1,0 +1,14 @@
+{
+  "living_room": {
+    "Apartment L00-A": 106.065,
+    "Apartment L00-B": 206.991,
+    "Apartment L01-A": 297.222,
+    "Apartment L01-B": 360.0
+  },
+  "open_space": {
+    "Balcony L00-A": 127.267,
+    "Balcony L00-B": 291.133,
+    "Balcony L01-A": 256.467,
+    "Balcony L01-B": 360.0
+  }
+}
