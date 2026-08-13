@@ -128,10 +128,20 @@ the analysis needs the windows and the zones in the same coordinate system.
 With the project open in Archicad and the Tapir add-on installed:
 
 ```powershell
-uv run sun-study archicad-info          # connection, zones, names, classification
-uv run sun-study init-properties        # once per project, or ships in the template
-uv run sun-study archicad-run --timezone Australia/Sydney --write
+uv run sun-study archicad-info --properties     # connection, zones, names, classification
+uv run sun-study init-properties                # once per project, or ships in the template
+
+uv run sun-study archicad-run --timezone Australia/Sydney `
+    --livable-suffix "_L" `
+    --apartment-zone-layer "06 | Zone.SEPP 65" `
+    --open-space-zone-layer "06 | Zone.Balcony" `
+    --write
 ```
+
+`--livable-suffix` matches windows **and** doors, so balcony sliders count. The layer
+names must be typed exactly as Archicad holds them — a filter that matches nothing stops
+the run and prints the layers the file does contain, rather than reporting a building
+with no apartments.
 
 `archicad-run` exports through the translator, reads the IFC, cross-checks the
 georeferencing against Archicad's own answer, assesses, and writes back. Nothing is
@@ -186,14 +196,16 @@ stale, and a stale number looks exactly like a current one.
 
 Honest status, so nobody plans around something that does not exist.
 
-**To be built in the tool:**
+**Built** — `--livable-suffix` across windows and doors (D24), layer-based selection of
+apartment zones, open-space zones and context (D25), zone-based private open space
+gridded on the floor rather than the ceiling, and `archicad-info --properties`.
+
+**Still to build:**
 
 | | |
 |---|---|
-| `--livable-suffix _L` on window and door names | The `_L` route does not exist yet; today the tool selects by living-room *Zone* name, which a unit-zoned model cannot provide |
-| Layer-based selection | Apartment zones, balcony zones and context need distinguishing inside one IFC; layers resolve per element, verified on 18,202 of them |
-| Writing the existing `Daylight` property | Needs the exact group and property name from `GetAllProperties` on a project built from the template |
-| Zone-based private open space | Decision D7 assumed balconies might not be zoned. The manual says they are, so the slab-prefix fallback becomes the fallback |
+| Writing the existing `Daylight` property | Needs the exact group and property name from `archicad-info --properties`, run on a project built from the template. Guessing it would create a second column that looks right and drives nothing. |
+| Curtain-wall glazing | See question 3 below — no proposal yet |
 
 **Open questions for the practice:**
 

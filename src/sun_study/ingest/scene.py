@@ -17,7 +17,8 @@ apartment percentage that nobody questions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import numpy as np
@@ -45,6 +46,7 @@ __all__ = [
     "MassingScene",
     "Scene",
     "SceneConfig",
+    "SceneConfigError",
     "WindowAssignment",
     "build_massing_scene",
     "build_scene",
@@ -76,10 +78,63 @@ class SceneConfig:
 
     Empty means "assess every space", which is almost never right for the ADG
     but is useful for a first look at an unfamiliar model.
+
+    Ignored when ``livable_opening_suffix`` is set, because that route
+    identifies the glazing directly and does not need the room named.
+    """
+
+    livable_opening_suffix: str | None = None
+    """D24. Openings whose ID ends with this are the living-room glazing.
+
+    The alternative to naming rooms, and the better one where a practice zones
+    by *unit* rather than by room -- there is then no living-room Zone to match
+    against, and every window in the unit would otherwise count, bedrooms and
+    bathrooms included.
+
+    Matched case-insensitively against ``Name``, which is where Archicad puts
+    the element ID. The space each marked opening serves becomes an apartment,
+    so this replaces ``living_room_space_names`` rather than narrowing it.
+    """
+
+    livable_opening_classes: tuple[str, ...] = ("IfcWindow", "IfcDoor")
+    """Which classes ``livable_opening_suffix`` is matched against.
+
+    Doors are in the default deliberately. A living room's glazing is usually
+    a balcony slider, which Archicad models with the Door tool -- 110 of 252
+    marked openings in one reference export -- so windows alone would silently
+    measure well under half the glass.
     """
 
     balcony_name_prefixes: tuple[str, ...] = ("Balcony",)
-    """D7. Slabs whose name starts with one of these are private open space."""
+    """D7. Slabs whose name starts with one of these are private open space.
+
+    The fallback route. Where the practice zones its balconies, prefer
+    ``open_space_zone_layers``: a Zone is the balcony's actual extent, while a
+    slab is whatever was drawn under it.
+    """
+
+    apartment_zone_layers: tuple[str, ...] = ()
+    """Zones on these Archicad layers are the apartments being assessed.
+
+    Empty means every ``IfcSpace`` is a candidate. Naming layers matters once
+    a file carries more than one kind of Zone -- unit zones, GFA zones, a
+    SEPP 65 duplicate set -- because counting a GFA zone as an apartment
+    changes the denominator of the compliance percentage without looking wrong.
+    """
+
+    open_space_zone_layers: tuple[str, ...] = ()
+    """Zones on these Archicad layers are private open space.
+
+    Takes precedence over ``balcony_name_prefixes`` when set, and resolves D7
+    in the direction the decision hoped for.
+    """
+
+    context_layers: tuple[str, ...] = ()
+    """Elements on these layers shade the subject but are never measured.
+
+    Kept separate from a distance cutoff: a neighbouring building is context
+    however close it stands.
+    """
 
     open_space_level_tolerance_m: float = 0.5
     """How near an apartment's floor must be to a balcony's top surface.
@@ -113,10 +168,28 @@ class SceneConfig:
         radius = (
             f"{self.context_radius_m:g} m" if self.context_radius_m is not None else "unlimited"
         )
-        rooms = ", ".join(self.living_room_space_names) or "all spaces"
+        if self.livable_opening_suffix:
+            rooms = (
+                f"openings whose ID ends '{self.livable_opening_suffix}' "
+                f"({'/'.join(c.removeprefix('Ifc') for c in self.livable_opening_classes)})"
+            )
+        else:
+            rooms = ", ".join(self.living_room_space_names) or "all spaces"
+        open_space = (
+            f"zones on layers {list(self.open_space_zone_layers)}"
+            if self.open_space_zone_layers
+            else f"slabs by prefix {list(self.balcony_name_prefixes)}"
+        )
+        zones = (
+            f"apartment zones on layers {list(self.apartment_zone_layers)} | "
+            if self.apartment_zone_layers
+            else ""
+        )
+        context = f"context layers {list(self.context_layers)} | " if self.context_layers else ""
         return (
             f"timezone {self.timezone} | living rooms matched by [{rooms}] | "
-            f"balconies by prefix {list(self.balcony_name_prefixes)} | "
+            f"{zones}{context}"
+            f"private open space from {open_space} | "
             f"grid {self.grid_spacing_m * 1000:.0f} mm | "
             f"surface offset {self.surface_offset_m * 1000:.0f} mm | "
             f"open space at {self.open_space_height_m:g} m | "
@@ -327,6 +400,103 @@ def _assign_windows(
     return tuple(assignments)
 
 
+def _open_space_grid(
+    element: IfcElement, owner_id: str, config: SceneConfig
+) -> SamplePoints | None:
+    """Grid the walking surface of one piece of private open space.
+
+    A balcony *slab* is a solid: its walking surface is the top face, and the
+    assessment plane sits above it. A balcony *Zone* is a void, and its top
+    face is the underside of whatever is overhead -- gridding that would put
+    every sample a metre into the storey above, silently, and still return a
+    plausible number.
+
+    So a Zone is gridded on its floor instead, which means taking the face
+    whose normal points *down* out of the volume, offsetting against that
+    normal to rise off the floor, and then flipping the normals back up. Open
+    space faces the sky whichever way the face it was derived from pointed.
+    """
+    if element.ifc_class != "IfcSpace":
+        return planar_face_grid(
+            element.mesh,
+            owner_id,
+            np.array([0.0, 0.0, 1.0]),
+            spacing_m=config.grid_spacing_m,
+            surface_offset_m=config.open_space_height_m,
+        )
+
+    samples = planar_face_grid(
+        element.mesh,
+        owner_id,
+        np.array([0.0, 0.0, -1.0]),
+        spacing_m=config.grid_spacing_m,
+        surface_offset_m=-config.open_space_height_m,
+    )
+    if samples is None:
+        return None
+    return replace(samples, normals=-samples.normals)
+
+
+class SceneConfigError(Exception):
+    """A scene setting cannot be satisfied by this model.
+
+    Kept distinct from a bad model: the file is fine, the question asked of it
+    is not. The message names what the model does contain, because the answer
+    is almost always a layer name typed slightly differently.
+    """
+
+
+def _require_matches(
+    label: str, matched: Sequence[object], wanted: Sequence[str], model: IfcModel
+) -> None:
+    """Fail when a layer filter selects nothing, and say what was available.
+
+    Matching strictly and failing loudly beats matching loosely: a filter that
+    quietly selects nothing produces a building with no apartments, which
+    reads as a compliance result rather than as a typo. Layer names carry
+    punctuation and spacing that nobody reproduces from memory -- ``06 |
+    Zone.Units`` typed as ``06|Zone.Units`` matches nothing -- so the fix is
+    to show the list rather than to guess at the intent.
+    """
+    if matched or not wanted:
+        return
+    available = sorted({e.layer for e in model.elements if e.layer})
+    listed = "\n    ".join(available) if available else "(the export carried no layers at all)"
+    raise SceneConfigError(
+        f"{label} {list(wanted)} matched nothing in {model.path.name}.\n"
+        f"  Layers present:\n    {listed}"
+    )
+
+
+def _on_layer(element: IfcElement, layers: Sequence[str]) -> bool:
+    """Whether an element sits on one of the named Archicad layers.
+
+    Case-insensitive and whitespace-tolerant, because a layer name typed into
+    a command line will not match ``01 | Wall.External`` byte for byte, and
+    failing on that would be a trap rather than a safeguard.
+    """
+    if not layers:
+        return False
+    actual = " ".join(element.layer.split()).casefold()
+    return any(" ".join(wanted.split()).casefold() == actual for wanted in layers)
+
+
+def _is_livable_opening(element: IfcElement, config: SceneConfig) -> bool:
+    """D24, in code: does this opening's ID carry the livable marker?
+
+    Matched against ``Name``, which is where Archicad's element ID lands. The
+    suffix must be a genuine suffix -- a project using ``D06L`` for something
+    unrelated must not be swept up by a ``_L`` convention, and in the reference
+    model the two really did coexist.
+    """
+    suffix = config.livable_opening_suffix
+    if not suffix:
+        return False
+    if element.ifc_class not in config.livable_opening_classes:
+        return False
+    return element.name.casefold().endswith(suffix.casefold())
+
+
 def _is_living_room(space: IfcElement, config: SceneConfig) -> bool:
     """D6, in code. Matches ``LongName`` first, then ``Name``.
 
@@ -397,12 +567,36 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
     """
     orientation = model.orientation(config.timezone)
 
-    spaces = model.of_class("IfcSpace")
-    windows = model.of_class("IfcWindow")
-    assignments = _assign_windows(model, windows, spaces)
+    all_spaces = model.of_class("IfcSpace")
+    open_space_zones = tuple(
+        space for space in all_spaces if _on_layer(space, config.open_space_zone_layers)
+    )
+    # A balcony Zone is not an apartment, so it never enters the denominator
+    # even when the apartment layer filter is left wide open.
+    open_space_ids = {zone.global_id for zone in open_space_zones}
+    spaces = tuple(
+        space
+        for space in all_spaces
+        if space.global_id not in open_space_ids
+        and (not config.apartment_zone_layers or _on_layer(space, config.apartment_zone_layers))
+    )
+    _require_matches("apartment zone layers", spaces, config.apartment_zone_layers, model)
+    _require_matches(
+        "open space zone layers", open_space_zones, config.open_space_zone_layers, model
+    )
+
+    if config.livable_opening_suffix:
+        # D24: the glazing is marked, so the room needs no name and every
+        # space a marked opening serves is an apartment.
+        openings = tuple(e for e in model.elements if _is_livable_opening(e, config))
+        assignments = _assign_windows(model, openings, spaces)
+        living_rooms = {a.space_id for a in assignments if a.space_id is not None}
+    else:
+        openings = model.of_class("IfcWindow")
+        assignments = _assign_windows(model, openings, spaces)
+        living_rooms = {space.global_id for space in spaces if _is_living_room(space, config)}
 
     space_by_id = {space.global_id: space for space in spaces}
-    living_rooms = {space.global_id for space in spaces if _is_living_room(space, config)}
 
     occluders = model.occluder_mesh()
     if config.context_radius_m is not None:
@@ -435,15 +629,24 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         window_groups.append(samples)
         assessed += 1
 
+    # D7. A Zone is the balcony's actual extent; a slab is whatever happened to
+    # be drawn under it, and may run past the balustrade or stop short of it.
+    # So where the practice zones its balconies, those win.
+    if config.open_space_zone_layers:
+        open_space_elements: tuple[IfcElement, ...] = open_space_zones
+    else:
+        open_space_elements = tuple(
+            slab
+            for slab in model.of_class("IfcSlab")
+            if any(
+                slab.name.casefold().startswith(prefix.casefold())
+                for prefix in config.balcony_name_prefixes
+            )
+        )
+
     balcony_groups, unattached_open_space = [], 0
     open_space_routes: dict[str, int] = {}
-    for slab in model.of_class("IfcSlab"):
-        if not any(
-            slab.name.casefold().startswith(prefix.casefold())
-            for prefix in config.balcony_name_prefixes
-        ):
-            continue
-
+    for slab in open_space_elements:
         # Parent open space to the apartment it serves, not to the slab, so
         # window and open-space results join on one key downstream. Communal
         # open space has no apartment and is counted separately rather than
@@ -459,13 +662,7 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
             unattached_open_space += 1
             continue
 
-        samples = planar_face_grid(
-            slab.mesh,
-            owner.global_id,
-            np.array([0.0, 0.0, 1.0]),
-            spacing_m=config.grid_spacing_m,
-            surface_offset_m=config.open_space_height_m,
-        )
+        samples = _open_space_grid(slab, owner.global_id, config)
         if samples is not None:
             balcony_groups.append(samples)
 
@@ -475,7 +672,7 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         "length_unit_scale": model.length_unit_scale,
         "site_elevation_m": model.site_elevation_m,
         "true_north_bearing_deg": orientation.normalised_bearing_deg,
-        "windows_total": len(windows),
+        "windows_total": len(openings),
         "windows_assessed": assessed,
         "windows_skipped": skipped,
         "spaces_total": len(spaces),
@@ -560,6 +757,18 @@ class MassingConfig:
     the facade-area denominator. Everything else is subject.
     """
 
+    context_layers: tuple[str, ...] = ()
+    """Archicad layers whose elements are occluders only.
+
+    The same distinction as ``context_name_prefixes``, keyed on the thing a
+    practice actually controls. A modelling standard says *"all 3D context
+    elements outside the site boundaries go on this layer"*; it does not
+    promise anything about what each object is called, and a neighbouring
+    building imported from a survey will not be named "Context".
+
+    An element matching either route is context.
+    """
+
     facade_spacing_m: float = DEFAULT_MASSING_SPACING_M
     ground_spacing_m: float = DEFAULT_MASSING_SPACING_M
     surface_offset_m: float = DEFAULT_SURFACE_OFFSET_M
@@ -592,7 +801,9 @@ class MassingConfig:
             f"ground grid {self.ground_spacing_m:g} m | "
             f"surface offset {self.surface_offset_m * 1000:.0f} mm | "
             f"facade = faces within {self.vertical_tolerance_deg:g} deg of vertical | "
-            f"context prefixes {list(self.context_name_prefixes)} | "
+            f"context prefixes {list(self.context_name_prefixes)}"
+            + (f" or layers {list(self.context_layers)}" if self.context_layers else "")
+            + " | "
             f"ground level {ground}, margin {self.ground_margin_m:g} m | "
             f"vegetation excluded"
         )
@@ -622,7 +833,7 @@ class MassingScene:
 
 
 def _is_context(element: IfcElement, config: MassingConfig) -> bool:
-    return any(
+    return _on_layer(element, config.context_layers) or any(
         element.name.casefold().startswith(prefix.casefold())
         for prefix in config.context_name_prefixes
     )

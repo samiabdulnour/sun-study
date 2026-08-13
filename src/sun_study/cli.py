@@ -35,12 +35,18 @@ from sun_study.archicad.read import zones as read_zones
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
+    all_properties,
     init_properties,
     write_assessment,
 )
 from sun_study.disclaimer import DISCLAIMER, STATUS
 from sun_study.ingest.ifc import GeoreferencingError, read_ifc
-from sun_study.ingest.scene import DEFAULT_MASSING_SPACING_M, MassingConfig, SceneConfig
+from sun_study.ingest.scene import (
+    DEFAULT_MASSING_SPACING_M,
+    MassingConfig,
+    SceneConfig,
+    SceneConfigError,
+)
 from sun_study.pipeline import PipelineResult, run_assessment, run_massing
 from sun_study.report.bands_out import (
     build_massing_header,
@@ -134,9 +140,37 @@ def run(
             ),
         ),
     ] = None,
+    livable_suffix: Annotated[
+        str | None,
+        typer.Option(
+            "--livable-suffix",
+            help=(
+                "Openings whose ID ends with this are the living-room glazing, "
+                "e.g. '_L'. Matches windows and doors. Use instead of "
+                "--living-room where zones are placed per unit, not per room."
+            ),
+        ),
+    ] = None,
     balcony: Annotated[
         list[str] | None,
         typer.Option("--balcony", help="Name prefix identifying private open space. Repeatable."),
+    ] = None,
+    apartment_zone_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--apartment-zone-layer",
+            help="Archicad layer whose zones are the apartments. Repeatable.",
+        ),
+    ] = None,
+    open_space_zone_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--open-space-zone-layer",
+            help=(
+                "Archicad layer whose zones are private open space. Repeatable. "
+                "Takes precedence over --balcony."
+            ),
+        ),
     ] = None,
     grid: Annotated[float, typer.Option("--grid", help="Sample grid spacing in metres.")] = 0.2,
     offset: Annotated[
@@ -157,13 +191,16 @@ def run(
     """Assess an IFC model's solar access and write the results."""
     banner()
 
-    config = SceneConfig(
+    config = scene_config(
         timezone=timezone,
-        living_room_space_names=tuple(living_room) if living_room else ("Living Room",),
-        balcony_name_prefixes=tuple(balcony) if balcony else ("Balcony",),
-        grid_spacing_m=grid,
-        surface_offset_m=offset,
-        context_radius_m=context_radius,
+        living_room=living_room,
+        livable_suffix=livable_suffix,
+        balcony=balcony,
+        apartment_zone_layer=apartment_zone_layer,
+        open_space_zone_layer=open_space_zone_layer,
+        grid=grid,
+        offset=offset,
+        context_radius=context_radius,
     )
 
     try:
@@ -173,6 +210,9 @@ def run(
     except GeoreferencingError as error:
         typer.secho(f"Georeferencing error: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
+    except SceneConfigError as error:
+        typer.secho(f"Scene setting error: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
     except RulesetError as error:
         typer.secho(f"Ruleset error: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
@@ -180,6 +220,37 @@ def run(
     report_assessment(result, timezone=timezone, area=area, csv_out=csv_out, json_out=json_out)
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)
+
+
+def scene_config(
+    *,
+    timezone: str,
+    living_room: list[str] | None = None,
+    livable_suffix: str | None = None,
+    balcony: list[str] | None = None,
+    apartment_zone_layer: list[str] | None = None,
+    open_space_zone_layer: list[str] | None = None,
+    grid: float = 0.2,
+    offset: float = 0.05,
+    context_radius: float | None = None,
+) -> SceneConfig:
+    """Turn the shared scene options into a config.
+
+    One place, so ``run`` and ``archicad-run`` cannot drift apart on the
+    assumptions that decide the headline percentage. A flag that exists on one
+    and not the other is a silently different answer from the same model.
+    """
+    return SceneConfig(
+        timezone=timezone,
+        living_room_space_names=tuple(living_room) if living_room else ("Living Room",),
+        livable_opening_suffix=livable_suffix,
+        balcony_name_prefixes=tuple(balcony) if balcony else ("Balcony",),
+        apartment_zone_layers=tuple(apartment_zone_layer or ()),
+        open_space_zone_layers=tuple(open_space_zone_layer or ()),
+        grid_spacing_m=grid,
+        surface_offset_m=offset,
+        context_radius_m=context_radius,
+    )
 
 
 def report_assessment(
@@ -310,6 +381,9 @@ def massing(
     except GeoreferencingError as error:
         typer.secho(f"Georeferencing error: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
+    except SceneConfigError as error:
+        typer.secho(f"Scene setting error: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
     except RulesetError as error:
         typer.secho(f"Ruleset error: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
@@ -381,6 +455,13 @@ def archicad_info(
             help="How many distinct zone names to list, most common first. 0 for all.",
         ),
     ] = 20,
+    properties: Annotated[
+        bool,
+        typer.Option(
+            "--properties",
+            help="Also list the project's property groups and names.",
+        ),
+    ] = False,
 ) -> None:
     """Check the connection to a running Archicad and echo what it reports.
 
@@ -422,6 +503,30 @@ def archicad_info(
         typer.echo(f"  all {len(found)} zones are classified")
 
     _report_zone_names(found, limit=zone_names)
+
+    if properties:
+        _report_properties(connection)
+
+
+def _report_properties(connection: ArchicadConnection) -> None:
+    """Every property group in the project, with its property names.
+
+    A practice that already runs a solar-access workflow by hand has a
+    property the diagram is coloured from -- a Daylight flag ticked Y or N per
+    apartment. Writing results into *that* is what makes the tool fit an
+    existing standard instead of adding a parallel one beside it, and this is
+    how its exact group and name get found. Guessing them would produce a
+    second column that looks right and drives nothing.
+    """
+    groups: dict[str, list[str]] = {}
+    for entry in all_properties(connection):
+        groups.setdefault(entry.group, []).append(entry.name)
+
+    typer.echo(f"  {len(groups)} property groups")
+    for group, names in sorted(groups.items()):
+        typer.secho(f"    {group}", bold=True)
+        for name in sorted(names):
+            typer.echo(f"      {name}")
 
 
 def _report_zone_names(found: Sequence[ArchicadZone], *, limit: int) -> None:
@@ -513,9 +618,30 @@ def archicad_run(
         list[str] | None,
         typer.Option("--living-room", help="Zone name identifying a living room. Repeatable."),
     ] = None,
+    livable_suffix: Annotated[
+        str | None,
+        typer.Option(
+            "--livable-suffix",
+            help="Openings whose ID ends with this are the living-room glazing, e.g. '_L'.",
+        ),
+    ] = None,
     balcony: Annotated[
         list[str] | None,
         typer.Option("--balcony", help="Name prefix identifying private open space. Repeatable."),
+    ] = None,
+    apartment_zone_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--apartment-zone-layer",
+            help="Archicad layer whose zones are the apartments. Repeatable.",
+        ),
+    ] = None,
+    open_space_zone_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--open-space-zone-layer",
+            help="Archicad layer whose zones are private open space. Repeatable.",
+        ),
     ] = None,
     grid: Annotated[float, typer.Option("--grid", help="Sample grid spacing in metres.")] = 0.2,
     offset: Annotated[
@@ -549,12 +675,15 @@ def archicad_run(
     typer.echo(describe_connection(connection))
     typer.echo("")
 
-    config = SceneConfig(
+    config = scene_config(
         timezone=timezone,
-        living_room_space_names=tuple(living_room) if living_room else ("Living Room",),
-        balcony_name_prefixes=tuple(balcony) if balcony else ("Balcony",),
-        grid_spacing_m=grid,
-        surface_offset_m=offset,
+        living_room=living_room,
+        livable_suffix=livable_suffix,
+        balcony=balcony,
+        apartment_zone_layer=apartment_zone_layer,
+        open_space_zone_layer=open_space_zone_layer,
+        grid=grid,
+        offset=offset,
     )
 
     with tempfile.TemporaryDirectory(prefix="sun-study-") as scratch:

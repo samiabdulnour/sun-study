@@ -47,8 +47,10 @@ from sun_study.rules.assessment import BuildingAssessment
 __all__ = [
     "APARTMENT_PROPERTIES",
     "PROPERTY_GROUP_NAME",
+    "PropertyDetail",
     "PropertySpec",
     "WriteReport",
+    "all_properties",
     "existing_properties",
     "init_properties",
     "write_assessment",
@@ -163,28 +165,60 @@ class WriteReport:
         return "\n".join(lines)
 
 
-def existing_properties(connection: ArchicadConnection) -> dict[str, str]:
-    """Property name -> identifier, for the properties in this tool's group.
+@dataclass(frozen=True)
+class PropertyDetail:
+    """One property the project already defines."""
+
+    identifier: str
+    group: str
+    name: str
+    kind: str
+    """``StaticBuiltIn``, ``DynamicBuiltIn`` or ``Custom``."""
+    editable: bool
+
+
+def all_properties(connection: ArchicadConnection) -> tuple[PropertyDetail, ...]:
+    """Every property in the project, built-in and custom.
 
     ``GetAllProperties`` is the only way to look a property up by name: Tapir
     has no getter for property groups, so an empty group is invisible and
     ``CreatePropertyGroups`` has to be attempted rather than checked for.
+
+    Listing the lot -- not just this tool's own group -- is what lets a
+    practice's *existing* solar-access property be found and written to,
+    rather than a parallel one being created beside it.
     """
     response = connection.run_tapir("GetAllProperties")
     entries = response.get("properties") if isinstance(response, dict) else None
     if not isinstance(entries, list):
         raise ArchicadError(f"GetAllProperties returned no property list: {response!r}")
 
-    found: dict[str, str] = {}
+    found: list[PropertyDetail] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        if entry.get("propertyGroupName") != PROPERTY_GROUP_NAME:
-            continue
         identifier = (entry.get("propertyId") or {}).get("guid")
-        if identifier:
-            found[str(entry.get("propertyName", ""))] = str(identifier)
-    return found
+        if not identifier:
+            continue
+        found.append(
+            PropertyDetail(
+                identifier=str(identifier),
+                group=str(entry.get("propertyGroupName", "")),
+                name=str(entry.get("propertyName", "")),
+                kind=str(entry.get("propertyType", "")),
+                editable=bool(entry.get("propertyIsEditable", False)),
+            )
+        )
+    return tuple(found)
+
+
+def existing_properties(connection: ArchicadConnection) -> dict[str, str]:
+    """Property name -> identifier, for the properties in this tool's group."""
+    return {
+        entry.name: entry.identifier
+        for entry in all_properties(connection)
+        if entry.group == PROPERTY_GROUP_NAME
+    }
 
 
 def _availability_items(classifications: dict[str, set[str]]) -> list[str]:

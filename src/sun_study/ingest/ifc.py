@@ -101,6 +101,16 @@ class IfcElement:
     predefined_type: str
     storey: str | None
     mesh: TriangleMesh
+    layer: str = ""
+    """The Archicad layer, where the export carried one.
+
+    Practices run their modelling standards on layers, so this is often the
+    most reliable statement in the file about what an element *is for* --
+    which zones are the apartments being assessed, which slabs exist only to
+    cast a shadow, which building is context rather than subject. Names come
+    through verbatim, so a scene can be configured against the office's own
+    layer matrix rather than against a convention invented here.
+    """
 
     @property
     def centroid(self) -> FloatArray:
@@ -326,11 +336,17 @@ def _iterate_shapes(
 
 
 def _read_space_boundaries(model: ifcopenshell.file) -> dict[str, str]:
-    """Window GlobalId -> space GlobalId, where the exporter provided it.
+    """Opening GlobalId -> space GlobalId, where the exporter provided it.
 
     Archicad only writes these when space boundary export is enabled, so this
     is frequently empty and the caller must be able to cope. See
     ``ingest.scene`` for the geometric fallback.
+
+    Doors count, not just windows. In a real apartment project the living
+    room's glazing is usually a balcony slider, which Archicad models with the
+    Door tool: one reference export had 110 of its 252 living-room openings as
+    doors, so reading windows alone would have dropped nearly half the glazing
+    and reported the remainder as the whole.
     """
     boundaries: dict[str, str] = {}
     for boundary in model.by_type("IfcRelSpaceBoundary"):
@@ -338,9 +354,44 @@ def _read_space_boundaries(model: ifcopenshell.file) -> dict[str, str]:
         space = boundary.RelatingSpace
         if element is None or space is None:
             continue
-        if element.is_a("IfcWindow"):
+        if element.is_a("IfcWindow") or element.is_a("IfcDoor"):
             boundaries[element.GlobalId] = space.GlobalId
     return boundaries
+
+
+def _read_layers(model: ifcopenshell.file) -> dict[str, str]:
+    """Product GlobalId -> Archicad layer name.
+
+    ``IfcPresentationLayerAssignment`` points at *representations*, not at
+    products, so the mapping has to be walked backwards. Verified against an
+    Archicad 26 export: 18,202 products resolved, with the layer names coming
+    through exactly as the practice writes them (``01 | Wall.External``).
+
+    Elements with no layer -- and files exported without them -- simply do not
+    appear here, and layer-based selection then matches nothing rather than
+    matching everything. That is the safe direction: an empty result is
+    visible in the run banner, a silently unfiltered one is not.
+    """
+    by_representation: dict[int, str] = {}
+    for assignment in model.by_type("IfcPresentationLayerAssignment"):
+        name = str(assignment.Name or "")
+        if not name:
+            continue
+        for item in assignment.AssignedItems or []:
+            by_representation[item.id()] = name
+
+    if not by_representation:
+        return {}
+
+    layers: dict[str, str] = {}
+    for product in model.by_type("IfcProduct"):
+        representation = getattr(product, "Representation", None)
+        for shape in getattr(representation, "Representations", None) or []:
+            found = by_representation.get(shape.id())
+            if found is not None:
+                layers[product.GlobalId] = found
+                break
+    return layers
 
 
 def read_ifc(path: str | Path, *, include: Sequence[str] | None = None) -> IfcModel:
@@ -361,6 +412,8 @@ def read_ifc(path: str | Path, *, include: Sequence[str] | None = None) -> IfcMo
     bearing = _resolve_true_north(model)
     latitude, longitude, elevation = _resolve_location(model, unit_scale)
 
+    layers = _read_layers(model)
+
     elements = []
     for product, mesh in _iterate_shapes(model, include):
         if product is None:
@@ -374,6 +427,7 @@ def read_ifc(path: str | Path, *, include: Sequence[str] | None = None) -> IfcMo
                 predefined_type=str(getattr(product, "PredefinedType", None) or ""),
                 storey=_storey_name(product),
                 mesh=mesh,
+                layer=layers.get(product.GlobalId, ""),
             )
         )
 

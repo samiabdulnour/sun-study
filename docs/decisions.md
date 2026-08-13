@@ -409,6 +409,75 @@ it twice. `test_the_site_rotation_does_not_reach_the_analysis` pins that, and
 `test_a_survey_point_export_is_not_reported_as_a_mismatch` pins the false positive
 using the measured numbers above.
 
+### D24 — Living-room glazing can be marked on the opening, not the room
+
+*Milestone M4. Extends D6 rather than replacing it; both routes ship.*
+
+D6 identifies a living room by naming the Zone. That works when a practice zones by
+*room*. It cannot work at all when a practice zones by **unit**, which is common: there
+is no living-room Zone to match, and matching the unit Zone would count every window in
+the apartment — bedrooms, bathroom, kitchen — as living-room glazing. That does not
+fail. It returns an optimistically wrong number, which is the exact failure this project
+exists to prevent.
+
+`SceneConfig.livable_opening_suffix` is the second route. An opening whose ID ends with
+the configured marker is living-room glazing, and the space it serves becomes an
+apartment. One practice uses `_L`; the tool takes whatever suffix it is given and echoes
+it on every run.
+
+Three details, each learned from a real export rather than assumed:
+
+**Doors are in the default `livable_opening_classes`.** A living room's glazing is
+usually a balcony slider, which Archicad models with the Door tool. In the reference
+project 110 of 252 marked openings were `SD2.x_L` doors — reading windows alone would
+have measured 44% less glass and reported it as the whole.
+
+**The marker must be a genuine suffix.** The same practice's library contains
+`D06L_Bathroom cavity slider_Livable`, where the trailing `L` means something unrelated.
+Matching a bare final letter would sweep in a bathroom door.
+
+**`_read_space_boundaries` had to learn about doors too**, or every marked slider would
+fall through to the geometric fallback.
+
+*Not settled by the tool:* whether such a marker means *living room* or *habitable
+room including bedrooms*. ADG 4A-1 is about living rooms, and the wider reading raises
+the compliance figure. The tool cannot tell the difference and does not try; it states
+the configured suffix in the run header and leaves the meaning to the practice that
+owns the convention.
+
+### D25 — Scene selection can key on Archicad layers
+
+*Milestone M4.*
+
+Practices run their modelling standards on layers. A layer matrix says *"all 3D context
+elements outside the site boundaries go here"* and *"unit zone duplicate, used to
+schedule SEPP 65"*; it promises nothing about what any individual object is called. So
+selecting by name asks the wrong question, and a neighbouring building imported from a
+survey will not be named "Context".
+
+Layers survive Archicad's IFC export. `IfcPresentationLayerAssignment` points at
+representations rather than at products, so the mapping is walked backwards — verified
+on a real export, 18,202 products resolved, names verbatim (`01 | Wall.External`).
+
+Three selections can now be keyed on them: which zones are apartments, which are private
+open space, and which elements are context. The first matters most: a real project
+carries unit zones, GFA zones, NLA zones, storage zones and a SEPP 65 duplicate set, and
+assessing all of them inflates the compliance denominator without looking wrong.
+
+**Matching is strict, and a filter that selects nothing is fatal.** Layer names carry
+punctuation nobody reproduces from memory — the real project's `06 | Zone.Units` typed
+as `06|Zone.Units` matches nothing — and quietly selecting zero zones would report a
+building with no apartments as a result rather than as a typo. `SceneConfigError` names
+what was asked for and lists the layers the file actually contains. Loose matching was
+considered and rejected: a visible failure is cheaper than two layers silently
+collapsing into one.
+
+**Zones and slabs are gridded differently, and getting this wrong is invisible.** A
+balcony slab is a solid whose walking surface is its top face. A balcony Zone is a
+*void*, and its top face is the underside of whatever is above — gridding that puts
+every sample a metre into the storey overhead and still returns plausible hours. A Zone
+is therefore gridded on its floor, with the sample normals flipped back up.
+
 ### D16 — There is no `rules/nsw_adg.py`
 
 *Milestone M3. Deviation from the brief's architecture sketch, stated deliberately.*

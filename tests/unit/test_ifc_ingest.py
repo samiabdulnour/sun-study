@@ -546,3 +546,314 @@ def test_a_site_without_a_placement_reports_no_rotation(tmp_path: Path) -> None:
     model.write(str(stripped))
 
     assert read_ifc(stripped).site_rotation_deg == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Selecting living-room glazing by an ID suffix (D24), and zones by layer.
+#
+# The route for a practice that zones by *unit* rather than by room. There is
+# then no living-room Zone to match a name against, and every window in the
+# unit -- bedrooms, bathroom, kitchen -- would otherwise be counted as living
+# room glazing. That does not fail; it returns an optimistically wrong number,
+# which is the failure mode this project exists to avoid.
+# ---------------------------------------------------------------------------
+def _mark_openings(source: Path, destination: Path, suffix: str = "_L") -> Path:
+    """The fixture, renamed to the ``_L`` convention, with one opening a door.
+
+    Only the A-side openings are marked, so a test can tell selection from
+    "everything matched". ``LongName`` is stripped from every space as well:
+    with no room named "Living Room" anywhere, anything the scene finds must
+    have come through the suffix.
+    """
+    model = ifcopenshell.open(str(source))
+
+    for space in model.by_type("IfcSpace"):
+        space.LongName = None
+
+    windows = sorted(model.by_type("IfcWindow"), key=lambda w: w.Name)
+    for window in windows:
+        if "-A" in (window.Name or ""):
+            window.Name = f"{window.Name}{suffix}"
+
+    # Turn one marked window into a door in place. A balcony slider is a Door
+    # in Archicad, and doors were 110 of 252 marked openings in the reference
+    # project -- reading windows alone would drop nearly half the glazing.
+    victim = next(w for w in windows if (w.Name or "").endswith(suffix))
+    door = model.create_entity(
+        "IfcDoor",
+        GlobalId=victim.GlobalId,
+        OwnerHistory=victim.OwnerHistory,
+        Name=victim.Name,
+        ObjectPlacement=victim.ObjectPlacement,
+        Representation=victim.Representation,
+        OverallHeight=victim.OverallHeight,
+        OverallWidth=victim.OverallWidth,
+    )
+    for relation in model.by_type("IfcRelContainedInSpatialStructure"):
+        relation.RelatedElements = tuple(
+            door if e.id() == victim.id() else e for e in relation.RelatedElements
+        )
+    model.remove(victim)
+
+    model.write(str(destination))
+    return destination
+
+
+def _suffix_scene(path: Path, **overrides: Any) -> Any:
+    config = SceneConfig(timezone="Australia/Sydney", livable_opening_suffix="_L", **overrides)
+    return build_scene(read_ifc(path), config)
+
+
+def test_the_suffix_route_selects_only_the_marked_openings(tmp_path: Path) -> None:
+    scene = _suffix_scene(_mark_openings(SAMPLE, tmp_path / "marked.ifc"))
+
+    # Two A-side openings marked out of four; no space is named "Living Room".
+    assert scene.provenance["windows_total"] == 2
+    assert scene.provenance["windows_assessed"] == 2
+    assert scene.provenance["living_rooms_matched"] == 2
+    assert {a.space_name for a in scene.assignments} == {
+        "Apartment L00-A",
+        "Apartment L01-A",
+    }
+
+
+def test_a_marked_door_is_glazing_too(tmp_path: Path) -> None:
+    """Half the reference project's living-room glazing was sliding doors."""
+    marked = _mark_openings(SAMPLE, tmp_path / "marked.ifc")
+    classes = {e.ifc_class for e in read_ifc(marked).elements if e.name.endswith("_L")}
+    assert classes == {"IfcWindow", "IfcDoor"}, "the fixture must exercise both classes"
+
+    scene = _suffix_scene(marked)
+    assert scene.provenance["windows_assessed"] == 2, "the door must not be dropped"
+
+
+def test_windows_only_would_miss_the_door(tmp_path: Path) -> None:
+    """Guards the default in ``livable_opening_classes`` against being narrowed."""
+    marked = _mark_openings(SAMPLE, tmp_path / "marked.ifc")
+    scene = _suffix_scene(marked, livable_opening_classes=("IfcWindow",))
+
+    assert scene.provenance["windows_assessed"] == 1
+
+
+def test_the_suffix_must_be_a_suffix(tmp_path: Path) -> None:
+    """``D06L`` and ``SD2.x_L`` coexisted in the reference project.
+
+    Matching a bare trailing ``L`` would sweep up the first, which is a
+    bathroom cavity slider and not living-room glazing at all.
+    """
+    marked = _mark_openings(SAMPLE, tmp_path / "marked.ifc", suffix="L")
+    scene = _suffix_scene(marked)
+
+    assert scene.provenance["windows_total"] == 0, (
+        "openings ending in a bare 'L' must not match a '_L' convention"
+    )
+
+
+def test_the_suffix_route_ignores_room_names(tmp_path: Path) -> None:
+    """The two routes are alternatives, not filters applied in series."""
+    marked = _mark_openings(SAMPLE, tmp_path / "marked.ifc")
+    scene = _suffix_scene(marked, living_room_space_names=("Nothing Matches This",))
+
+    assert scene.provenance["windows_assessed"] == 2
+
+
+def _put_on_layers(source: Path, destination: Path, assignment: dict[str, str]) -> Path:
+    """The fixture, with named elements assigned to Archicad layers.
+
+    ``IfcPresentationLayerAssignment`` points at representations rather than
+    at products, which is how Archicad really writes it, so the fixture is
+    built the same way round.
+    """
+    model = ifcopenshell.open(str(source))
+    by_layer: dict[str, list[Any]] = {}
+    for product in model.by_type("IfcProduct"):
+        layer = assignment.get(product.Name or "")
+        representation = getattr(product, "Representation", None)
+        if layer is None or representation is None:
+            continue
+        by_layer.setdefault(layer, []).extend(representation.Representations)
+
+    for layer, items in by_layer.items():
+        model.create_entity(
+            "IfcPresentationLayerAssignment", Name=layer, AssignedItems=tuple(items)
+        )
+    model.write(str(destination))
+    return destination
+
+
+def test_layers_are_read_back_onto_elements(tmp_path: Path) -> None:
+    layered = _put_on_layers(
+        SAMPLE, tmp_path / "layered.ifc", {"Apartment L00-A": "06 | Zone.SEPP 65"}
+    )
+    by_name = {e.name: e for e in read_ifc(layered).elements}
+
+    assert by_name["Apartment L00-A"].layer == "06 | Zone.SEPP 65"
+    assert by_name["Apartment L00-B"].layer == "", "an unassigned element has no layer"
+
+
+def test_a_file_without_layers_reports_none(tmp_path: Path) -> None:
+    """An IFC exported without layers must not look like one where all match."""
+    assert all(element.layer == "" for element in read_ifc(SAMPLE).elements)
+
+
+def test_apartment_zones_can_be_restricted_to_a_layer(tmp_path: Path) -> None:
+    """The failure this prevents: a GFA zone counted as an apartment.
+
+    A real project carries several kinds of Zone -- units, GFA, NLA, storage,
+    a SEPP 65 duplicate set. Assessing all of them inflates the denominator of
+    the compliance percentage, and nothing about the output looks wrong.
+    """
+    layered = _put_on_layers(
+        SAMPLE,
+        tmp_path / "layered.ifc",
+        {
+            "Apartment L00-A": "06 | Zone.SEPP 65",
+            "Apartment L00-B": "06 | Zone.SEPP 65",
+            "Apartment L01-A": "10 | Calc.GFA",
+            "Apartment L01-B": "10 | Calc.GFA",
+        },
+    )
+    scene = build_scene(
+        read_ifc(layered),
+        SceneConfig(
+            timezone="Australia/Sydney",
+            apartment_zone_layers=("06 | Zone.SEPP 65",),
+        ),
+    )
+
+    assert scene.provenance["spaces_total"] == 2
+    assert scene.provenance["living_rooms_matched"] == 2
+
+
+def test_layer_matching_tolerates_spacing(tmp_path: Path) -> None:
+    """A layer name retyped on a command line will not match byte for byte."""
+    layered = _put_on_layers(
+        SAMPLE, tmp_path / "layered.ifc", {"Apartment L00-A": "06 | Zone.SEPP 65"}
+    )
+    scene = build_scene(
+        read_ifc(layered),
+        SceneConfig(
+            timezone="Australia/Sydney",
+            apartment_zone_layers=("06  |  zone.sepp 65",),
+        ),
+    )
+    assert scene.provenance["spaces_total"] == 1
+
+
+def test_open_space_zones_are_never_apartments(tmp_path: Path) -> None:
+    """A balcony Zone in the denominator would be an apartment with no windows.
+
+    It would then read as an apartment receiving no living-room sunlight,
+    which is a compliance failure invented out of a modelling convention.
+    """
+    layered = _put_on_layers(
+        SAMPLE,
+        tmp_path / "layered.ifc",
+        {
+            "Apartment L00-A": "06 | Zone.Units",
+            "Apartment L00-B": "06 | Zone.Balcony",
+        },
+    )
+    scene = build_scene(
+        read_ifc(layered),
+        SceneConfig(
+            timezone="Australia/Sydney",
+            living_room_space_names=(),
+            apartment_zone_layers=("06 | Zone.Units",),
+            open_space_zone_layers=("06 | Zone.Balcony",),
+        ),
+    )
+
+    assert scene.provenance["spaces_total"] == 1
+
+    # It went down the open-space route rather than being dropped. It does not
+    # attach here because the fixture's two zones sit 10 m apart side by side,
+    # not one above the other -- a balcony that far from its apartment is
+    # correctly treated as communal. The attachment rule itself is covered by
+    # the slab-based cases.
+    assert scene.provenance["open_space_unattached"] == 1
+
+
+def test_the_scene_description_states_which_routes_were_used() -> None:
+    """These choices move the headline percentage, so they are always echoed."""
+    described = SceneConfig(
+        timezone="Australia/Sydney",
+        livable_opening_suffix="_L",
+        apartment_zone_layers=("06 | Zone.SEPP 65",),
+        open_space_zone_layers=("06 | Zone.Balcony",),
+    ).describe()
+
+    assert "_L" in described
+    assert "Window/Door" in described
+    assert "06 | Zone.SEPP 65" in described
+    assert "06 | Zone.Balcony" in described
+
+
+def test_a_zone_is_gridded_on_its_floor_not_its_ceiling(model: Any) -> None:
+    """The bug this guards against returns a plausible number from the wrong storey.
+
+    A balcony slab is a solid and its walking surface is the top face. A
+    balcony Zone is a void, and its top face is the underside of whatever is
+    above -- gridding that would assess a plane one metre into the storey
+    overhead, and nothing about the resulting hours would look wrong.
+    """
+    from sun_study.ingest.scene import _open_space_grid
+
+    zone = model.of_class("IfcSpace")[0]
+    lower, upper = zone.bounds
+    config = SceneConfig(timezone="Australia/Sydney", open_space_height_m=1.0)
+
+    samples = _open_space_grid(zone, zone.global_id, config)
+    assert samples is not None
+
+    heights = samples.positions[:, 2]
+    assert heights.min() == pytest.approx(float(lower[2]) + 1.0, abs=1e-6)
+    assert heights.max() == pytest.approx(float(lower[2]) + 1.0, abs=1e-6)
+    assert float(upper[2]) - float(lower[2]) > 1.5, (
+        "the fixture zone must be taller than the sample height for this to discriminate"
+    )
+
+    # Open space faces the sky whichever face it was derived from.
+    assert np.allclose(samples.normals[:, 2], 1.0)
+
+
+def test_a_slab_is_still_gridded_on_its_top(model: Any) -> None:
+    from sun_study.ingest.scene import _open_space_grid
+
+    slab = next(s for s in model.of_class("IfcSlab") if s.name.startswith("Balcony"))
+    _, upper = slab.bounds
+    config = SceneConfig(timezone="Australia/Sydney", open_space_height_m=1.0)
+
+    samples = _open_space_grid(slab, slab.global_id, config)
+    assert samples is not None
+    assert samples.positions[:, 2].min() == pytest.approx(float(upper[2]) + 1.0, abs=1e-6)
+    assert np.allclose(samples.normals[:, 2], 1.0)
+
+
+def test_a_layer_that_matches_nothing_lists_what_is_there(tmp_path: Path) -> None:
+    """A typo must not read as a building with no apartments.
+
+    Layer names carry punctuation nobody reproduces from memory: the real
+    project's '06 | Zone.Units' typed as '06|Zone.Units' matches nothing.
+    Selecting zero zones silently would report 0 of 0 apartments compliant.
+    """
+    from sun_study.ingest.scene import SceneConfigError
+
+    layered = _put_on_layers(
+        SAMPLE, tmp_path / "layered.ifc", {"Apartment L00-A": "06 | Zone.Units"}
+    )
+    with pytest.raises(SceneConfigError) as caught:
+        build_scene(
+            read_ifc(layered),
+            SceneConfig(timezone="Australia/Sydney", apartment_zone_layers=("06|Zone.Units",)),
+        )
+
+    message = str(caught.value)
+    assert "06|Zone.Units" in message, "the message must repeat what was asked for"
+    assert "06 | Zone.Units" in message, "and show the layer that is actually there"
+
+
+def test_no_layer_filter_still_works_on_a_file_without_layers() -> None:
+    """The overwhelmingly common case must not be made to fail."""
+    scene = build_scene(read_ifc(SAMPLE), SceneConfig(timezone="Australia/Sydney"))
+    assert scene.provenance["spaces_total"] == 4
