@@ -220,3 +220,48 @@ def test_a_wrong_living_room_name_is_visible_not_silent() -> None:
     assert "DOES NOT COMPLY" in invocation.output, (
         "an empty assessment must not report as compliant"
     )
+
+
+# ---------------------------------------------------------------------------
+# The Archicad commands, with nothing listening.
+#
+# These cannot reach an Archicad in CI, so what they pin is the behaviour a
+# person actually hits first: running the command with Archicad shut, or on
+# the wrong port. That has to be a named, actionable failure rather than a
+# traceback, because it is the single most common way the tool is used wrong.
+# ---------------------------------------------------------------------------
+CLOSED_PORT = ["--port", "1"]
+
+
+@pytest.mark.parametrize("command", ["archicad-info", "init-properties"])
+def test_archicad_commands_fail_helpfully_with_nothing_listening(command: str) -> None:
+    invocation = runner.invoke(app, [command, *CLOSED_PORT])
+    assert invocation.exit_code == 2, invocation.output
+    assert "Could not reach Archicad" in invocation.output
+    assert "JSON" in invocation.output, "the message must name the setting to check"
+
+
+def test_archicad_run_fails_helpfully_with_nothing_listening() -> None:
+    invocation = runner.invoke(
+        app, ["archicad-run", "--timezone", "Australia/Sydney", *CLOSED_PORT]
+    )
+    assert invocation.exit_code == 2, invocation.output
+    assert "Could not reach Archicad" in invocation.output
+
+
+def test_archicad_run_does_not_write_back_unless_asked() -> None:
+    """Write-back edits a file colleagues share, so it must stay opt-in.
+
+    Pinned on the signature rather than on the help text: a default that flips
+    to True is the kind of change that reads as harmless in a diff and is not.
+    """
+    import inspect
+
+    from sun_study.cli import archicad_run
+
+    assert inspect.signature(archicad_run).parameters["write"].default is False
+
+
+def test_the_archicad_commands_are_registered() -> None:
+    names = {command.name for command in app.registered_commands}
+    assert {"archicad-info", "init-properties", "archicad-run"} <= names

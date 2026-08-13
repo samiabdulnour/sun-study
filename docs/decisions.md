@@ -323,6 +323,65 @@ which is right is a project-level question. A studio with no balcony is a differ
 case from one whose balcony never sees the sun, so the two are never collapsed —
 `None` and `0.0` stay distinct all the way into the CSV, where the former is blank.
 
+### D21 — Results are written as `string`, not `boolean`, property values
+
+*Milestone M5. Alternative: declare the pass/fail columns `boolean` and guess the literal.*
+
+`SetPropertyValuesOfElements` takes a **display string** and lets Archicad parse it into
+the property's declared type. For numbers that is safe and checkable: Tapir's
+`PropertyConversionUtils` (in `PropertyCommands.cpp`) hard-codes a `.` decimal
+delimiter, metres, square metres and decimal degrees, so `"2.35"` means 2.35 hours
+whatever the project's unit preferences are set to. That is read out of the source, not
+assumed.
+
+Nothing anywhere states what string a **boolean** property parses from — `"true"`,
+`"1"`, a localised `"Yes"`, or something else. A wrong guess does not error; it either
+refuses the value or, worse, lands the opposite of the truth in a compliance column. So
+`Meets Minimum`, `No Direct Sunlight` and `Counted in Compliance` are `string`
+properties holding `Yes`/`No`. A string set from a string cannot be misparsed, and the
+columns still sort and filter in an Archicad schedule.
+
+`test_no_property_is_declared_boolean` holds this in place. It can be revisited once
+someone at a workstation confirms the literal — that is on the checklist in
+[`archicad.md`](archicad.md).
+
+### D22 — Geometry travels by IFC; the JSON API is used for everything else
+
+*Milestone M4. Alternative: read geometry over the Tapir API and skip the export.*
+
+Tapir can return element geometry, so a direct read is possible. It is still the wrong
+choice. The IFC path is the one covered by a committed fixture, a golden file and a
+validated end-to-end comparison; a second geometry route would need all of that
+duplicated, and would silently diverge from the first the moment an Archicad IFC
+translator setting changed. The export is also the same file the office already
+produces by hand, so what the tool analyses is what a colleague can open and check.
+
+The consequence is that Archicad's own georeferencing is not the source of truth —
+the IFC's is. That is deliberate, and it is what makes the north cross-check possible:
+two independent statements of the same fact, with disagreement fatal.
+
+### D23 — The Archicad north convention is assumed, and cross-checked rather than trusted
+
+*Milestone M4. Open until confirmed at a workstation.*
+
+`GetGeoLocation` returns `north` in radians and documents nothing else about it. The
+add-on sources, the JSON schemas and the Grasshopper components are all silent on
+whether the angle runs clockwise or anticlockwise, and from which axis. One data point
+exists — Tapir's `WallOrientationComponent` subtracts a user-supplied `northRotation`
+from a clockwise-measured model angle — but that input is typed by a human, not read
+from `GetGeoLocation`, so it proves nothing.
+
+Rather than guess and hope, `ASSUMED_NORTH_SENSE` in `archicad/read.py` states the
+guess in one place and *nothing depends on it*. North for the analysis comes from the
+IFC. The assumed reading is used only by `cross_check_georeferencing`, which compares
+the two and refuses to continue when they disagree. If the sense is backwards, a
+project with a non-zero north fails by exactly twice the angle, and the error message
+says so and asks for a report.
+
+The cost of being wrong is therefore a confusing-but-safe stop on a rotated project,
+not a rotated building. `test_cross_check_recognises_a_flipped_north_sense` pins that
+behaviour on the fixture, whose 30° north makes the two senses distinguishable.
+
 ### D16 — There is no `rules/nsw_adg.py`
 
 *Milestone M3. Deviation from the brief's architecture sketch, stated deliberately.*

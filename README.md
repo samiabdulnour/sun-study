@@ -42,8 +42,8 @@ pure astronomy from latitude, longitude and time.
 | M2 | IFC ingest and scene assembly | **Done** — fixture loads with correct north, units, containment |
 | M3 | ADG ruleset, CSV/JSON output | **Done** — per-apartment results for the fixture |
 | — | Massing mode: facade/ground area bands | **Done** — the metric a massing optimisation maximises |
-| M4 | Archicad read adapter | Not started |
-| M5 | Archicad write-back | Not started |
+| M4 | Archicad read adapter | **Written, untested against Archicad** — every command verified against the Tapir sources; needs the [checklist](docs/archicad.md#manual-test-checklist) run at a workstation |
+| M5 | Archicad write-back | **Written, untested against Archicad** — same |
 | M6 | Validation against Ladybug | **Within tolerance** — 0.19 pt on the headline metric, 98.4% per-face; conditional on confirming north |
 
 ## Architecture
@@ -89,6 +89,36 @@ before apartments exist the compliance figure cannot be computed at all.
 applies outside Sydney Metro, Newcastle and Wollongong. Every run echoes the resolved
 site, north bearing, ruleset version, continuity setting and room-matching rule before
 printing a single number, so a wrong assumption is visible before a figure gets quoted.
+
+## Against a running Archicad
+
+With Archicad 26 open and the [Tapir add-on](https://github.com/ENZYME-APD/tapir-archicad-automation/releases)
+installed (1.5.1 or newer):
+
+```bash
+uv run sun-study archicad-info                                  # what is Archicad reporting?
+uv run sun-study init-properties                                # create the 'Sun Study' properties
+uv run sun-study archicad-run --timezone Australia/Sydney --write
+```
+
+`archicad-run` exports an IFC from the open project, assesses it, and writes the result
+onto the Zones so an ADG table becomes a native Archicad schedule. Write-back is opt-in:
+without `--write` it only reports.
+
+Geometry travels by IFC rather than over the JSON API, because that path is the one
+covered by a fixture, a golden file and the Ladybug comparison — and the export is the
+same file a colleague would produce by hand. Archicad's own georeferencing is then
+cross-checked against the export, and a disagreement stops the run before any number is
+printed.
+
+**This package is not covered by CI**, because there is no Archicad to run against.
+That is the reason `core` is kept pure: what can be tested is tested exhaustively, and
+the part that cannot is kept thin, boring and free of analysis logic. Its request and
+response handling *is* machine-checked, through a fake transport, in
+`tests/unit/test_archicad_adapter.py`. The rest needs a human —
+[`docs/archicad.md`](docs/archicad.md) records every command with its source and version,
+the two facts that could not be verified without an Archicad, and the checklist that
+settles them.
 
 Try it on the committed fixture:
 
@@ -151,9 +181,10 @@ workstation without a compiler. That makes it the production backend rather than
 fallback, so its speed is measured too: about 38k rays/s, roughly 20 seconds for a
 200 apartment job (`uv run python scripts/benchmark_occlusion.py`).
 
-See [`docs/validation.md`](docs/validation.md) for measured residuals, and
+See [`docs/validation.md`](docs/validation.md) for measured residuals,
 [`docs/decisions.md`](docs/decisions.md) for the domain assumptions that change the
-headline compliance percentage.
+headline compliance percentage, and [`docs/archicad.md`](docs/archicad.md) for what was
+verified about the Archicad protocol and what was not.
 
 ## The fixture
 
