@@ -36,6 +36,8 @@ Command                      Since    Used for
 from __future__ import annotations
 
 import math
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,8 +53,10 @@ __all__ = [
     "GeoreferencingMismatchError",
     "ProjectInfo",
     "cross_check_georeferencing",
+    "disambiguated",
     "elements_by_ifc_ids",
     "export_ifc",
+    "layer_names",
     "north_bearing_deg",
     "project_info",
     "read_geo_location",
@@ -180,11 +184,41 @@ class ArchicadZone:
     """
     arc_count: int = 0
     """Curved segments in the outline, likewise flattened to straight ones."""
+    layer_index: int | None = None
+    """Which Archicad layer the zone sits on.
+
+    Kept because a zone's *layer* is what says whether it is an apartment. A
+    project can hold zones for GFA calculation, for fire compartments and for
+    apartments all at once, all named the same, and only the layer separates
+    them.
+    """
 
     @property
     def label(self) -> str:
-        """What a human would call it on a drawing."""
+        """What a human would call it on a drawing.
+
+        Not unique: a project can have hundreds of zones all called ``RESI``
+        with no number. Use ``disambiguated`` wherever a list of these is
+        printed, or the report collapses distinct zones into one.
+        """
         return f"{self.number} {self.name}".strip() or self.guid
+
+
+def disambiguated(display_by_guid: Mapping[str, str]) -> dict[str, str]:
+    """Make display names unique by adding a GUID fragment to the repeats.
+
+    Zone names are not identifiers. One project has 1341 zones of which the
+    eight sampled were all called ``RESI``, which made a report of seven
+    distinct failures read as "56 failures over 1 elements" and a list of six
+    zones with holes read as "RESI, RESI, RESI, RESI, RESI".
+
+    Only the colliding names are tagged, so the common case stays readable.
+    """
+    counts = Counter(display_by_guid.values())
+    return {
+        guid: display if counts[display] == 1 else f"{display} [{guid[:8]}]"
+        for guid, display in display_by_guid.items()
+    }
 
 
 def project_info(connection: ArchicadConnection) -> ProjectInfo:
@@ -401,6 +435,7 @@ def zones(connection: ArchicadConnection) -> tuple[ArchicadZone, ...]:
             continue
         detail = row.get("details") or {}
         floor = row.get("floorIndex")
+        layer = row.get("layerIndex")
         result.append(
             ArchicadZone(
                 guid=guid,
@@ -410,9 +445,27 @@ def zones(connection: ArchicadConnection) -> tuple[ArchicadZone, ...]:
                 outline=_outline(detail.get("polygonOutline")),
                 hole_count=len(detail.get("holes") or []),
                 arc_count=len(detail.get("polygonArcs") or []),
+                layer_index=int(layer) if isinstance(layer, (int, float)) else None,
             )
         )
     return tuple(sorted(result, key=lambda zone: (zone.number, zone.name, zone.guid)))
+
+
+def layer_names(connection: ArchicadConnection) -> dict[int, str]:
+    """Layer index -> name, for turning a zone's ``layer_index`` into words.
+
+    A zone's layer is what says whether it is an apartment: a project can hold
+    zones for GFA calculation, for fire compartments and for apartments all at
+    once, all named the same. Reporting the index alone leaves a reader to go
+    and look it up, which is the point at which they stop looking.
+    """
+    response = connection.run_tapir("GetAttributesByType", {"attributeType": "Layer"})
+    listed = response.get("attributes") if isinstance(response, dict) else None
+    return {
+        int(attribute["index"]): str(attribute.get("name", ""))
+        for attribute in (listed or [])
+        if isinstance(attribute, dict) and isinstance(attribute.get("index"), (int, float))
+    }
 
 
 def elements_by_ifc_ids(connection: ArchicadConnection, ifc_ids: list[str]) -> dict[str, list[str]]:

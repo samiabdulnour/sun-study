@@ -46,6 +46,7 @@ from sun_study.archicad.read import (
     cross_check_georeferencing,
     describe_connection,
     export_ifc,
+    layer_names,
     read_geo_location,
 )
 from sun_study.archicad.read import zones as read_zones
@@ -935,6 +936,18 @@ def archicad_selftest(
     count: Annotated[
         int, typer.Option("--zones", help="How many zones to write to. 0 for all.")
     ] = 8,
+    zone_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--zone-layer",
+            help=(
+                "Only test against zones on this Archicad layer. Repeatable. "
+                "Without it the first zones in the project are used, which in a "
+                "project with GFA or fire-compartment zones is usually not the "
+                "apartments."
+            ),
+        ),
+    ] = None,
     layer: Annotated[
         str, typer.Option("--layer", help="Archicad layer to draw on.")
     ] = DEFAULT_LAYER_NAME,
@@ -990,9 +1003,34 @@ def archicad_selftest(
             typer.secho("No Zones in the project to test against.", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
 
+        names = layer_names(connection)
+        if zone_layer:
+            wanted = {entry.casefold() for entry in zone_layer}
+            found = tuple(
+                zone for zone in found if names.get(zone.layer_index or -1, "").casefold() in wanted
+            )
+            if not found:
+                typer.secho(
+                    f"No zones on {', '.join(zone_layer)}. Run 'archicad-info "
+                    f"--zone-names 0' to see what the project actually has.",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=2)
+
         chosen = found if count <= 0 else found[:count]
         assessment, match = _synthetic_assessment(chosen, band_styles(pen))
         typer.echo(f"  testing against {len(chosen)} of {len(found)} zones")
+
+        # Which layer the sample came from is the fastest way to notice that
+        # the tool is looking at GFA-calculation zones rather than apartments.
+        sampled = collections.Counter(
+            names.get(zone.layer_index or -1, "(unknown layer)") for zone in chosen
+        )
+        for name, how_many in sampled.most_common():
+            typer.echo(f"    {how_many} on layer {name!r}")
+        if not zone_layer and len(sampled) == 1:
+            typer.echo("    narrow this with --zone-layer if those are not the apartments")
 
         if properties:
             classified = classification_items_of(connection, [zone.guid for zone in chosen])

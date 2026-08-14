@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.read import NULL_GUID, elements_by_ifc_ids
+from sun_study.archicad.read import NULL_GUID, disambiguated, elements_by_ifc_ids
 from sun_study.rules.assessment import BuildingAssessment
 
 __all__ = [
@@ -148,6 +148,14 @@ class WriteReport:
     zones_ambiguous: tuple[str, ...] = ()
     """Apartments matching more than one element, so the target is unclear."""
     failures: tuple[str, ...] = ()
+    """Every reported failure, including the cascade."""
+    failure_causes: tuple[str, ...] = ()
+    """The first failure on each element -- the ones that are real causes.
+
+    Keyed on the element rather than on the message, because a zone name is
+    not an identifier: a project with 1341 zones had eight of them called
+    ``RESI``, and collapsing by name reported seven refusing elements as one.
+    """
 
     @property
     def complete(self) -> bool:
@@ -188,18 +196,14 @@ class WriteReport:
         # it report "Failed to get property values for element" as well.
         # Printing all of them buries the eight causes under forty-eight
         # symptoms.
-        first: dict[str, str] = {}
-        for failure in self.failures:
-            element, _, _ = failure.partition(" / ")
-            first.setdefault(element, failure)
-
-        for failure in list(first.values())[:8]:
+        causes = self.failure_causes or self.failures
+        for failure in causes[:8]:
             lines.append(f"  FAILED {failure}")
-        if len(first) > 8:
-            lines.append(f"  ... and {len(first) - 8} more elements failed")
-        if len(self.failures) > len(first):
+        if len(causes) > 8:
+            lines.append(f"  ... and {len(causes) - 8} more elements failed")
+        if len(self.failures) > len(causes):
             lines.append(
-                f"  ({len(self.failures)} failures over {len(first)} elements; only the "
+                f"  ({len(self.failures)} failures over {len(causes)} elements; only the "
                 f"first per element is a real cause -- Tapir does not reset its error "
                 f"between an element's properties, so the rest follow from it)"
             )
@@ -701,6 +705,17 @@ def write_assessment(
     unmatched = list(resolved.unmatched)
     ambiguous = list(resolved.ambiguous)
 
+    # Zone names are not identifiers. One project has 1341 zones of which
+    # eight were all called "RESI", and collapsing failures by display name
+    # then reported seven refusing elements as one.
+    display = disambiguated(
+        {
+            guid: apartment.apartment_name or guid
+            for apartment in assessment.apartments
+            if (guid := resolved.by_apartment.get(apartment.apartment_id)) is not None
+        }
+    )
+
     payload: list[dict[str, Any]] = []
     labels: list[str] = []
     guids: list[str] = []
@@ -721,7 +736,7 @@ def write_assessment(
                     "propertyValue": {"value": value},
                 }
             )
-            labels.append(f"{apartment.apartment_name or guid} / {name}")
+            labels.append(f"{display[guid]} / {name}")
             guids.append(guid)
 
     if not payload:
@@ -752,23 +767,27 @@ def write_assessment(
     # every value still reported writing "across 8 zones".
     failures: list[str] = []
     took: dict[str, None] = {}
-    refused: dict[str, None] = {}
+    # Keyed by GUID, not by the message, because Tapir reuses one `err` across
+    # an element's properties: only the first failure on each element is a
+    # cause and the rest follow from it.
+    causes: dict[str, str] = {}
     for result, label, guid in zip(results, labels, guids, strict=True):
         problem = _execution_problem(result, label)
         if problem is None:
             took[guid] = None
         else:
             failures.append(problem)
-            refused[guid] = None
+            causes.setdefault(guid, problem)
 
     return WriteReport(
         values_written=len(payload) - len(failures),
         values_skipped=skipped,
         zones_written=tuple(took),
-        zones_refused=tuple(guid for guid in refused if guid not in took),
+        zones_refused=tuple(guid for guid in causes if guid not in took),
         zones_unmatched=tuple(unmatched),
         zones_ambiguous=tuple(ambiguous),
         failures=tuple(failures),
+        failure_causes=tuple(causes.values()),
     )
 
 

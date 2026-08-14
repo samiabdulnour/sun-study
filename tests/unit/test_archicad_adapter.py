@@ -58,6 +58,7 @@ from sun_study.archicad.read import (
     elements_by_ifc_ids,
     export_ifc,
     ifc_ids_of_elements,
+    layer_names,
     north_bearing_deg,
     project_info,
     read_geo_location,
@@ -924,10 +925,11 @@ def _apartment(
     living: float = 141.0,
     open_space: float | None = 200.0,
     meets: bool = True,
+    name: str | None = None,
 ) -> ApartmentResult:
     return ApartmentResult(
         apartment_id=apartment_id,
-        apartment_name=f"Apt {apartment_id}",
+        apartment_name=name if name is not None else f"Apt {apartment_id}",
         living_room_minutes=living,
         open_space_minutes=open_space,
         governing_minutes=living,
@@ -1395,13 +1397,21 @@ def test_asking_for_no_enumerations_makes_no_call() -> None:
 # -- drawing the result on the plan ---------------------------------------
 
 
-def _zone(guid: str, *, outline: bool = True, holes: int = 0, storey: int | None = 0) -> Any:
+def _zone(
+    guid: str,
+    *,
+    outline: bool = True,
+    holes: int = 0,
+    storey: int | None = 0,
+    name: str = "Living",
+    number: str | None = None,
+) -> Any:
     from sun_study.archicad.read import ArchicadZone
 
     return ArchicadZone(
         guid=guid,
-        name="Living",
-        number=guid.upper(),
+        name=name,
+        number=guid.upper() if number is None else number,
         storey_index=storey,
         outline=((0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)) if outline else (),
         hole_count=holes,
@@ -1521,6 +1531,66 @@ def test_a_zone_with_no_outline_is_skipped_and_named() -> None:
     assert report.fills_drawn == 0
     assert report.zones_without_outline == ("Z1 Living",)
     assert not report.complete
+
+
+def test_zones_sharing_a_name_are_listed_distinguishably() -> None:
+    """From a real run: "6 zones have holes ... RESI, RESI, RESI, RESI, RESI",
+    which names no zone at all and cannot be acted on."""
+    connection, _ = connect(_draw_responses())
+    report = draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1"), _apartment("apt-2")),
+        [
+            _zone("02327B92-3FD0", holes=1, name="RESI", number=""),
+            _zone("044ED3D0-DA35", holes=1, name="RESI", number=""),
+        ],
+        zone_by_apartment={"apt-1": "02327B92-3FD0", "apt-2": "044ED3D0-DA35"},
+    )
+
+    assert report.zones_with_holes == ("RESI [02327B92]", "RESI [044ED3D0]")
+
+
+def test_a_zone_with_a_name_of_its_own_is_not_tagged() -> None:
+    """The GUID fragment is noise when the name already identifies the zone."""
+    connection, _ = connect(_draw_responses())
+    report = draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1", holes=1, name="Living", number="G.01")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+    assert report.zones_with_holes == ("G.01 Living",)
+
+
+def test_a_zone_carries_the_layer_it_sits_on() -> None:
+    """A zone's layer is what says whether it is an apartment: one project's
+    zones were all on '10 | Calc.GFA', which is area take-off, not housing."""
+    connection, _ = connect(
+        {
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "z1"}}]},
+            "GetDetailsOfElements": {
+                "detailsOfElements": [
+                    {"floorIndex": 3, "layerIndex": 42, "details": {"name": "RESI"}}
+                ]
+            },
+        }
+    )
+    assert zones(connection)[0].layer_index == 42
+
+
+def test_layer_names_map_index_to_name() -> None:
+    connection, transport = connect(
+        {
+            "GetAttributesByType": {
+                "attributes": [
+                    {"attributeId": {"guid": "a"}, "index": 42, "name": "10 | Calc.GFA"},
+                    {"attributeId": {"guid": "b"}, "index": 7, "name": "06 | Zone.Apartment"},
+                ]
+            }
+        }
+    )
+    assert layer_names(connection) == {42: "10 | Calc.GFA", 7: "06 | Zone.Apartment"}
+    assert transport.parameters_for("GetAttributesByType") == {"attributeType": "Layer"}
 
 
 def test_a_zone_with_holes_is_drawn_but_reported() -> None:
@@ -1996,29 +2066,60 @@ def test_only_the_first_failure_per_element_is_reported_as_a_cause() -> None:
     report "Failed to get property values" too. Printing all of them buries
     eight causes under forty-eight symptoms.
     """
-    from sun_study.archicad.write import WriteReport
+    names = [spec.name for spec in APARTMENT_PROPERTIES]
+    responses = _write_responses(names)
+    responses["GetElementsByIFCIds"] = {
+        "elementsByIFCIds": [
+            {"ifcId": "apt-1", "elements": [{"elementId": {"guid": "z1"}}]},
+            {"ifcId": "apt-2", "elements": [{"elementId": {"guid": "z2"}}]},
+        ]
+    }
+    responses["SetPropertyValuesOfElements"] = {
+        "executionResults": [
+            {"success": False, "error": {"code": -2130312909, "message": "no access"}}
+        ]
+        * (2 * len(names))
+    }
+    connection, _ = connect(responses)
 
-    report = WriteReport(
-        values_written=0,
-        values_skipped=0,
-        zones_written=("a", "b"),
-        zones_unmatched=(),
-        zones_ambiguous=(),
-        failures=(
-            "Apt A / Living Room Sunlight (h): Failed to set property value",
-            "Apt A / Governing Sunlight (h): Failed to get property values",
-            "Apt A / Meets Minimum: Failed to get property values",
-            "Apt B / Living Room Sunlight (h): Failed to set property value",
-            "Apt B / Meets Minimum: Failed to get property values",
-        ),
-    )
+    report = write_assessment(connection, _assessment(_apartment("apt-1"), _apartment("apt-2")))
     described = report.describe()
 
     assert described.count("FAILED") == 2, "one line per element, not one per value"
-    assert "Apt A / Living Room Sunlight (h)" in described
-    assert "Apt B / Living Room Sunlight (h)" in described
-    assert "Apt A / Meets Minimum" not in described
-    assert "5 failures over 2 elements" in described
+    assert len(report.failures) == 2 * len(names)
+    assert f"{2 * len(names)} failures over 2 elements" in described
+
+
+def test_zones_sharing_a_name_are_still_counted_as_separate_elements() -> None:
+    """The bug this fixes, from a project with 1341 zones.
+
+    Eight of them were called ``RESI`` with no number, so collapsing failures
+    by display name turned seven refusing elements into "56 failures over 1
+    elements" -- and the GUID fragment is what makes the list of them mean
+    anything.
+    """
+    names = [spec.name for spec in APARTMENT_PROPERTIES]
+    responses = _write_responses(names)
+    responses["GetElementsByIFCIds"] = {
+        "elementsByIFCIds": [
+            {"ifcId": "apt-1", "elements": [{"elementId": {"guid": "02327B92-3FD0"}}]},
+            {"ifcId": "apt-2", "elements": [{"elementId": {"guid": "044ED3D0-DA35"}}]},
+        ]
+    }
+    responses["SetPropertyValuesOfElements"] = {
+        "executionResults": [{"success": False, "error": {"code": 1, "message": "no"}}]
+        * (2 * len(names))
+    }
+    connection, _ = connect(responses)
+
+    same_name = _assessment(_apartment("apt-1", name="RESI"), _apartment("apt-2", name="RESI"))
+    report = write_assessment(connection, same_name)
+    described = report.describe()
+
+    assert len(report.failure_causes) == 2, "two elements, not one"
+    assert f"{2 * len(names)} failures over 2 elements" in described
+    assert "RESI [02327B92]" in described
+    assert "RESI [044ED3D0]" in described
 
 
 def test_a_hidden_results_layer_is_called_out() -> None:

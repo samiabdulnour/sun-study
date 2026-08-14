@@ -34,7 +34,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.read import ArchicadZone
+from sun_study.archicad.read import ArchicadZone, disambiguated
 from sun_study.rules.assessment import BuildingAssessment
 
 __all__ = [
@@ -626,6 +626,9 @@ def draw_assessment(
     removed = clear_layer(connection, layer_index)
 
     by_guid = {zone.guid: zone for zone in zones}
+    # Zone names repeat. Reporting "RESI, RESI, RESI, RESI, RESI" names no
+    # zone at all, so the ones that collide carry a GUID fragment.
+    named = disambiguated({zone.guid: zone.label for zone in zones})
     fills: list[dict[str, Any]] = []
     no_outline: list[str] = []
     with_holes: list[str] = []
@@ -638,13 +641,14 @@ def draw_assessment(
         if zone is None:
             unmatched.append(apartment.apartment_name or apartment.apartment_id)
             continue
+        label = named[zone.guid]
         if not zone.outline:
-            no_outline.append(zone.label)
+            no_outline.append(label)
             continue
         if zone.hole_count:
-            with_holes.append(zone.label)
+            with_holes.append(label)
         if zone.arc_count:
-            with_arcs.append(zone.label)
+            with_arcs.append(label)
         fills.append(_fill_for(zone, band_for(apartment.governing_minutes, bands), layer_index))
 
     legend_fills, legend_texts = _legend(bands, legend_origin or _legend_origin(zones), layer_index)

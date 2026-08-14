@@ -303,7 +303,8 @@ machine-checked against a fake transport:
 | Connection, version handshake, project info | works |
 | `GetGeoLocation`, zones, zone details, classifications | works |
 | Property group create and lookup | works, **once definitions carry a `defaultValue`** |
-| Property **value** writes | **partly blocked**: 2 of 8 zones took every value, 6 refused every value, `APIERR_NOACCESSRIGHT` |
+| Property **value** writes | **partly blocked**: on one project 2 of 8 zones took every value and 6 refused every value; on another the refusing zones were traced to the locked layer `10 \| Calc.GFA` |
+| `GetDetailsOfElements` layer index, `GetHotlinks` — why a write was refused | **works**: named a locked layer as the cause |
 | Layer create and lookup, element delete | works |
 | `CreateHatches`, `CreateTexts` — fills and legend | **works**: 8 fills and a 7-item legend, replacing the previous run's 15 |
 | `GetPenTables` — reading the office palette | **works**: 255 pens, one band matched exactly, one had no pen within 110 |
@@ -333,6 +334,18 @@ takes the same required `attributeIds`. `GetAttributesByType` is the only enumer
 it reports just id, index and name, so reading any detail is always two calls.
 `GetPenTables` also accepts `fields`, which is worth using: each pen table carries 255
 pens, and finding out which of several tables is active should not pull all of them.
+
+**A zone name is not an identifier.** One project holds 1341 zones, of which the eight
+sampled were all called `RESI` with no number. Collapsing failures by display name then
+reported seven refusing elements as "56 failures over 1 elements", and a list of six
+zones with holes read as "RESI, RESI, RESI, RESI, RESI". Reports now collapse on the
+element GUID, and `disambiguated` tags only the colliding names with a GUID fragment.
+
+**A zone's layer is what says whether it is an apartment.** The same project's zones sat
+on `10 | Calc.GFA` — area take-off, not housing — and were locked because a calculation
+layer normally is. `ArchicadZone` carries `layer_index` and the self-test reports the
+layers its sample came from, because a run against the wrong zones otherwise looks
+exactly like a run against the right ones.
 
 **Archicad gives each running instance its own port.** The JSON API is on 19723 only for
 the *first* Archicad open on the machine; a second lands on 19724, and so on up to 19742
