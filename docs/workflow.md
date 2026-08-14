@@ -67,6 +67,8 @@ Per project, all of it already in the manual except where noted.
 
 - [ ] **Project Location** set to the real site coordinates and north.
       Exact arcminute values such as `-33° 52' 00"` are the Sydney preset, not a site.
+      `archicad-info` now warns when both coordinates land on a whole arcminute; one
+      real project was still pointing at the Sydney CBD preset, 11 km from its site.
 - [ ] **Unit zones** on `06 | Zone.Units`, as usual.
 - [ ] **SEPP 65 zones** on `06 | Zone.SEPP 65` — one per apartment, per the manual.
 - [ ] **Zone Number = the unit number** on those SEPP 65 zones, and Zone Name = the type.

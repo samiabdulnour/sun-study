@@ -503,6 +503,38 @@ def test_zones_are_counted_per_layer_so_the_apartment_layer_is_findable() -> Non
     assert "1301  10 | Calc.GFA" in output
 
 
+def test_each_layer_reports_the_zone_names_on_it() -> None:
+    """A project-wide name tally cannot say what the apartments are called:
+    on one real file the top names were annotation and area take-off, and the
+    246 zones on '06 | Zone.Units' were invisible in the totals."""
+    import typer.testing
+
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.cli import _report_zone_layers
+
+    def named(layer: int, label: str, how_many: int, first: int) -> list[Any]:
+        return [
+            ArchicadZone(guid=f"z{first + n}", name=label, number="", layer_index=layer)
+            for n in range(how_many)
+        ]
+
+    connection = ArchicadConnection(_LayerTransport({1: "06 | Zone.Units", 3: "10 | Calc.GFA"}))
+    app = typer.Typer()
+
+    @app.command()
+    def show() -> None:
+        _report_zone_layers(
+            connection,
+            named(1, "S", 200, 0) + named(1, "", 46, 300) + named(3, "RESI", 25, 500),
+        )
+
+    output = typer.testing.CliRunner().invoke(app, []).output
+    assert "S x200" in output
+    assert "(unnamed) x46" in output, "a blank name is reported, not dropped"
+    assert "RESI x25" in output
+
+
 def test_two_zone_layers_with_equal_counts_are_flagged_as_duplicates() -> None:
     """The FUSE manual's trap: '06 | Zone.Units' duplicates the SEPP 65 zones,
     so assessing both counts every apartment twice."""

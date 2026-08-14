@@ -710,15 +710,29 @@ def _report_zone_layers(connection: ArchicadConnection, found: Sequence[Archicad
         typer.secho(f"  could not read the layer list ({error})", fg=typer.colors.YELLOW)
         return
 
-    counted = collections.Counter(
-        names.get(zone.layer_index, "(unknown layer)")
-        if zone.layer_index is not None
-        else "(no layer reported)"
-        for zone in found
-    )
+    def layer_of(zone: ArchicadZone) -> str:
+        if zone.layer_index is None:
+            return "(no layer reported)"
+        return names.get(zone.layer_index, "(unknown layer)")
+
+    counted = collections.Counter(layer_of(zone) for zone in found)
+
+    # The names *within* a layer, not just across the project. A project-wide
+    # name tally cannot say what the apartments are called, because the biggest
+    # counts belong to annotation and area take-off; per layer, the answer is
+    # one line.
+    by_layer: dict[str, collections.Counter[str]] = {}
+    for zone in found:
+        by_layer.setdefault(layer_of(zone), collections.Counter())[zone.name or "(unnamed)"] += 1
+
+    width = max(len(name) for name in counted)
     typer.echo(f"  zones per layer ({len(counted)} layers carry zones):")
     for name, how_many in counted.most_common():
-        typer.echo(f"    {how_many:>5}  {name}")
+        top = by_layer[name].most_common(3)
+        summary = ", ".join(f"{label} x{count}" for label, count in top)
+        if len(by_layer[name]) > len(top):
+            summary += ", ..."
+        typer.echo(f"    {how_many:>5}  {name:<{width}}  {summary}")
 
     # Equal counts across two zone layers is the signature of the duplication
     # the manual warns about, and assessing both would count every apartment

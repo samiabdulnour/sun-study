@@ -1562,6 +1562,54 @@ def test_a_zone_with_a_name_of_its_own_is_not_tagged() -> None:
     assert report.zones_with_holes == ("G.01 Living",)
 
 
+def test_whole_arcminute_coordinates_are_recognised_as_a_preset() -> None:
+    """Archicad's Sydney preset is exactly -33 deg 52' 00", 151 deg 13' 00".
+
+    Both coordinates landing on a whole arcminute is a 1-in-13-million
+    coincidence for a surveyed site, so it is the tell that Project Location
+    was never set. Observed on a real project.
+    """
+    from sun_study.archicad.read import GeoLocation
+
+    preset = GeoLocation(
+        latitude_deg=-33.866667, longitude_deg=151.216667, altitude_m=0.0, north_radians=0.856118
+    )
+    assert preset.looks_like_a_city_preset
+
+
+def test_a_surveyed_location_is_not_flagged() -> None:
+    """From a second real project, which had its location properly set."""
+    from sun_study.archicad.read import GeoLocation
+
+    surveyed = GeoLocation(
+        latitude_deg=-33.913162, longitude_deg=151.243890, altitude_m=62.0, north_radians=0.161055
+    )
+    assert not surveyed.looks_like_a_city_preset
+
+
+def test_one_round_coordinate_is_not_enough_to_flag() -> None:
+    """A site can sit on a whole arcminute in one axis by chance. Needing both
+    is what keeps this from crying wolf on real projects."""
+    from sun_study.archicad.read import GeoLocation
+
+    half_round = GeoLocation(
+        latitude_deg=-33.866667, longitude_deg=151.243890, altitude_m=0.0, north_radians=0.0
+    )
+    assert not half_round.looks_like_a_city_preset
+
+
+def test_the_arcminute_test_survives_a_degrees_minutes_seconds_round_trip() -> None:
+    """Archicad reports -33.866667, not -33.8666666..., so an exact preset
+    arrives already rounded. A tolerance tighter than that would never fire."""
+    from sun_study.archicad.read import GeoLocation
+
+    for latitude in (-33.866667, -33.8666667, -33.86666666666667):
+        location = GeoLocation(
+            latitude_deg=latitude, longitude_deg=151.216667, altitude_m=0.0, north_radians=0.0
+        )
+        assert location.looks_like_a_city_preset, latitude
+
+
 def test_a_zone_carries_the_layer_it_sits_on() -> None:
     """A zone's layer is what says whether it is an apartment: one project's
     zones were all on '10 | Calc.GFA', which is area take-off, not housing."""

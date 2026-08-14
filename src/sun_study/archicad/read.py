@@ -151,12 +151,44 @@ class GeoLocation:
         """Compass bearing of the *project* +Y axis."""
         return north_bearing_deg(self.north_radians)
 
+    @property
+    def looks_like_a_city_preset(self) -> bool:
+        """Whether these coordinates were picked from a list, not surveyed.
+
+        Archicad ships city presets, and their coordinates are whole
+        arcminutes -- Sydney is exactly -33 deg 52' 00", 151 deg 13' 00".
+        A surveyed site landing on a whole arcminute in *both* coordinates is
+        a 1-in-3600 coincidence, so two of them together is the tell that
+        Project Location was never set.
+
+        The effect on sun angles is small -- the Sydney preset is about 11 km
+        from a site in the southern suburbs, which moves solar altitude by
+        under a tenth of a degree -- so this is a provenance problem before it
+        is a numerical one. It still matters: a study whose stated location is
+        not the site is hard to defend, and the same neglected dialog is where
+        a wrong north would come from.
+        """
+        return _is_whole_arcminute(self.latitude_deg) and _is_whole_arcminute(self.longitude_deg)
+
     def describe(self) -> str:
         return (
             f"lat {self.latitude_deg:.6f} lon {self.longitude_deg:.6f} "
             f"altitude {self.altitude_m:.3f} m, north {self.north_radians:.6f} rad "
             f"(project +Y at bearing {self.project_north_bearing_deg:.3f} deg)"
         )
+
+
+#: How close to a whole arcminute counts as *being* one. Coordinates make a
+#: round trip through degrees-minutes-seconds and back, so an exact preset
+#: arrives as -33.866667 rather than -33.8666666..., which is 2e-5 arcmin off.
+#: A tenth of a milli-arcminute is about 0.2 mm on the ground -- far tighter
+#: than any real survey, and loose enough to absorb that round trip.
+ARCMINUTE_EPSILON = 1e-4
+
+
+def _is_whole_arcminute(degrees: float) -> bool:
+    arcminutes = degrees * 60.0
+    return abs(arcminutes - round(arcminutes)) < ARCMINUTE_EPSILON
 
 
 @dataclass(frozen=True)
@@ -666,7 +698,16 @@ def describe_connection(connection: ArchicadConnection) -> str:
     except CommandFailedError as exc:  # pragma: no cover - needs a live Archicad
         lines.append(f"  project: unavailable ({exc})")
     try:
-        lines.append(f"  location: {read_geo_location(connection).describe()}")
+        location = read_geo_location(connection)
+        lines.append(f"  location: {location.describe()}")
+        if location.looks_like_a_city_preset:
+            lines.append(
+                "  WARNING: both coordinates are whole arcminutes, which is what a "
+                "city preset looks like and what a surveyed site almost never does. "
+                "Project Location has probably never been set. Sun angles barely "
+                "move, but a study whose stated location is not the site is hard to "
+                "defend -- and the same dialog holds the north angle."
+            )
     except ArchicadError as exc:  # pragma: no cover - needs a live Archicad
         lines.append(f"  location: unavailable ({exc})")
     return "\n".join(lines)
