@@ -1004,6 +1004,7 @@ def archicad_selftest(
             raise typer.Exit(code=2)
 
         names = layer_names(connection)
+        in_project = len(found)
         if zone_layer:
             wanted = {entry.casefold() for entry in zone_layer}
             found = tuple(
@@ -1020,16 +1021,23 @@ def archicad_selftest(
 
         chosen = found if count <= 0 else found[:count]
         assessment, match = _synthetic_assessment(chosen, band_styles(pen))
-        typer.echo(f"  testing against {len(chosen)} of {len(found)} zones")
 
         # Which layer the sample came from is the fastest way to notice that
         # the tool is looking at GFA-calculation zones rather than apartments.
-        sampled = collections.Counter(
-            names.get(zone.layer_index or -1, "(unknown layer)") for zone in chosen
-        )
-        for name, how_many in sampled.most_common():
-            typer.echo(f"    {how_many} on layer {name!r}")
-        if not zone_layer and len(sampled) == 1:
+        # The project total stays visible either way, so a filter that matched
+        # 40 of 1341 zones cannot be mistaken for the whole project.
+        if zone_layer:
+            typer.echo(
+                f"  testing against {len(chosen)} of {len(found)} zones on "
+                f"{', '.join(zone_layer)} ({in_project} zones in the project)"
+            )
+        else:
+            typer.echo(f"  testing against {len(chosen)} of {in_project} zones")
+            sampled = collections.Counter(
+                names.get(zone.layer_index or -1, "(unknown layer)") for zone in chosen
+            )
+            for name, how_many in sampled.most_common():
+                typer.echo(f"    {how_many} on layer {name!r}")
             typer.echo("    narrow this with --zone-layer if those are not the apartments")
 
         if properties:
