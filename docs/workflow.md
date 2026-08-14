@@ -150,7 +150,7 @@ uv run sun-study archicad-run --timezone Australia/Sydney `
     --livable-suffix "_L" `
     --apartment-zone-layer "06 | Zone.SEPP 65" `
     --open-space-zone-layer "06 | Zone.Balcony" `
-    --write --draw
+    --write --draw --sheet
 ```
 
 **Check the zones-per-layer breakdown before trusting the layer names above.** A project
@@ -197,6 +197,14 @@ look entirely correct.
 Two limits it reports rather than hides: an apartment wrapping a lift core is drawn over
 the void, because a hatch is a single contour; and curved zone edges become straight
 segments between their nodes.
+
+`--sheet` adds the last step of the manual's own sequence: a Layout carrying one Drawing
+per storey that has fills, at 1:200. The Drawings are **linked**, so re-running the study
+updates the plan and the sheet follows — the reason this goes through the View Map rather
+than drawing into a worksheet directly, which Archicad's API cannot target anyway.
+It never deletes: a re-run makes a new Layout rather than rebuilding one that may carry a
+title block and a revision history. And it is never fatal — the fills are already in the
+project, so a sheet that could not be made is reported and the run finishes.
 
 `archicad-run` exports through the translator, reads the IFC, cross-checks the
 georeferencing against Archicad's own answer, assesses, and writes back. Nothing is

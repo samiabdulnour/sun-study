@@ -606,3 +606,46 @@ engine is `rules/assessment.py` and everything ADG-specific is data in
 A module named after one jurisdiction is exactly where the next council's threshold
 ends up hardcoded. Adding a DCP that requires three continuous hours should be a new
 YAML file and no new code, and a test proves it is.
+
+### D28 — The sheet is made through the View Map, not by drawing into a worksheet
+
+*Milestone M5. The last step of the practice's own described sequence.*
+
+The workflow as described ends "copy everything in a worksheet, the plan and create
+legend in worksheet". Taken literally that means creating the fills *inside* a Worksheet
+database, and Archicad's API will not do it: `CreateHatches` takes a layer and a storey
+but no database, so it draws into whatever is currently active. There is no
+`SetActiveDatabase` in the add-on. The only way to honour the literal reading is to ask a
+person to open the worksheet first and then run the tool — an implicit precondition that
+fails silently, drawing an apartment diagram into whatever happened to be on screen.
+
+So the fills stay on the floor plan, where the practice already agreed they could live
+("it can be in a floor plan of course in own layer"), and the sheet is made from that:
+
+    GetNavigatorItemTree     1.1.7   find the storeys that carry fills
+    CloneProjectMapItemToViewMap
+                             1.1.7   a View per storey, to place from
+    CreateLayout             1.4.0   the sheet
+    CreateDrawings           1.4.0   the plan on the sheet, at a stated scale
+
+**This is better than the literal reading, not merely possible.** A Drawing placed from
+a View stays *linked*: re-run the study, the fills change, and the sheet updates itself.
+Geometry copied into a worksheet is a snapshot, and a snapshot of a compliance diagram is
+the exact failure this whole tool exists to remove — a picture that was true when it was
+made and silently is not any more.
+
+**Storeys are matched on the floor number, not the name.** A Story navigator item carries
+its floor number in `prefix`, which is the same integer `DrawReport.storeys` reports.
+Storey naming is a practice's own business — `Level 08`, `L08`, `08 RESIDENTIAL` — and a
+tool matching on it finds nothing the first time a project names them differently.
+
+**Nothing is deleted and nothing existing is edited.** A re-run creates a *new* Layout.
+A sheet can carry a title block, notes and a revision history that nobody wants
+regenerated, so tidying up is a person's decision; the run names what it made so there is
+something to tidy up by. This is the opposite of the drawing layer's policy, and
+deliberately: that layer is the tool's own and nothing else goes on it, while a Layout is
+shared ground.
+
+**A failed sheet does not fail the run.** By the time layouts are attempted the numbers
+are written and the fills are drawn — those are the deliverable. Losing the convenience
+on top is worth a warning, not an exit code.

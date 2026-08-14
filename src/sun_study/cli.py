@@ -39,6 +39,7 @@ from sun_study.archicad.draw import (
     match_pens,
     pen_table,
 )
+from sun_study.archicad.layout import layout_results
 from sun_study.archicad.read import (
     ArchicadZone,
     classification_item_names,
@@ -295,6 +296,29 @@ def resolve_bands(
         replace(band, fill_pen=wanted.get(band.label, band.fill_pen)) for band in styles
     )
     return _warn_if_alike(corrected, pens)
+
+
+def report_layout(connection: ArchicadConnection, storeys: Sequence[int], *, name: str) -> None:
+    """Put the drawn storeys on a sheet, and say what happened.
+
+    Never fatal. The fills are already in the project by this point, and a
+    sheet that could not be made is a worse reason to fail the run than to
+    finish it with a note -- the numbers and the diagram are the deliverable,
+    the layout is a convenience on top.
+    """
+    try:
+        placed = layout_results(connection, storeys, layout_name=name)
+    except ArchicadError as error:
+        typer.secho(
+            f"  the fills are drawn, but the layout could not be made ({error})",
+            fg=typer.colors.YELLOW,
+        )
+        return
+    typer.secho(
+        placed.describe(),
+        fg=typer.colors.GREEN if placed.complete else typer.colors.YELLOW,
+        bold=True,
+    )
 
 
 def report_write(connection: ArchicadConnection, written: WriteReport) -> None:
@@ -1269,6 +1293,21 @@ def archicad_run(
         str,
         typer.Option("--layer", help="Archicad layer to draw the result on."),
     ] = DEFAULT_LAYER_NAME,
+    sheet: Annotated[
+        bool,
+        typer.Option(
+            "--sheet/--no-sheet",
+            help=(
+                "Also make a Layout carrying one linked Drawing per storey that "
+                "has fills. The Drawings stay linked, so re-running the study "
+                "updates the sheet. Needs --draw."
+            ),
+        ),
+    ] = False,
+    sheet_name: Annotated[
+        str,
+        typer.Option("--sheet-name", help="Name for the Layout that --sheet creates."),
+    ] = "Sun Study",
     allow_georeference_mismatch: Annotated[
         bool,
         typer.Option(
@@ -1433,6 +1472,8 @@ def archicad_run(
                 "index draws a plausible diagram in the wrong colours.",
                 fg=typer.colors.YELLOW,
             )
+            if sheet:
+                report_layout(connection, drawn.storeys, name=sheet_name)
 
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)

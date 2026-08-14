@@ -51,6 +51,12 @@ from sun_study.archicad.draw import (
     match_pens,
     pen_table,
 )
+from sun_study.archicad.layout import (
+    NavigatorItem,
+    layout_results,
+    project_map,
+    storey_items,
+)
 from sun_study.archicad.read import (
     GeoreferencingMismatchError,
     classification_items_of,
@@ -2225,3 +2231,187 @@ def test_an_unreadable_layer_state_does_not_stop_the_drawing() -> None:
     )
     assert report.fills_drawn == 1
     assert not report.layer.hidden
+
+
+# -- putting the drawing on a sheet ---------------------------------------
+
+
+def _navigator_tree() -> dict[str, Any]:
+    """A Project Map in Archicad's own shape, storeys nested in a folder.
+
+    From ``NavigatorItemToObjectState`` in ``NavigatorCommands.cpp``: children
+    are wrapped one level deep in a ``navigatorItem`` key, and a Story item's
+    ``prefix`` carries its floor number as a string.
+    """
+
+    def story(guid: str, name: str, floor: int) -> dict[str, Any]:
+        return {
+            "navigatorItem": {
+                "type": "StoryItem",
+                "name": name,
+                "navigatorItemId": {"guid": guid},
+                "prefix": str(floor),
+            }
+        }
+
+    return {
+        "navigatorItemTree": {
+            "type": "ProjectItem",
+            "name": "Project",
+            "navigatorItemId": {"guid": "root"},
+            "prefix": "",
+            "children": [
+                {
+                    "navigatorItem": {
+                        "type": "FolderItem",
+                        "name": "Stories",
+                        "navigatorItemId": {"guid": "folder"},
+                        "prefix": "",
+                        "children": [
+                            story("s8", "Level 08", 8),
+                            story("s9", "Level 09", 9),
+                        ],
+                    }
+                },
+                {
+                    "navigatorItem": {
+                        "type": "SectionItem",
+                        "name": "Section A",
+                        "navigatorItemId": {"guid": "sec"},
+                        "prefix": "",
+                    }
+                },
+            ],
+        }
+    }
+
+
+def _layout_responses(**overrides: Any) -> dict[str, Any]:
+    responses: dict[str, Any] = {
+        "GetNavigatorItemTree": _navigator_tree(),
+        "CloneProjectMapItemToViewMap": {
+            "navigatorItems": [
+                {"navigatorItemId": {"guid": "v8"}},
+                {"navigatorItemId": {"guid": "v9"}},
+            ]
+        },
+        "CreateLayout": {"databases": [{"databaseId": {"guid": "lay"}}]},
+        "CreateDrawings": {"elements": [{"elementId": {"guid": "d"}}] * 9},
+    }
+    responses.update(overrides)
+    return responses
+
+
+def test_storeys_are_found_by_floor_number_not_by_name() -> None:
+    """Storey names are a practice's own business -- 'Level 08', 'L08', '8' --
+    so a tool that matches on them finds nothing on the next project."""
+    connection, _ = connect(_layout_responses())
+    found, missing = storey_items(connection, [8, 9])
+
+    assert [found[8].name, found[9].name] == ["Level 08", "Level 09"]
+    assert missing == ()
+
+
+def test_a_storey_with_no_project_map_item_is_reported_not_skipped() -> None:
+    """Its fills exist but reach no sheet, and a missing plan reads as a
+    storey with no apartments."""
+    connection, _ = connect(
+        _layout_responses(
+            CloneProjectMapItemToViewMap={"navigatorItems": [{"navigatorItemId": {"guid": "v8"}}]}
+        )
+    )
+    report = layout_results(connection, [8, 42], layout_name="Sun Study")
+
+    assert report.drawings_placed == 1, "the storey that exists is still placed"
+    assert report.missing_storeys == (42,)
+    assert not report.complete
+    assert "no Project Map storey found for index 42" in report.describe()
+
+
+def test_one_linked_drawing_per_storey_lands_on_the_layout() -> None:
+    connection, transport = connect(_layout_responses())
+    report = layout_results(connection, [9, 8], layout_name="Solar Access", scale=100.0)
+
+    drawings = transport.parameters_for("CreateDrawings")["drawingsData"]
+    assert [d["navigatorItemId"]["guid"] for d in drawings] == ["v8", "v9"], (
+        "storeys are placed in order, not in the order they were asked for"
+    )
+    assert all(d["layoutDatabaseId"] == {"guid": "lay"} for d in drawings)
+    assert all(d["scale"] == 100.0 for d in drawings)
+    assert {d["position"]["x"] for d in drawings} == {420.0, 840.0}, "laid out in a row"
+    assert report.storeys == (8, 9)
+    assert report.drawings_placed == 2
+    assert report.complete
+
+
+def test_only_the_storeys_that_carry_fills_are_cloned() -> None:
+    """The Project Map has two storeys and a section; a study of one storey
+    must not put the other on the sheet."""
+    connection, transport = connect(
+        _layout_responses(
+            CloneProjectMapItemToViewMap={"navigatorItems": [{"navigatorItemId": {"guid": "v8"}}]}
+        )
+    )
+    layout_results(connection, [8], layout_name="Sun Study")
+
+    cloned = transport.parameters_for("CloneProjectMapItemToViewMap")["viewsData"]
+    assert cloned == [{"navigatorItemId": {"guid": "s8"}}]
+
+
+def test_no_storeys_makes_no_layout_at_all() -> None:
+    """A run that drew nothing must not leave an empty sheet behind."""
+    connection, transport = connect(_layout_responses())
+    report = layout_results(connection, [], layout_name="Sun Study")
+
+    assert report.drawings_placed == 0
+    assert "CreateLayout" not in transport.commands()
+
+
+def test_a_per_drawing_failure_is_raised_not_swallowed() -> None:
+    """A sheet missing one storey silently is worse than no sheet."""
+    connection, _ = connect(
+        _layout_responses(
+            CreateDrawings={
+                "elements": [
+                    {"elementId": {"guid": "d"}},
+                    {"error": {"code": 7, "message": "layout is locked"}},
+                ]
+            }
+        )
+    )
+    with pytest.raises(ArchicadError, match="layout is locked"):
+        layout_results(connection, [8, 9], layout_name="Sun Study")
+
+
+def test_a_clone_that_returns_the_wrong_count_is_refused() -> None:
+    """Without a parallel list there is no way to say which view is which
+    storey, and a mislabelled sheet is worse than a missing one."""
+    connection, _ = connect(
+        _layout_responses(
+            CloneProjectMapItemToViewMap={"navigatorItems": [{"navigatorItemId": {"guid": "v8"}}]}
+        )
+    )
+    with pytest.raises(ArchicadError, match="parallel"):
+        layout_results(connection, [8, 9], layout_name="Sun Study")
+
+
+def test_the_sheet_needs_an_older_add_on_than_the_drawing_does() -> None:
+    """CreateLayout is 1.4.0 where CreateHatches is 1.5.7, so the sheet is not
+    the binding constraint and is gated on its own."""
+    transport = FakeTransport({"GetAddOnVersion": {"version": "1.3.0"}})
+    with pytest.raises(TapirUnavailableError, match="CreateLayout"):
+        layout_results(ArchicadConnection(transport), [8], layout_name="Sun Study")
+
+
+def test_the_project_map_is_flattened_through_folders() -> None:
+    """Storeys can sit inside folders, and nothing about placing them cares."""
+    connection, _ = connect(_layout_responses())
+    kinds = {item.kind for item in project_map(connection)}
+    assert kinds == {"ProjectItem", "FolderItem", "StoryItem", "SectionItem"}
+
+
+def test_a_non_storey_item_has_no_storey_index() -> None:
+    """A Section item's prefix is empty, and reading it as floor 0 would put
+    a section drawing on the ground-floor sheet."""
+    section = NavigatorItem(identifier="sec", name="Section A", kind="SectionItem", prefix="")
+    assert section.storey_index is None
