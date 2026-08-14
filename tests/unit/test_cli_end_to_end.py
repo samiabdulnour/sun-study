@@ -449,6 +449,130 @@ def test_an_unreadable_pen_table_warns_and_keeps_the_defaults() -> None:
     assert resolve_bands(ArchicadConnection(_PenTransport(None)), None) == DEFAULT_BANDS
 
 
+class _LayerTransport:
+    """Answers a version check and the layer list, nothing else."""
+
+    def __init__(self, layers: dict[int, str]) -> None:
+        self.layers = layers
+
+    def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = payload["parameters"]["addOnCommandId"]["commandName"]
+        if name == "GetAddOnVersion":
+            return {"succeeded": True, "result": {"addOnCommandResponse": {"version": "1.5.7"}}}
+        assert name == "GetAttributesByType", name
+        return {
+            "succeeded": True,
+            "result": {
+                "addOnCommandResponse": {
+                    "attributes": [
+                        {"attributeId": {"guid": f"g{index}"}, "index": index, "name": label}
+                        for index, label in self.layers.items()
+                    ]
+                }
+            },
+        }
+
+
+def _zones_on(layer_index: int, how_many: int, first: int = 0) -> list[Any]:
+    from sun_study.archicad.read import ArchicadZone
+
+    return [
+        ArchicadZone(guid=f"z{first + n}", name="RESI", number="", layer_index=layer_index)
+        for n in range(how_many)
+    ]
+
+
+def test_zones_are_counted_per_layer_so_the_apartment_layer_is_findable() -> None:
+    """A project with 1341 zones is unreadable as a list of names -- every one
+    is 'RESI'. The layer is what separates apartments from GFA take-off."""
+    import typer.testing
+
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.cli import _report_zone_layers
+
+    connection = ArchicadConnection(_LayerTransport({1: "06 | Zone.Units", 3: "10 | Calc.GFA"}))
+    runner = typer.testing.CliRunner()
+    app = typer.Typer()
+
+    @app.command()
+    def show() -> None:
+        _report_zone_layers(connection, _zones_on(1, 40) + _zones_on(3, 1301, first=100))
+
+    output = runner.invoke(app, []).output
+    assert "40  06 | Zone.Units" in output
+    assert "1301  10 | Calc.GFA" in output
+
+
+def test_two_zone_layers_with_equal_counts_are_flagged_as_duplicates() -> None:
+    """The FUSE manual's trap: '06 | Zone.Units' duplicates the SEPP 65 zones,
+    so assessing both counts every apartment twice."""
+    import typer.testing
+
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.cli import _report_zone_layers
+
+    connection = ArchicadConnection(
+        _LayerTransport({1: "06 | Zone.SEPP 65", 2: "06 | Zone.Units", 3: "10 | Calc.GFA"})
+    )
+    app = typer.Typer()
+
+    @app.command()
+    def show() -> None:
+        _report_zone_layers(
+            connection,
+            _zones_on(1, 40) + _zones_on(2, 40, first=100) + _zones_on(3, 9, first=200),
+        )
+
+    output = typer.testing.CliRunner().invoke(app, []).output
+    assert "counted twice" in output
+    assert "06 | Zone.SEPP 65 and 06 | Zone.Units" in output
+
+
+def test_a_calc_layer_matching_a_zone_layers_count_is_not_flagged() -> None:
+    """Only '06 | Zone.*' layers duplicate each other. A GFA layer that happens
+    to hold the same number of zones is a coincidence, not a warning."""
+    import typer.testing
+
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.cli import _report_zone_layers
+
+    connection = ArchicadConnection(_LayerTransport({1: "06 | Zone.Units", 3: "10 | Calc.GFA"}))
+    app = typer.Typer()
+
+    @app.command()
+    def show() -> None:
+        _report_zone_layers(connection, _zones_on(1, 40) + _zones_on(3, 40, first=100))
+
+    assert "counted twice" not in typer.testing.CliRunner().invoke(app, []).output
+
+
+def test_an_unreadable_layer_list_does_not_stop_archicad_info() -> None:
+    """The layer breakdown is a convenience. Losing it must not cost the
+    connection check, the zone count and the classification report."""
+    import typer.testing
+
+    from sun_study.archicad.connection import ArchicadConnection
+
+    class Broken:
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            name = payload["parameters"]["addOnCommandId"]["commandName"]
+            if name == "GetAddOnVersion":
+                return {"succeeded": True, "result": {"addOnCommandResponse": {"version": "1.5.7"}}}
+            return {"succeeded": False, "error": {"code": 1, "message": "nope"}}
+
+    from sun_study.cli import _report_zone_layers
+
+    app = typer.Typer()
+
+    @app.command()
+    def show() -> None:
+        _report_zone_layers(ArchicadConnection(Broken()), _zones_on(1, 3))
+
+    result = typer.testing.CliRunner().invoke(app, [])
+    assert result.exit_code == 0
+    assert "could not read the layer list" in result.output
+
+
 def test_drawing_is_opt_in_like_writing() -> None:
     """Both change a colleague's project file."""
     import inspect

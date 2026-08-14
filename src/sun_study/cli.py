@@ -686,10 +686,57 @@ def archicad_info(
     else:
         typer.echo(f"  all {len(found)} zones are classified")
 
+    _report_zone_layers(connection, found)
     _report_zone_names(found, limit=zone_names)
 
     if properties:
         _report_properties(connection)
+
+
+def _report_zone_layers(connection: ArchicadConnection, found: Sequence[ArchicadZone]) -> None:
+    """How many zones sit on each layer, most populated first.
+
+    This is what tells a person what to pass to ``--apartment-zone-layer``,
+    and it is the only cheap way to catch the duplication trap. A FUSE-manual
+    project carries the apartments on ``06 | Zone.SEPP 65`` and a *duplicate*
+    set on ``06 | Zone.Units``; it also carries GFA, NLA and storage zones on
+    ``10 | Calc.*``. Counting them side by side shows at a glance which layers
+    hold the same apartments twice -- two layers with the same count almost
+    certainly do -- and which hold area take-off that must not be assessed.
+    """
+    try:
+        names = layer_names(connection)
+    except ArchicadError as error:
+        typer.secho(f"  could not read the layer list ({error})", fg=typer.colors.YELLOW)
+        return
+
+    counted = collections.Counter(
+        names.get(zone.layer_index, "(unknown layer)")
+        if zone.layer_index is not None
+        else "(no layer reported)"
+        for zone in found
+    )
+    typer.echo(f"  zones per layer ({len(counted)} layers carry zones):")
+    for name, how_many in counted.most_common():
+        typer.echo(f"    {how_many:>5}  {name}")
+
+    # Equal counts across two zone layers is the signature of the duplication
+    # the manual warns about, and assessing both would count every apartment
+    # twice.
+    zone_layers = {
+        name: how_many
+        for name, how_many in counted.items()
+        if name.casefold().replace(" ", "").startswith("06|zone.")
+    }
+    twins = collections.Counter(zone_layers.values())
+    repeated = sorted(name for name, how_many in zone_layers.items() if twins[how_many] > 1)
+    if len(repeated) > 1:
+        typer.secho(
+            f"  {' and '.join(repeated)} hold the same number of zones, which is what "
+            f"duplicated zone sets look like. Pass only one to "
+            f"--apartment-zone-layer, or every apartment is counted twice.",
+            fg=typer.colors.YELLOW,
+        )
 
 
 def _report_properties(connection: ArchicadConnection) -> None:

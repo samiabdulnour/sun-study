@@ -141,7 +141,7 @@ sun-study archicad-ports
 With the project open in Archicad and the Tapir add-on installed:
 
 ```powershell
-uv run sun-study archicad-info --properties     # connection, zones, names, classification
+uv run sun-study archicad-info --properties     # connection, zones per layer, names, classification
 uv run sun-study init-properties                # once per project, or ships in the template
 
 uv run sun-study archicad-run --timezone Australia/Sydney `
@@ -150,6 +150,13 @@ uv run sun-study archicad-run --timezone Australia/Sydney `
     --open-space-zone-layer "06 | Zone.Balcony" `
     --write --draw
 ```
+
+**Check the zones-per-layer breakdown before trusting the layer names above.** A project
+can carry apartments on `06 | Zone.SEPP 65`, a duplicate set on `06 | Zone.Units`, and
+area take-off on `10 | Calc.*` — all of them Zones, and in one real file all named
+`RESI`. `archicad-info` counts them per layer and warns when two `06 | Zone.*` layers
+hold the same number, which is what a duplicated set looks like. Passing both would
+count every apartment twice.
 
 `--livable-suffix` matches windows **and** doors, so balcony sliders count. The layer
 names must be typed exactly as Archicad holds them — a filter that matches nothing stops
