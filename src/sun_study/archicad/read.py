@@ -37,8 +37,8 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -51,12 +51,15 @@ __all__ = [
     "ArchicadZone",
     "GeoLocation",
     "GeoreferencingMismatchError",
+    "LibraryObject",
     "ProjectInfo",
     "cross_check_georeferencing",
     "disambiguated",
     "elements_by_ifc_ids",
     "export_ifc",
+    "gdl_parameters",
     "layer_names",
+    "library_objects",
     "north_bearing_deg",
     "project_info",
     "read_geo_location",
@@ -711,3 +714,139 @@ def describe_connection(connection: ArchicadConnection) -> str:
     except ArchicadError as exc:  # pragma: no cover - needs a live Archicad
         lines.append(f"  location: unavailable ({exc})")
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class LibraryObject:
+    """A placed GDL object, with enough of it to find and identify a room.
+
+    In a project where Zones are placed per *unit*, the rooms inside a unit
+    exist only as library objects -- a "Room Name and Size Label" carrying the
+    room's name and size. That object is the only thing in the model that says
+    which part of an apartment is the living room, which is the distinction
+    ADG 4A-1 turns on.
+    """
+
+    guid: str
+    library_part: str
+    """The library part's name, e.g. ``Room Name and Size Label 19``."""
+    origin: tuple[float, float, float]
+    """Placement point in project coordinates, metres."""
+    storey_index: int | None = None
+    layer_index: int | None = None
+    parameters: tuple[tuple[str, str], ...] = ()
+    """GDL parameters as ``(name, value)``, values stringified for printing."""
+
+    def parameter(self, name: str) -> str | None:
+        wanted = name.casefold()
+        for key, value in self.parameters:
+            if key.casefold() == wanted:
+                return value
+        return None
+
+
+def library_objects(
+    connection: ArchicadConnection,
+    *,
+    with_parameters: int = 0,
+) -> tuple[LibraryObject, ...]:
+    """Every placed Object, with its library part and placement point.
+
+    ``with_parameters`` reads GDL parameters for that many objects. It is
+    capped rather than automatic because a library part can carry hundreds of
+    parameters and a project holds thousands of objects -- pulling all of both
+    is a very large response to answer a question about one parameter.
+    """
+    found = connection.run_tapir("GetElementsByType", {"elementType": "Object"})
+    guids = _element_guids(found, "GetElementsByType")
+    if not guids:
+        return ()
+
+    details = connection.run_tapir(
+        "GetDetailsOfElements",
+        {"elements": [{"elementId": {"guid": guid}} for guid in guids]},
+    )
+    rows = details.get("detailsOfElements") if isinstance(details, dict) else None
+    if not isinstance(rows, list) or len(rows) != len(guids):
+        raise ArchicadError(
+            f"GetDetailsOfElements returned {len(rows) if isinstance(rows, list) else 'no'} "
+            f"rows for {len(guids)} objects; the lists must be parallel."
+        )
+
+    objects: list[LibraryObject] = []
+    for guid, row in zip(guids, rows, strict=True):
+        if not isinstance(row, dict) or "error" in row:
+            continue
+        detail = row.get("details") or {}
+        origin = detail.get("origin") or {}
+        floor = row.get("floorIndex")
+        layer = row.get("layerIndex")
+        objects.append(
+            LibraryObject(
+                guid=guid,
+                library_part=str((detail.get("libPart") or {}).get("name", "")),
+                origin=(
+                    float(origin.get("x", 0.0)),
+                    float(origin.get("y", 0.0)),
+                    float(origin.get("z", 0.0)),
+                ),
+                storey_index=int(floor) if isinstance(floor, (int, float)) else None,
+                layer_index=int(layer) if isinstance(layer, (int, float)) else None,
+            )
+        )
+
+    if with_parameters > 0:
+        objects = _with_gdl_parameters(connection, objects, limit=with_parameters)
+    return tuple(objects)
+
+
+def gdl_parameters(
+    connection: ArchicadConnection, objects: Sequence[LibraryObject]
+) -> list[LibraryObject]:
+    """The same objects, with their GDL parameters filled in.
+
+    Separate from ``library_objects`` because a library part can carry
+    hundreds of parameters and a project holds thousands of objects: reading
+    both together is a very large response to answer a question about one
+    parameter.
+    """
+    return _with_gdl_parameters(connection, list(objects), limit=len(objects))
+
+
+def _with_gdl_parameters(
+    connection: ArchicadConnection, objects: list[LibraryObject], *, limit: int
+) -> list[LibraryObject]:
+    """Fill in GDL parameters for the first ``limit`` objects."""
+    wanted = objects[:limit]
+    if not wanted:
+        return objects
+    response = connection.run_tapir(
+        "GetGDLParametersOfElements",
+        {"elements": [{"elementId": {"guid": item.guid}} for item in wanted]},
+    )
+    lists = response.get("gdlParametersOfElements") if isinstance(response, dict) else None
+    if not isinstance(lists, list):
+        return objects
+
+    filled: list[LibraryObject] = []
+    for item, entry in zip(wanted, lists, strict=False):
+        parameters = (entry or {}).get("parameters") if isinstance(entry, dict) else None
+        pairs = tuple(
+            (str(parameter.get("name", "")), _short(parameter.get("value")))
+            for parameter in (parameters or [])
+            if isinstance(parameter, dict)
+        )
+        filled.append(replace(item, parameters=pairs))
+    return filled + objects[limit:]
+
+
+def _short(value: Any) -> str:
+    """A GDL value as a printable string, truncated.
+
+    Array parameters can be large and none of them are what a room name lives
+    in, so they are shown as a shape rather than as a wall of numbers.
+    """
+    if isinstance(value, list):
+        return f"<array of {len(value)}>"
+    text = str(value)
+    return text if len(text) <= 60 else text[:57] + "..."

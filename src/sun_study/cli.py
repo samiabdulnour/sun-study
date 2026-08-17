@@ -47,7 +47,9 @@ from sun_study.archicad.read import (
     cross_check_georeferencing,
     describe_connection,
     export_ifc,
+    gdl_parameters,
     layer_names,
+    library_objects,
     read_geo_location,
 )
 from sun_study.archicad.read import zones as read_zones
@@ -886,6 +888,127 @@ def init_properties_command(
             f"Classify them and run this again.",
             fg=typer.colors.YELLOW,
         )
+
+
+@app.command("archicad-objects")
+def archicad_objects(
+    port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    match: Annotated[
+        str | None,
+        typer.Option(
+            "--match",
+            help=(
+                "Only library parts whose name contains this, case-insensitively. "
+                "Without it, every library part is counted but none are opened."
+            ),
+        ),
+    ] = None,
+    sample: Annotated[
+        int,
+        typer.Option("--sample", help="How many matching objects to dump parameters for."),
+    ] = 3,
+) -> None:
+    """List the project's library objects, and open a few to see what they carry.
+
+    For a project where Zones are placed per *unit*, the rooms inside a unit
+    exist only as library objects -- a "Room Name and Size Label" holding the
+    room's name and size. That object is the only thing in the model that says
+    which part of an apartment is the living room, and ADG 4A-1 turns on
+    exactly that distinction.
+
+    This finds the parameter the room name lives in. Nothing can be guessed
+    here: parameter names are the library part author's business, and every
+    office library names them differently.
+    """
+    banner()
+    connection = _connect(port)
+    try:
+        found = library_objects(connection)
+        if not found:
+            typer.secho("No library objects in the project.", fg=typer.colors.YELLOW)
+            return
+
+        names = layer_names(connection)
+        typer.echo(f"  {len(found)} library objects, by library part:")
+        counted = collections.Counter(item.library_part or "(unnamed part)" for item in found)
+        for part, how_many in counted.most_common(15):
+            typer.echo(f"    {how_many:>5}  {part}")
+        if len(counted) > 15:
+            typer.echo(f"    ... and {len(counted) - 15} more library parts")
+
+        if not match:
+            typer.echo("")
+            typer.echo('Re-run with --match to open one, e.g. --match "Room Name"')
+            return
+
+        wanted = match.casefold()
+        hits = [item for item in found if wanted in item.library_part.casefold()]
+        if not hits:
+            typer.secho(f"Nothing matches {match!r}.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+        _report_objects(connection, hits, names, sample=sample)
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+
+def _report_objects(
+    connection: ArchicadConnection,
+    hits: Sequence[Any],
+    names: dict[int, str],
+    *,
+    sample: int,
+) -> None:
+    """Where the matching objects sit, and what one of them holds."""
+    typer.echo("")
+    typer.secho(f"{len(hits)} matching objects", bold=True)
+
+    on_layers = collections.Counter(
+        names.get(item.layer_index, "(unknown)") if item.layer_index is not None else "(none)"
+        for item in hits
+    )
+    for layer, how_many in on_layers.most_common(6):
+        typer.echo(f"    {how_many:>5}  on layer {layer!r}")
+
+    # Hotlink masters are parked far above the building -- one project has them
+    # around 67 m -- so a height histogram separates the placed instances from
+    # the masters before anything tries to match a room to an apartment.
+    heights = sorted(item.origin[2] for item in hits)
+    typer.echo(
+        f"    placement height: min {heights[0]:.2f} m, median "
+        f"{heights[len(heights) // 2]:.2f} m, max {heights[-1]:.2f} m"
+    )
+    if heights[-1] - heights[0] > 30.0:
+        typer.secho(
+            "    that spread is wide enough to include hotlink masters parked "
+            "above the building. Those are not placed rooms.",
+            fg=typer.colors.YELLOW,
+        )
+
+    for item in gdl_parameters(connection, hits[:sample]):
+        typer.echo("")
+        typer.secho(f"  {item.library_part}  at {item.origin}", bold=True)
+        typer.echo(
+            f"    storey {item.storey_index}, layer {names.get(item.layer_index or -1, '?')}"
+        )
+        if not item.parameters:
+            typer.secho("    no GDL parameters reported", fg=typer.colors.YELLOW)
+            continue
+        # Text parameters first: a room name is a string, and a library part
+        # carries far more numbers than strings.
+        text = [(k, v) for k, v in item.parameters if v and not _looks_numeric(v)]
+        for key, value in text[:25]:
+            typer.echo(f"    {key:<24} {value}")
+        typer.echo(f"    ({len(item.parameters)} parameters, {len(text)} of them text)")
+
+
+def _looks_numeric(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return value.startswith("<array")
+    return True
 
 
 @app.command("archicad-probe")

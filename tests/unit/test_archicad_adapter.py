@@ -63,8 +63,10 @@ from sun_study.archicad.read import (
     cross_check_georeferencing,
     elements_by_ifc_ids,
     export_ifc,
+    gdl_parameters,
     ifc_ids_of_elements,
     layer_names,
+    library_objects,
     north_bearing_deg,
     project_info,
     read_geo_location,
@@ -2415,3 +2417,124 @@ def test_a_non_storey_item_has_no_storey_index() -> None:
     a section drawing on the ground-floor sheet."""
     section = NavigatorItem(identifier="sec", name="Section A", kind="SectionItem", prefix="")
     assert section.storey_index is None
+
+
+# -- rooms that exist only as library objects ------------------------------
+
+
+def _object_responses(**overrides: Any) -> dict[str, Any]:
+    """A project where rooms are label objects, not Zones.
+
+    Modelled on a real file: the placed labels sit at storey height, and the
+    hotlink masters they came from are parked ~67 m above the building.
+    """
+    responses: dict[str, Any] = {
+        "GetElementsByType": {
+            "elements": [{"elementId": {"guid": g}} for g in ("o1", "o2", "master")]
+        },
+        "GetDetailsOfElements": {
+            "detailsOfElements": [
+                {
+                    "floorIndex": 10,
+                    "layerIndex": 5,
+                    "details": {
+                        "libPart": {"name": "Room Name and Size Label 19"},
+                        "origin": {"x": 3.0, "y": 4.0, "z": 30.9},
+                    },
+                },
+                {
+                    "floorIndex": 10,
+                    "layerIndex": 5,
+                    "details": {
+                        "libPart": {"name": "Room Name and Size Label 19"},
+                        "origin": {"x": 9.0, "y": 4.0, "z": 30.9},
+                    },
+                },
+                {
+                    "floorIndex": 10,
+                    "layerIndex": 5,
+                    "details": {
+                        "libPart": {"name": "Room Name and Size Label 19"},
+                        "origin": {"x": 3.0, "y": 4.0, "z": 67.6},
+                    },
+                },
+            ]
+        },
+        "GetGDLParametersOfElements": {
+            "gdlParametersOfElements": [
+                {
+                    "parameters": [
+                        {"name": "roomName", "type": "String", "value": "LIVING"},
+                        {"name": "A", "type": "Length", "value": 6.0},
+                        {"name": "B", "type": "Length", "value": 4.5},
+                        {"name": "gs_list", "type": "Array", "value": [1, 2, 3, 4]},
+                    ]
+                }
+            ]
+        },
+    }
+    responses.update(overrides)
+    return responses
+
+
+def test_a_library_object_carries_its_part_name_and_placement() -> None:
+    """Where Zones are per unit, the room only exists as a label object, and
+    its placement is the only thing that says which room a window belongs to."""
+    connection, _ = connect(_object_responses())
+    found = library_objects(connection)
+
+    assert len(found) == 3
+    assert found[0].library_part == "Room Name and Size Label 19"
+    assert found[0].origin == (3.0, 4.0, 30.9)
+    assert found[0].storey_index == 10
+    assert found[0].layer_index == 5
+
+
+def test_parameters_are_not_read_unless_asked_for() -> None:
+    """A library part can carry hundreds of parameters and a project holds
+    thousands of objects; reading both together answers one question very
+    expensively."""
+    connection, transport = connect(_object_responses())
+    library_objects(connection)
+    assert "GetGDLParametersOfElements" not in transport.commands()
+
+
+def test_the_room_name_is_readable_from_the_gdl_parameters() -> None:
+    connection, _ = connect(_object_responses())
+    opened = gdl_parameters(connection, library_objects(connection)[:1])
+
+    assert opened[0].parameter("roomName") == "LIVING"
+    assert opened[0].parameter("ROOMNAME") == "LIVING", "matched case-insensitively"
+    assert opened[0].parameter("nope") is None
+
+
+def test_an_array_parameter_is_summarised_not_dumped() -> None:
+    """A room name is a string. Array parameters are noise in a probe whose
+    whole job is to find which parameter holds a name."""
+    connection, _ = connect(_object_responses())
+    opened = gdl_parameters(connection, library_objects(connection)[:1])
+    assert opened[0].parameter("gs_list") == "<array of 4>"
+
+
+def test_only_the_sampled_objects_are_opened() -> None:
+    """The probe opens a few, not all of them."""
+    connection, transport = connect(_object_responses())
+    found = library_objects(connection)
+    gdl_parameters(connection, found[:1])
+
+    asked = transport.parameters_for("GetGDLParametersOfElements")["elements"]
+    assert asked == [{"elementId": {"guid": "o1"}}]
+
+
+def test_a_hotlink_master_is_visible_by_its_height() -> None:
+    """Masters are parked far above the building -- 67 m in one real project --
+    so nothing that matches a room to an apartment can take placement on
+    trust. The height is carried so the caller can see them."""
+    connection, _ = connect(_object_responses())
+    heights = sorted(item.origin[2] for item in library_objects(connection))
+    assert heights[-1] - heights[0] > 30.0
+
+
+def test_a_project_with_no_objects_is_not_an_error() -> None:
+    connection, _ = connect({"GetElementsByType": {"elements": []}})
+    assert library_objects(connection) == ()
