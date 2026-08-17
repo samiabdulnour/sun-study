@@ -488,3 +488,81 @@ def test_a_label_exactly_on_the_outline_is_matched() -> None:
     match = match_rooms(zones, [on_the_edge])
     assert match.matched == 1
     assert match.by_zone["apt-1"][0].code == "L/D"
+
+
+# -- overlapping zones -----------------------------------------------------
+
+
+def test_polygon_area_ignores_winding_direction() -> None:
+    """Only ever compared, never reported -- but a clockwise outline must not
+    sort as smaller than every other zone in the project."""
+    from sun_study.archicad.rooms import polygon_area
+
+    clockwise = ((0.0, 0.0), (0.0, 8.0), (10.0, 8.0), (10.0, 0.0))
+    assert polygon_area(SQUARE) == pytest.approx(80.0)
+    assert polygon_area(clockwise) == pytest.approx(80.0)
+    assert polygon_area(((0.0, 0.0), (1.0, 1.0))) == 0.0
+
+
+def test_a_label_inside_two_zones_goes_to_the_smaller_one() -> None:
+    """The bug this fixes. Zones overlap -- a floor-wide zone drawn over the
+    unit zones inside it -- and both contain the label at distance 0. Breaking
+    that tie by list order put 30 rooms and four kitchens in one apartment
+    while leaving 18 apartments empty.
+    """
+    whole_floor = _zone(
+        "floor", storey=9, outline=((0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0))
+    )
+    unit = _zone("apt-1", storey=9)
+
+    # The floor zone is listed first, so list order would hand it the label.
+    match = match_rooms([whole_floor, unit], [_label("L/D", 5.0, 4.0, storey=9)])
+
+    assert "apt-1" in match.by_zone, "the smallest containing zone is the most specific"
+    assert "floor" not in match.by_zone
+
+
+def test_the_overlap_itself_is_reported() -> None:
+    """Picking the smaller zone is a repair, not a fix: the layer still holds
+    two kinds of zone, and a run reading both measures some apartments twice."""
+    whole_floor = _zone(
+        "floor", storey=9, outline=((0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0))
+    )
+    unit = _zone("apt-1", storey=9)
+
+    match = match_rooms([whole_floor, unit], [_label("L/D", 5.0, 4.0, storey=9)])
+
+    assert len(match.inside_several) == 1
+    assert "fell inside more than one apartment" in match.describe()
+
+
+def test_a_label_in_exactly_one_zone_is_not_called_an_overlap() -> None:
+    zones = [
+        _zone("apt-1", storey=9),
+        _zone("apt-2", storey=9, outline=((20.0, 0.0), (30.0, 0.0), (30.0, 8.0), (20.0, 8.0))),
+    ]
+    match = match_rooms(zones, [_label("L/D", 5.0, 4.0, storey=9)])
+
+    assert match.inside_several == ()
+    assert "more than one apartment" not in match.describe()
+
+
+def test_the_smaller_zone_wins_regardless_of_list_order() -> None:
+    """Whichever way Archicad happens to list them."""
+    big = _zone("big", storey=9, outline=((0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)))
+    small = _zone("small", storey=9)
+    label = _label("K", 5.0, 4.0, storey=9)
+
+    assert "small" in match_rooms([big, small], [label]).by_zone
+    assert "small" in match_rooms([small, big], [label]).by_zone
+
+
+def test_a_nearer_zone_still_beats_a_smaller_distant_one() -> None:
+    """Area only breaks ties. Distance is still the first thing that matters."""
+    near_big = _zone("near", storey=9, outline=((0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)))
+    far_small = _zone(
+        "far", storey=9, outline=((100.0, 0.0), (101.0, 0.0), (101.0, 1.0), (100.0, 1.0))
+    )
+
+    match = match_rooms([far_small, near_big], [_label("K", 5.0, 4.0, storey=9)])
+    assert "near" in match.by_zone

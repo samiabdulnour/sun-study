@@ -44,6 +44,7 @@ __all__ = [
     "is_living_room",
     "match_rooms",
     "point_in_polygon",
+    "polygon_area",
     "room_labels",
     "unknown_codes",
 ]
@@ -200,6 +201,23 @@ def room_labels(
 DEFAULT_TOLERANCE_M = 0.5
 
 
+def polygon_area(polygon: Sequence[tuple[float, float]]) -> float:
+    """Enclosed area by the shoelace formula, sign discarded.
+
+    Only ever compared, never reported, so winding direction does not matter
+    -- but taking the absolute value means a clockwise outline does not sort
+    as smaller than every other zone in the project.
+    """
+    if len(polygon) < 3:
+        return 0.0
+    total = 0.0
+    previous_x, previous_y = polygon[-1]
+    for x, y in polygon:
+        total += previous_x * y - x * previous_y
+        previous_x, previous_y = x, y
+    return abs(total) / 2.0
+
+
 def distance_to_polygon(
     point: tuple[float, float], polygon: Sequence[tuple[float, float]]
 ) -> float:
@@ -287,6 +305,15 @@ class RoomMatch:
     is covering more than one unit, and every count downstream is then wrong
     in a way that still reads as plausible -- an apartment reported as having
     sunlight in "its" living room when the label belongs next door.
+    """
+    inside_several: tuple[RoomLabel, ...] = ()
+    """Labels that fell inside more than one apartment outline at once.
+
+    Zones overlap in real projects -- a floor-wide or multi-unit zone drawn
+    over the unit zones inside it. Each such label went to the *smallest*
+    containing zone, which is the most specific one, but the overlap itself is
+    worth knowing: it means the layer holds two kinds of zone, and a run that
+    reads both is measuring some apartments twice.
     """
     reached_for: tuple[tuple[RoomLabel, float], ...] = ()
     """Labels matched by the tolerance rather than by containment, and by how far.
@@ -383,6 +410,13 @@ class RoomMatch:
                 f"  {len(self.zones_without_rooms)} apartments contain no room label, "
                 f"so nothing can say which part of them is the living room"
             )
+        if self.inside_several:
+            lines.append(
+                f"  {len(self.inside_several)} labels fell inside more than one apartment "
+                f"at once and went to the smallest containing one. Overlapping zones mean "
+                f"the layer holds two kinds -- unit zones and something larger over them -- "
+                f"and a run reading both measures some apartments twice."
+            )
         if self.duplicated:
             worst = sorted(self.duplicated, key=lambda item: -item[2])[:6]
             mix = ", ".join(f"{code} x{count}" for _, code, count in worst)
@@ -421,21 +455,39 @@ def match_rooms(
     found: dict[str, list[RoomLabel]] = {}
     unplaced: list[RoomLabel] = []
     reached: list[tuple[RoomLabel, float]] = []
+    overlapped: list[RoomLabel] = []
     for label in labels:
         candidates = by_storey.get(label.storey_index, ())
         if not candidates:
             unplaced.append(label)
             continue
 
-        home, gap = min(
-            ((zone, distance_to_polygon(label.point, zone.outline)) for zone in candidates),
-            key=lambda pair: pair[1],
+        # Nearest wins, and among equally near ones the *smallest*.
+        #
+        # Zones overlap: a floor-wide or multi-unit zone sits over the unit
+        # zones inside it, and a label inside both is at distance 0.0 from
+        # each. Breaking that tie by list order -- which is what min() does on
+        # its own -- hands every label to whichever zone Archicad happened to
+        # list first. On a real project that put 30 rooms and four kitchens in
+        # one apartment while leaving 18 apartments empty. The smallest
+        # containing zone is the most specific one, which is the unit.
+        home, gap, _ = min(
+            (
+                (zone, distance_to_polygon(label.point, zone.outline), polygon_area(zone.outline))
+                for zone in candidates
+            ),
+            key=lambda item: (item[1], item[2]),
         )
         if gap > tolerance_m:
             unplaced.append(label)
             continue
         if gap > 0.0:
             reached.append((label, gap))
+        if (
+            gap == 0.0
+            and sum(1 for zone in candidates if point_in_polygon(label.point, zone.outline)) > 1
+        ):
+            overlapped.append(label)
         found.setdefault(home.guid, []).append(label)
 
     # Separating the two kinds of miss is the whole diagnostic. Landing on a
@@ -450,6 +502,7 @@ def match_rooms(
         missed_on_live_storeys=tuple(label for label in unplaced if label.storey_index in live),
         reached_for=tuple(reached),
         tolerance_m=tolerance_m,
+        inside_several=tuple(overlapped),
         duplicated=_duplicates(found),
     )
 
