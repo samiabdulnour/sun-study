@@ -147,10 +147,42 @@ class RoomLabel:
     x: float
     y: float
     storey_index: int | None
+    width_m: float = 0.0
+    """The room's A dimension. The label object is stretched to the room."""
+    depth_m: float = 0.0
+    """Its B dimension."""
+    angle: float = 0.0
+    """Rotation about Z, radians."""
 
     @property
     def point(self) -> tuple[float, float]:
         return (self.x, self.y)
+
+    @property
+    def area_m2(self) -> float:
+        return self.width_m * self.depth_m
+
+    def footprint(self) -> tuple[tuple[float, float], ...]:
+        """The room's floor rectangle, in project coordinates.
+
+        The origin is a corner rather than the centre -- which is why these
+        labels sit exactly on a zone outline, and why matching them needed a
+        tolerance at all. Rotated by ``angle`` so a room off the orthogonal
+        grid still lands on itself.
+
+        Empty when the object carries no size, so a caller samples nothing
+        rather than sampling a degenerate rectangle at a point.
+        """
+        if self.width_m <= 0.0 or self.depth_m <= 0.0:
+            return ()
+        cos, sin = math.cos(self.angle), math.sin(self.angle)
+        corners = (
+            (0.0, 0.0),
+            (self.width_m, 0.0),
+            (self.width_m, self.depth_m),
+            (0.0, self.depth_m),
+        )
+        return tuple((self.x + x * cos - y * sin, self.y + x * sin + y * cos) for x, y in corners)
 
 
 def room_labels(
@@ -181,6 +213,9 @@ def room_labels(
                 x=item.origin[0],
                 y=item.origin[1],
                 storey_index=item.storey_index,
+                width_m=item.dimensions[0],
+                depth_m=item.dimensions[1],
+                angle=item.angle,
             )
         )
     return tuple(found)
@@ -372,6 +407,22 @@ class RoomMatch:
         if self.by_zone:
             mix = ", ".join(f"{code} x{count}" for code, count in list(self.codes().items())[:12])
             lines.append(f"  rooms found: {mix}")
+            # Sizes are the check on everything above. A label object is
+            # stretched to the room it names and prints those figures on the
+            # drawing, so a reader can compare these against a plan directly --
+            # which is the only way to know the geometry is right rather than
+            # merely self-consistent.
+            sized = [room for rooms in self.by_zone.values() for room in rooms if room.area_m2]
+            if sized:
+                biggest = max(sized, key=lambda room: room.area_m2)
+                lines.append(
+                    f"  {len(sized)} rooms carry a size, {biggest.code} the largest at "
+                    f"{biggest.width_m:.1f} x {biggest.depth_m:.1f} m "
+                    f"({biggest.area_m2:.1f} m2) -- check that against a plan"
+                )
+            unsized = sum(1 for rooms in self.by_zone.values() for r in rooms if not r.area_m2)
+            if unsized:
+                lines.append(f"  {unsized} rooms report no size, so their floor cannot be sampled")
         if self.reached_for:
             gaps = sorted(gap for _, gap in self.reached_for)
             mix = ", ".join(

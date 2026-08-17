@@ -7,6 +7,8 @@ hotlink masters at 64 m, 158 m and 280 m are the reason the storey test exists.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from sun_study.archicad.read import ArchicadZone, LibraryObject
@@ -609,3 +611,84 @@ def test_a_zone_with_no_storey_says_so_rather_than_guessing() -> None:
     ]
 
     assert "storey unknown: K x2" in match_rooms([zone], labels).describe()
+
+
+# -- the room's own floor rectangle ----------------------------------------
+
+
+def _sized(
+    code: str, x: float, y: float, w: float, d: float, storey: int = 9, angle: float = 0.0
+) -> RoomLabel:
+    return RoomLabel(
+        guid=f"{code}-{x}",
+        code=code,
+        x=x,
+        y=y,
+        storey_index=storey,
+        width_m=w,
+        depth_m=d,
+        angle=angle,
+    )
+
+
+def test_the_label_object_carries_the_rooms_size() -> None:
+    """A label object is stretched to the room it names and prints those
+    figures: one reported as 3.0 x 3.0 displays 'B3 3.0 x 3.0' on the plan."""
+    from sun_study.archicad.read import LibraryObject
+
+    found = room_labels(
+        [
+            LibraryObject(
+                guid="o1",
+                library_part="Room Name and Size Label 19",
+                origin=(10.0, 4.0, 30.0),
+                dimensions=(5.7, 4.0, 0.0),
+                storey_index=9,
+                parameters=(("room_txt", "L/D"),),
+            )
+        ]
+    )
+    assert found[0].width_m == pytest.approx(5.7)
+    assert found[0].depth_m == pytest.approx(4.0)
+    assert found[0].area_m2 == pytest.approx(22.8), "the L/D on the reference plan"
+
+
+def test_the_footprint_is_a_rectangle_from_a_corner() -> None:
+    """The origin is a corner, not the centre -- which is why these labels sit
+    exactly on a zone outline and why matching them needed a tolerance."""
+    room = _sized("L/D", 10.0, 4.0, 5.7, 4.0)
+    flattened = [value for corner in room.footprint() for value in corner]
+    assert flattened == pytest.approx([10.0, 4.0, 15.7, 4.0, 15.7, 8.0, 10.0, 8.0])
+
+
+def test_a_rotated_room_lands_on_itself() -> None:
+    """A quarter turn puts the far corner up and left of the origin."""
+    room = _sized("L/D", 0.0, 0.0, 4.0, 2.0, angle=math.pi / 2)
+    corners = room.footprint()
+    assert corners[1] == pytest.approx((0.0, 4.0), abs=1e-9)
+    assert corners[3] == pytest.approx((-2.0, 0.0), abs=1e-9)
+    from sun_study.archicad.rooms import polygon_area
+
+    assert polygon_area(corners) == pytest.approx(8.0), "rotation preserves area"
+
+
+def test_a_room_with_no_size_has_no_footprint() -> None:
+    """So a caller samples nothing rather than a degenerate rectangle."""
+    assert _sized("L/D", 1.0, 1.0, 0.0, 0.0).footprint() == ()
+    assert _sized("L/D", 1.0, 1.0, 3.0, 0.0).footprint() == ()
+
+
+def test_the_largest_room_is_reported_for_checking_against_a_plan() -> None:
+    """The only way to know the geometry is right rather than self-consistent."""
+    zones = [_zone("apt-1", storey=9)]
+    labels = [_sized("L/D", 1.0, 1.0, 5.7, 4.0), _sized("B1", 6.0, 1.0, 3.0, 3.6)]
+
+    described = match_rooms(zones, labels).describe()
+    assert "L/D the largest at 5.7 x 4.0 m (22.8 m2)" in described
+
+
+def test_rooms_without_a_size_are_counted() -> None:
+    zones = [_zone("apt-1", storey=9)]
+    labels = [_sized("L/D", 1.0, 1.0, 5.7, 4.0), _label("K", 6.0, 1.0, 9)]
+
+    assert "1 rooms report no size" in match_rooms(zones, labels).describe()

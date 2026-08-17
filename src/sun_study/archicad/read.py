@@ -732,6 +732,19 @@ class LibraryObject:
     """The library part's name, e.g. ``Room Name and Size Label 19``."""
     origin: tuple[float, float, float]
     """Placement point in project coordinates, metres."""
+    dimensions: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """The object's own A x B x height, metres.
+
+    For a room label this **is the room's size**: the object is stretched to
+    the room it names, and prints those figures as its text. Verified against
+    a floor plan -- a label reported as 3.0 x 3.0 displays "B3 3.0 x 3.0".
+
+    It is also why the labels sit exactly on the zone outline: the origin is a
+    corner of that rectangle, so it lands on a wall, which is what the 0.00 m
+    median match distance was measuring.
+    """
+    angle: float = 0.0
+    """Rotation about Z, radians. A room square to the plan reads 0."""
     storey_index: int | None = None
     layer_index: int | None = None
     parameters: tuple[tuple[str, str], ...] = ()
@@ -778,18 +791,15 @@ def library_objects(
         if not isinstance(row, dict) or "error" in row:
             continue
         detail = row.get("details") or {}
-        origin = detail.get("origin") or {}
         floor = row.get("floorIndex")
         layer = row.get("layerIndex")
         objects.append(
             LibraryObject(
                 guid=guid,
                 library_part=str((detail.get("libPart") or {}).get("name", "")),
-                origin=(
-                    float(origin.get("x", 0.0)),
-                    float(origin.get("y", 0.0)),
-                    float(origin.get("z", 0.0)),
-                ),
+                origin=_xyz(detail.get("origin")),
+                dimensions=_xyz(detail.get("dimensions")),
+                angle=float(detail.get("angle") or 0.0),
                 storey_index=int(floor) if isinstance(floor, (int, float)) else None,
                 layer_index=int(layer) if isinstance(layer, (int, float)) else None,
             )
@@ -811,6 +821,16 @@ def gdl_parameters(
     parameter.
     """
     return _with_gdl_parameters(connection, list(objects), limit=len(objects))
+
+
+def _xyz(value: Any) -> tuple[float, float, float]:
+    """A Coordinate3D as a tuple, defaulting to the origin."""
+    point = value if isinstance(value, dict) else {}
+    return (
+        float(point.get("x", 0.0)),
+        float(point.get("y", 0.0)),
+        float(point.get("z", 0.0)),
+    )
 
 
 def _with_gdl_parameters(
