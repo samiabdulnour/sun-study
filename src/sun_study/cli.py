@@ -613,6 +613,9 @@ def _connect(port: int) -> ArchicadConnection:
         # Only here, and only once. The port scan is real network I/O, so it
         # belongs on the path that has already decided to tell a human --
         # not inside the transport, where every failed call would pay for it.
+        found = _the_only_archicad(port)
+        if found is not None:
+            return found
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         elsewhere = where_archicad_actually_is(port)
         if elsewhere:
@@ -621,6 +624,36 @@ def _connect(port: int) -> ArchicadConnection:
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
+    return connection
+
+
+def _the_only_archicad(tried: int) -> ArchicadConnection | None:
+    """Fall through to the one running Archicad, when there is exactly one.
+
+    Archicad hands each instance its own port, so the default is right only
+    for whichever started first. Making a person look the number up and pass
+    ``--port`` every time is a papercut with no upside: when the scan finds a
+    single instance there is nothing to choose between, and the alternative is
+    an error telling them to type what the tool already knows.
+
+    Two or more instances still stop the run. Picking one would be guessing
+    which project the results belong in, and writing an assessment into the
+    wrong file is worse than any amount of typing.
+    """
+    running = [instance for instance in find_instances() if instance.port != tried]
+    if len(running) != 1:
+        return None
+
+    only = running[0]
+    typer.secho(
+        f"  nothing on port {tried}; using the one Archicad that is running -- {only.describe()}",
+        fg=typer.colors.YELLOW,
+    )
+    connection = ArchicadConnection(HttpTransport(port=only.port))
+    try:
+        connection.require_tapir()
+    except ArchicadError:
+        return None
     return connection
 
 

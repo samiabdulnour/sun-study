@@ -605,6 +605,67 @@ def test_an_unreadable_layer_list_does_not_stop_archicad_info() -> None:
     assert "could not read the layer list" in result.output
 
 
+def test_one_running_archicad_is_used_without_being_named() -> None:
+    """Archicad hands each instance its own port, so the default is right only
+    for whichever started first. With exactly one running there is nothing to
+    choose between, and erroring out to say 'pass --port 19724' asks a person
+    to type what the tool already knows."""
+    import sun_study.cli as cli
+    from sun_study.archicad.connection import ArchicadNotRunningError, Instance
+
+    calls: list[int] = []
+
+    class Reachable:
+        def __init__(self, port: int = 0, **_: Any) -> None:
+            calls.append(port)
+            self.port = port
+
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            if self.port != 19724:
+                raise ArchicadNotRunningError("nothing there")
+            return {"succeeded": True, "result": {"addOnCommandResponse": {"version": "1.5.7"}}}
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(cli, "HttpTransport", Reachable)
+    monkey.setattr(cli, "find_instances", lambda *a, **k: (Instance(19724, "SAMPLE"),))
+    try:
+        connection = cli._connect(19723)
+    finally:
+        monkey.undo()
+
+    assert connection.require_tapir() == "1.5.7"
+    assert calls == [19723, 19724], "the default is tried first, then the one found"
+
+
+def test_two_running_archicads_stop_the_run_rather_than_guess() -> None:
+    """Picking one would be guessing which project the results belong in, and
+    writing an assessment into the wrong file beats any amount of typing."""
+    import typer
+
+    import sun_study.cli as cli
+    from sun_study.archicad.connection import ArchicadNotRunningError, Instance
+
+    class Dead:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            raise ArchicadNotRunningError("nothing there")
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(cli, "HttpTransport", Dead)
+    monkey.setattr(
+        cli,
+        "find_instances",
+        lambda *a, **k: (Instance(19724, "SAMPLE"), Instance(19725, "EXAMPLE")),
+    )
+    try:
+        with pytest.raises(typer.Exit):
+            cli._connect(19723)
+    finally:
+        monkey.undo()
+
+
 def test_drawing_is_opt_in_like_writing() -> None:
     """Both change a colleague's project file."""
     import inspect
