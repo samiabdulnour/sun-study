@@ -961,3 +961,46 @@ def test_no_zone_name_filter_leaves_every_apartment(model: Any) -> None:
 
     scene = build_scene(model, SceneConfig(timezone="Australia/Sydney", apartment_zone_names=()))
     assert scene.provenance["spaces_total"] == 4
+
+
+def test_geometry_far_above_the_apartments_is_reported(model: Any, tmp_path: Path) -> None:
+    """The failure this catches: hotlinked unit-type masters parked above the
+    site export as ordinary geometry, and geometry above a building can only
+    shade it. Every apartment comes back dark, which reads as a badly oriented
+    scheme rather than as a floating copy of itself blocking the sun."""
+    import ifcopenshell
+
+    from sun_study.ingest.scene import SceneConfig, build_scene
+
+    clean = build_scene(model, SceneConfig(timezone="Australia/Sydney"))
+    assert clean.provenance["geometry_above_building"] == 0
+    assert "sit entirely above the apartments" not in clean.describe()
+
+    # Lift the context block far overhead, as a parked master would be.
+    edited = ifcopenshell.open(str(SAMPLE))
+    block = next(p for p in edited.by_type("IfcBuildingElementProxy") if "Context" in str(p.Name))
+    solid = block.Representation.Representations[0].Items[0]
+    solid.Position.Location.Coordinates = (0.0, 0.0, 150_000.0)
+    floating = tmp_path / "floating.ifc"
+    edited.write(str(floating))
+
+    scene = build_scene(read_ifc(floating), SceneConfig(timezone="Australia/Sydney"))
+
+    assert scene.provenance["geometry_above_building"] == 1
+    described = scene.describe()
+    assert "sit entirely above the apartments" in described
+    assert "Exclude the hotlink layers from the export" in described
+
+
+def test_a_roof_overhead_is_not_flagged(model: Any) -> None:
+    """A roof, a lift overrun and a parapet are all legitimately above the
+    apartments, and all within a storey or two."""
+    from sun_study.ingest.scene import OVERHEAD_SUSPICION_M
+
+    assert OVERHEAD_SUSPICION_M >= 10.0, "must clear a plant room"
+    assert (
+        build_scene(model, SceneConfig(timezone="Australia/Sydney")).provenance[
+            "geometry_above_building"
+        ]
+        == 0
+    )

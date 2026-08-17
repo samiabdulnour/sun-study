@@ -239,15 +239,31 @@ class Scene:
         for assignment in self.assignments:
             by_method[assignment.method] = by_method.get(assignment.method, 0) + 1
         routes = ", ".join(f"{name} {count}" for name, count in sorted(by_method.items()))
-        return (
-            f"{self.orientation.describe()}\n"
-            f"  {self.config.describe()}\n"
+        lines = [
+            self.orientation.describe(),
+            f"  {self.config.describe()}",
             f"  occluders {self.occluders.triangle_count} triangles | "
             f"{len(self.window_samples)} window samples | "
-            f"{len(self.open_space_samples)} open space samples\n"
-            f"  window to space resolution: {routes or 'none'}\n"
-            f"  {self._openings_summary()}"
-        )
+            f"{len(self.open_space_samples)} open space samples",
+            f"  window to space resolution: {routes or 'none'}",
+            f"  {self._openings_summary()}",
+        ]
+        overhead = self.provenance.get("geometry_above_building")
+        if isinstance(overhead, int) and overhead:
+            lines.append(
+                f"  WARNING: {overhead} elements "
+                f"({self.provenance.get('geometry_above_building_triangles')} triangles) "
+                f"sit entirely above the apartments -- up to "
+                f"{self.provenance.get('geometry_above_building_top_m')} m against a "
+                f"top-of-apartments of {self.provenance.get('top_of_apartments_m')} m."
+            )
+            lines.append(
+                "    Geometry above a building can only shade it. Hotlinked "
+                "unit-type masters are parked overhead and export as ordinary "
+                "geometry, which makes every apartment dark and reads as a badly "
+                "oriented scheme. Exclude the hotlink layers from the export."
+            )
+        return "\n".join(lines)
 
     def _openings_summary(self) -> str:
         """How many openings each apartment got, and what that implies.
@@ -773,6 +789,7 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         "unresolved": sum(1 for a in assignments if a.method == "unresolved"),
         "occluder_triangles": occluders.triangle_count,
         "vegetation_included": config.include_vegetation,
+        **_geometry_overhead(model, spaces),
     }
 
     return Scene(
@@ -1038,3 +1055,46 @@ def _ground_grid(
         grid.areas[open_ground],
         surface_offset_m=grid.surface_offset_m,
     )
+
+
+#: How far above the topmost apartment geometry has to sit before it is
+#: reported as suspect. A roof, a lift overrun and a parapet are all real and
+#: all within a storey or two; 15 m is above any of those and far below where
+#: a hotlink master gets parked.
+OVERHEAD_SUSPICION_M = 15.0
+
+
+def _geometry_overhead(model: IfcModel, spaces: Sequence[IfcElement]) -> dict[str, object]:
+    """How much occluding geometry sits above the building being assessed.
+
+    The failure this exists to catch: a practice parks its hotlinked unit-type
+    *masters* far above the site -- one project has three sets, at roughly
+    64 m, 158 m and 280 m. Exported by an unfiltered layer combination they
+    become ordinary geometry, and geometry above a building can only shade it.
+    Every apartment then comes back dark, which reads as a badly oriented
+    scheme rather than as a floating copy of itself blocking the sun.
+
+    Nothing here is fatal. A tall neighbour is legitimately overhead, and so
+    is a roof. This reports the height and the share, and lets a person judge.
+    """
+    if not spaces:
+        return {}
+    top_of_building = max(float(space.mesh.vertices[:, 2].max()) for space in spaces)
+
+    above = [
+        element
+        for element in model.occluders()
+        if len(element.mesh.vertices)
+        and float(element.mesh.vertices[:, 2].min()) > top_of_building + OVERHEAD_SUSPICION_M
+    ]
+    if not above:
+        return {"geometry_above_building": 0}
+
+    triangles = sum(element.mesh.triangle_count for element in above)
+    highest = max(float(element.mesh.vertices[:, 2].max()) for element in above)
+    return {
+        "geometry_above_building": len(above),
+        "geometry_above_building_triangles": triangles,
+        "geometry_above_building_top_m": round(highest, 1),
+        "top_of_apartments_m": round(top_of_building, 1),
+    }
