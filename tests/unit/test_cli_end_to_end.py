@@ -499,8 +499,8 @@ def test_zones_are_counted_per_layer_so_the_apartment_layer_is_findable() -> Non
         _report_zone_layers(connection, _zones_on(1, 40) + _zones_on(3, 1301, first=100))
 
     output = runner.invoke(app, []).output
-    assert "40  06 | Zone.Units" in output
-    assert "1301  10 | Calc.GFA" in output
+    assert "40  '06 | Zone.Units'" in output
+    assert "1301  '10 | Calc.GFA'" in output
 
 
 def test_each_layer_reports_the_zone_names_on_it() -> None:
@@ -723,3 +723,46 @@ def test_a_georeference_mismatch_can_be_overridden_but_only_deliberately() -> No
 
     parameter = inspect.signature(archicad_run).parameters["allow_georeference_mismatch"]
     assert parameter.default is False
+
+
+def test_a_layer_name_with_a_trailing_space_still_matches() -> None:
+    """Archicad layer names carry trailing spaces more often than anyone
+    expects, and a padded listing hides them completely -- so a name copied
+    character-perfect off the screen matched nothing and the run reported a
+    project with no apartments."""
+    from sun_study.cli import layer_matches
+
+    assert layer_matches("06 | Zone.SEPP 65 ", ["06 | Zone.SEPP 65"])
+    assert layer_matches("06 | Zone.SEPP 65", [" 06 | Zone.SEPP 65 "])
+    assert layer_matches("06 | ZONE.SEPP 65", ["06 | Zone.SEPP 65"]), "and case-insensitively"
+    assert not layer_matches("06 | Zone.Units", ["06 | Zone.SEPP 65"])
+
+
+def test_layer_index_zero_is_a_real_layer() -> None:
+    """`names.get(zone.layer_index or -1)` was the original, and 0 or -1 is
+    -1 -- so every zone on layer 0 silently became 'unknown'."""
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.cli import layer_of
+
+    on_zero = ArchicadZone(guid="z", name="RESI", number="", layer_index=0)
+    assert layer_of(on_zero, {0: "00 | Ground"}) == "00 | Ground"
+
+    unreported = ArchicadZone(guid="z", name="RESI", number="", layer_index=None)
+    assert layer_of(unreported, {0: "00 | Ground"}) == "(no layer reported)"
+
+
+def test_a_layer_listing_quotes_the_names_it_prints() -> None:
+    """So a trailing space is visible in the thing being copied."""
+    import typer.testing
+
+    from sun_study.archicad.connection import ArchicadConnection
+    from sun_study.cli import _report_zone_layers
+
+    connection = ArchicadConnection(_LayerTransport({1: "06 | Zone.Units "}))
+    app = typer.Typer()
+
+    @app.command()
+    def show() -> None:
+        _report_zone_layers(connection, _zones_on(1, 3))
+
+    assert "'06 | Zone.Units '" in typer.testing.CliRunner().invoke(app, []).output

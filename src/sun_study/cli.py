@@ -309,6 +309,30 @@ def resolve_bands(
     return _warn_if_alike(corrected, pens)
 
 
+def layer_of(zone: Any, names: dict[int, str]) -> str:
+    """A zone's layer name, or a placeholder.
+
+    Written out rather than inlined as ``names.get(zone.layer_index or -1)``,
+    which was the original and is wrong: layer index 0 is a real Archicad
+    layer, and ``0 or -1`` is -1, so every zone on it silently became
+    "unknown".
+    """
+    if zone.layer_index is None:
+        return "(no layer reported)"
+    return names.get(zone.layer_index, "(unknown layer)")
+
+
+def layer_matches(name: str, wanted: Sequence[str]) -> bool:
+    """Whether a layer name is one the user asked for.
+
+    Compared stripped as well as case-folded. Archicad layer names carry
+    trailing spaces more often than anyone expects, and a padded listing hides
+    them completely -- so a name copied character-perfect off the screen
+    matched nothing, and the run reported a project with no apartments.
+    """
+    return name.strip().casefold() in {entry.strip().casefold() for entry in wanted}
+
+
 def report_layout(connection: ArchicadConnection, storeys: Sequence[int], *, name: str) -> None:
     """Put the drawn storeys on a sheet, and say what happened.
 
@@ -778,12 +802,7 @@ def _report_zone_layers(connection: ArchicadConnection, found: Sequence[Archicad
         typer.secho(f"  could not read the layer list ({error})", fg=typer.colors.YELLOW)
         return
 
-    def layer_of(zone: ArchicadZone) -> str:
-        if zone.layer_index is None:
-            return "(no layer reported)"
-        return names.get(zone.layer_index, "(unknown layer)")
-
-    counted = collections.Counter(layer_of(zone) for zone in found)
+    counted = collections.Counter(layer_of(zone, names) for zone in found)
 
     # The names *within* a layer, not just across the project. A project-wide
     # name tally cannot say what the apartments are called, because the biggest
@@ -791,7 +810,8 @@ def _report_zone_layers(connection: ArchicadConnection, found: Sequence[Archicad
     # one line.
     by_layer: dict[str, collections.Counter[str]] = {}
     for zone in found:
-        by_layer.setdefault(layer_of(zone), collections.Counter())[zone.name or "(unnamed)"] += 1
+        key = layer_of(zone, names)
+        by_layer.setdefault(key, collections.Counter())[zone.name or "(unnamed)"] += 1
 
     width = max(len(name) for name in counted)
     typer.echo(f"  zones per layer ({len(counted)} layers carry zones):")
@@ -800,7 +820,10 @@ def _report_zone_layers(connection: ArchicadConnection, found: Sequence[Archicad
         summary = ", ".join(f"{label} x{count}" for label, count in top)
         if len(by_layer[name]) > len(top):
             summary += ", ..."
-        typer.echo(f"    {how_many:>5}  {name:<{width}}  {summary}")
+        # Quoted, because a trailing space in a layer name is invisible in a
+        # padded column and is exactly what makes a copied --zone-layer miss.
+        quoted = f"{name!r}"
+        typer.echo(f"    {how_many:>5}  {quoted:<{width + 2}}  {summary}")
 
     # Equal counts across two zone layers is the signature of the duplication
     # the manual warns about, and assessing both would count every apartment
@@ -980,9 +1003,8 @@ def archicad_rooms(
         names = layer_names(connection)
         found = read_zones(connection)
         if zone_layer:
-            wanted = {entry.casefold() for entry in zone_layer}
             found = tuple(
-                zone for zone in found if names.get(zone.layer_index or -1, "").casefold() in wanted
+                zone for zone in found if layer_matches(layer_of(zone, names), zone_layer)
             )
         if not found:
             typer.secho(
@@ -1218,9 +1240,7 @@ def _report_objects(
     for item in gdl_parameters(connection, hits[:sample]):
         typer.echo("")
         typer.secho(f"  {item.library_part}  at {item.origin}", bold=True)
-        typer.echo(
-            f"    storey {item.storey_index}, layer {names.get(item.layer_index or -1, '?')}"
-        )
+        typer.echo(f"    storey {item.storey_index}, layer {layer_of(item, names)!r}")
         if not item.parameters:
             typer.secho("    no GDL parameters reported", fg=typer.colors.YELLOW)
             continue
@@ -1443,9 +1463,8 @@ def archicad_selftest(
         names = layer_names(connection)
         in_project = len(found)
         if zone_layer:
-            wanted = {entry.casefold() for entry in zone_layer}
             found = tuple(
-                zone for zone in found if names.get(zone.layer_index or -1, "").casefold() in wanted
+                zone for zone in found if layer_matches(layer_of(zone, names), zone_layer)
             )
             if not found:
                 typer.secho(
@@ -1470,9 +1489,7 @@ def archicad_selftest(
             )
         else:
             typer.echo(f"  testing against {len(chosen)} of {in_project} zones")
-            sampled = collections.Counter(
-                names.get(zone.layer_index or -1, "(unknown layer)") for zone in chosen
-            )
+            sampled = collections.Counter(layer_of(zone, names) for zone in chosen)
             for name, how_many in sampled.most_common():
                 typer.echo(f"    {how_many} on layer {name!r}")
             typer.echo("    narrow this with --zone-layer if those are not the apartments")
