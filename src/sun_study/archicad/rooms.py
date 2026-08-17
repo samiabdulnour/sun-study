@@ -37,6 +37,7 @@ __all__ = [
     "ROOM_LABEL_PART",
     "ROOM_NAME_PARAMETER",
     "ROOM_VOCABULARY",
+    "UNIQUE_ROOM_CODES",
     "RoomLabel",
     "RoomMatch",
     "distance_to_polygon",
@@ -181,18 +182,22 @@ def room_labels(
 
 #: How far outside a zone outline a room label may sit and still belong to it.
 #:
-#: Not a fudge factor -- a measured one. On a real project 70 placed labels
-#: fell outside every outline, among them every one of the 14 living rooms on
-#: apartment storeys, while bedrooms and ensuites in the same units matched.
-#: A label is annotation: it is dragged to wherever it reads well on the
-#: drawing, which for the biggest room in a plan is often past the wall the
-#: zone stops at. Requiring strict containment therefore loses precisely the
-#: rooms ADG 4A-1 is about.
+#: Measured, then measured again. On a real project strict containment lost 70
+#: placed labels including every one of the 14 living rooms, while matching the
+#: bedrooms and ensuites around them. The first guess at why -- annotation
+#: dragged past the wall to where it reads well -- was wrong, and a 1.5 m
+#: tolerance was set to cover it.
 #:
-#: 1.5 m is under half the width of a small bedroom, so a label cannot reach
-#: the far side of a neighbouring room, and every use of the tolerance is
-#: reported with its distance so a person can see what it did.
-DEFAULT_TOLERANCE_M = 1.5
+#: What the reaches actually measured was **0.00 m to 0.30 m, median 0.00 m**.
+#: The labels are not dragged anywhere: they sit *exactly on* the outline, and
+#: a point on an edge is neither in nor out by a strict test. This is coincident
+#: geometry, not loose draughting.
+#:
+#: So the tolerance is 0.5 m: comfortably past the worst case observed, and
+#: small enough that a label cannot reach into a neighbouring room at all,
+#: since no habitable room is a metre wide. A tolerance that spans a real room
+#: would eventually attach a bedroom to the flat next door and never say so.
+DEFAULT_TOLERANCE_M = 0.5
 
 
 def distance_to_polygon(
@@ -274,6 +279,14 @@ class RoomMatch:
     label on a storey that *does* carry apartments is a placed room that fell
     outside every outline -- a geometry problem, and a room silently missing
     from the assessment.
+    """
+    duplicated: tuple[tuple[str, str, int], ...] = ()
+    """``(zone guid, room code, how many)`` where one apartment holds several.
+
+    A flat has one living room and one kitchen. Two of either means the zone
+    is covering more than one unit, and every count downstream is then wrong
+    in a way that still reads as plausible -- an apartment reported as having
+    sunlight in "its" living room when the label belongs next door.
     """
     reached_for: tuple[tuple[RoomLabel, float], ...] = ()
     """Labels matched by the tolerance rather than by containment, and by how far.
@@ -370,6 +383,16 @@ class RoomMatch:
                 f"  {len(self.zones_without_rooms)} apartments contain no room label, "
                 f"so nothing can say which part of them is the living room"
             )
+        if self.duplicated:
+            worst = sorted(self.duplicated, key=lambda item: -item[2])[:6]
+            mix = ", ".join(f"{code} x{count}" for _, code, count in worst)
+            affected = len({guid for guid, _, _ in self.duplicated})
+            lines.append(
+                f"  {affected} apartments hold more than one of a room that should be "
+                f"unique: {mix}. A flat has one living room and one kitchen, so those "
+                f"zones are covering more than one unit -- either the outline spans "
+                f"several flats, or the apartments are on a layer this run did not read."
+            )
         return "\n".join(lines)
 
 
@@ -427,7 +450,24 @@ def match_rooms(
         missed_on_live_storeys=tuple(label for label in unplaced if label.storey_index in live),
         reached_for=tuple(reached),
         tolerance_m=tolerance_m,
+        duplicated=_duplicates(found),
     )
+
+
+#: Rooms a flat has exactly one of. Bedrooms are absent on purpose -- B1, B2
+#: and B3 are already distinct codes, and a plain ``B`` alongside them is
+#: normal draughting rather than a fault.
+UNIQUE_ROOM_CODES = frozenset({"L/D", "L", "LIV", "LIVING", "LD", "L/K/D", "K", "K/D", "LY", "EN"})
+
+
+def _duplicates(found: dict[str, list[RoomLabel]]) -> tuple[tuple[str, str, int], ...]:
+    """Apartments holding several of a room they should have one of."""
+    repeated: list[tuple[str, str, int]] = []
+    for guid, rooms in found.items():
+        for code, count in _tally(rooms).items():
+            if count > 1 and code in UNIQUE_ROOM_CODES:
+                repeated.append((guid, code, count))
+    return tuple(repeated)
 
 
 def _tally(labels: Iterable[RoomLabel]) -> dict[str, int]:

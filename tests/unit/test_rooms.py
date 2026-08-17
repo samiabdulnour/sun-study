@@ -426,3 +426,65 @@ def test_the_tolerance_never_reaches_across_a_storey() -> None:
 
     assert match.by_zone == {}
     assert len(match.unplaced) == 1
+
+
+# -- a zone covering more than one unit ------------------------------------
+
+
+def test_two_living_rooms_in_one_apartment_are_reported() -> None:
+    """A flat has one living room. Two means the zone covers two units, and
+    every count downstream is then wrong while still reading as plausible."""
+    zones = [_zone("apt-1", storey=9)]
+    labels = [_label("L/D", 2.0, 2.0, 9), _label("L/D", 8.0, 6.0, 9), _label("B1", 5.0, 2.0, 9)]
+
+    match = match_rooms(zones, labels)
+
+    assert match.duplicated == (("apt-1", "L/D", 2),)
+    described = match.describe()
+    assert "more than one of a room that should be unique" in described
+    assert "L/D x2" in described
+
+
+def test_several_bedrooms_are_normal_and_not_flagged() -> None:
+    """B1, B2 and B3 are already distinct codes, and a plain B alongside them
+    is ordinary draughting rather than a fault."""
+    zones = [_zone("apt-1", storey=9)]
+    labels = [
+        _label("B", 2.0, 2.0, 9),
+        _label("B1", 4.0, 2.0, 9),
+        _label("B2", 6.0, 2.0, 9),
+        _label("B3", 8.0, 2.0, 9),
+        _label("L/D", 5.0, 6.0, 9),
+    ]
+
+    match = match_rooms(zones, labels)
+    assert match.duplicated == ()
+    assert "should be unique" not in match.describe()
+
+
+def test_a_tidy_apartment_reports_no_duplicates() -> None:
+    zones = [_zone("apt-1", storey=9)]
+    labels = [_label("L/D", 2.0, 2.0, 9), _label("K", 4.0, 2.0, 9), _label("EN", 6.0, 2.0, 9)]
+
+    assert match_rooms(zones, labels).duplicated == ()
+
+
+def test_the_measured_tolerance_cannot_reach_into_a_neighbouring_room() -> None:
+    """The reaches observed on a real project were 0.00 m to 0.30 m: labels
+    sitting exactly on the outline, not dragged past it. The default has to
+    cover that and stop well short of a room's width."""
+    from sun_study.archicad.rooms import DEFAULT_TOLERANCE_M
+
+    assert DEFAULT_TOLERANCE_M >= 0.3, "must cover the worst case measured"
+    assert DEFAULT_TOLERANCE_M < 1.0, "must not span a habitable room"
+
+
+def test_a_label_exactly_on_the_outline_is_matched() -> None:
+    """The actual cause: a point on an edge is neither in nor out by a strict
+    test, and the median reach measured was 0.00 m."""
+    zones = [_zone("apt-1", storey=9)]
+    on_the_edge = _label("L/D", 10.0, 4.0, storey=9)
+
+    match = match_rooms(zones, [on_the_edge])
+    assert match.matched == 1
+    assert match.by_zone["apt-1"][0].code == "L/D"
