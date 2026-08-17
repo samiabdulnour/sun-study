@@ -53,7 +53,14 @@ from sun_study.archicad.read import (
     read_geo_location,
 )
 from sun_study.archicad.read import zones as read_zones
-from sun_study.archicad.rooms import RoomMatch, match_rooms, room_labels
+from sun_study.archicad.rooms import (
+    LIVING_ROOM_CODES,
+    RoomMatch,
+    is_living_room,
+    match_rooms,
+    room_labels,
+    unknown_codes,
+)
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
@@ -936,9 +943,9 @@ def archicad_rooms(
         typer.Option(
             "--living",
             help=(
-                "Room codes that are living rooms for ADG 4A-1. Repeatable. "
-                "Default 'L/D'. Wrong values change the headline percentage, so "
-                "the mix found is always printed for checking."
+                "Extra room codes that are living rooms, on top of the built-in "
+                "vocabulary. Repeatable. Only needed where a project uses a code "
+                "the office library has not used before."
             ),
         ),
     ] = None,
@@ -982,20 +989,14 @@ def archicad_rooms(
             fg=typer.colors.GREEN if match.matched else typer.colors.RED,
             bold=True,
         )
-        _report_living_rooms(match, living or ["L/D"])
+        _report_living_rooms(match, living or [], labels)
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
 
 
-def _report_living_rooms(match: RoomMatch, living: Sequence[str]) -> None:
+def _report_living_rooms(match: RoomMatch, living: Sequence[str], labels: Sequence[Any]) -> None:
     """How many apartments have a living room the assessment could measure."""
-    wanted = {code.strip().upper() for code in living}
-    with_living = [
-        guid for guid, rooms in match.by_zone.items() if any(room.code in wanted for room in rooms)
-    ]
-    total = len(match.by_zone) + len(match.zones_without_rooms)
-
     typer.echo("")
     if not match.matched:
         typer.secho(
@@ -1006,17 +1007,34 @@ def _report_living_rooms(match: RoomMatch, living: Sequence[str]) -> None:
         )
         return
 
+    # A code nobody has classified is silent: an unrecognised living room is
+    # simply not assessed, and no other line of output would say so.
+    unknown = unknown_codes(labels)
+    if unknown:
+        typer.secho(
+            f"  room codes not in the built-in vocabulary: {', '.join(unknown[:12])}. "
+            f"If any of those is a living room, pass it with --living.",
+            fg=typer.colors.YELLOW,
+        )
+
+    with_living = [
+        guid
+        for guid, rooms in match.by_zone.items()
+        if any(is_living_room(room.code, extra=living) for room in rooms)
+    ]
+    total = len(match.by_zone) + len(match.zones_without_rooms)
+    known = ", ".join(sorted(LIVING_ROOM_CODES) + sorted(code.upper() for code in living))
+
     typer.secho(
-        f"  {len(with_living)} of {total} apartments contain a room coded "
-        f"{', '.join(sorted(wanted))}",
-        fg=typer.colors.GREEN if len(with_living) == total else typer.colors.YELLOW,
+        f"  {len(with_living)} of {total} apartments contain a living room ({known})",
+        fg=typer.colors.GREEN if len(with_living) == total else typer.colors.RED,
         bold=True,
     )
     if len(with_living) < total:
         typer.secho(
             "  The rest cannot be assessed against ADG 4A-1, which is about living "
-            "rooms. Check the room mix above: if the living room is coded something "
-            "other than 'L/D' here, pass it with --living.",
+            "rooms. If a living room here is coded something the list above does not "
+            "name, pass it with --living.",
             fg=typer.colors.YELLOW,
         )
 

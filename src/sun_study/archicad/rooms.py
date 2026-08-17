@@ -25,19 +25,23 @@ what tells the copy from the original.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from sun_study.archicad.read import ArchicadZone, LibraryObject
 
 __all__ = [
+    "LIVING_ROOM_CODES",
     "ROOM_LABEL_PART",
     "ROOM_NAME_PARAMETER",
+    "ROOM_VOCABULARY",
     "RoomLabel",
     "RoomMatch",
+    "is_living_room",
     "match_rooms",
     "point_in_polygon",
     "room_labels",
+    "unknown_codes",
 ]
 
 #: The library part carrying a room's name and size in the reference office
@@ -48,6 +52,72 @@ ROOM_LABEL_PART = "Room Name and Size Label"
 #: Where that part keeps the room code. Measured, not guessed: of 329 placed
 #: labels in the reference project, 299 carried a value here.
 ROOM_NAME_PARAMETER = "room_txt"
+
+#: The office's own room codes, read off a real project rather than invented.
+#: Every code observed there is here, so an unrecognised one means the
+#: vocabulary has grown and is worth looking at -- see ``unknown_codes``.
+#:
+#: Deliberately *not* exhaustive by guesswork. ``S`` and ``BP`` are left
+#: unmapped because they are genuinely ambiguous: ``S`` could be study, store
+#: or sitting room, and only the first and last would matter to ADG 4A-1.
+#: Guessing either way moves the headline percentage on a coin toss.
+ROOM_VOCABULARY: dict[str, str] = {
+    "L/D": "living/dining",
+    "L": "living",
+    "LIV": "living",
+    "LIVING": "living",
+    "LD": "living/dining",
+    "L/K/D": "living/kitchen/dining",
+    "K": "kitchen",
+    "K/D": "kitchen/dining",
+    "D": "dining",
+    "B": "bedroom",
+    "B1": "bedroom",
+    "B2": "bedroom",
+    "B3": "bedroom",
+    "B4": "bedroom",
+    "BED": "bedroom",
+    "EN": "ensuite",
+    "BATH": "bathroom",
+    "WC": "toilet",
+    "LY": "laundry",
+    "ST": "store",
+    "UT": "utility",
+    "MULTI ROOM": "multi-purpose",
+    "BALC": "balcony",
+    "TER": "terrace",
+}
+
+#: Which of those are living rooms for ADG 4A-1. A room counts if living space
+#: is any part of what it is: an ``L/K/D`` is still where people sit.
+LIVING_ROOM_CODES: tuple[str, ...] = tuple(
+    code for code, kind in ROOM_VOCABULARY.items() if "living" in kind
+)
+
+
+def is_living_room(code: str, *, extra: Sequence[str] = ()) -> bool:
+    """Whether a room code names a living room for ADG 4A-1.
+
+    ``extra`` adds codes for a project whose vocabulary differs. It never
+    *removes* one, because the built-in set was measured rather than assumed
+    and a caller silencing it would do so invisibly.
+    """
+    wanted = {item.strip().upper() for item in extra}
+    return code.strip().upper() in set(LIVING_ROOM_CODES) | wanted
+
+
+def unknown_codes(labels: Sequence[RoomLabel]) -> tuple[str, ...]:
+    """Codes not in the vocabulary, most common first.
+
+    Worth printing every run. A new code is either a room type nobody has
+    classified yet or a typo, and both are silent: an unrecognised living room
+    is simply not assessed, and nothing else in the output says so.
+    """
+    counted: dict[str, int] = {}
+    for label in labels:
+        if label.code not in ROOM_VOCABULARY:
+            counted[label.code] = counted.get(label.code, 0) + 1
+    return tuple(code for code, _ in sorted(counted.items(), key=lambda pair: -pair[1]))
 
 
 @dataclass(frozen=True)
@@ -139,11 +209,28 @@ class RoomMatch:
 
     def codes(self) -> dict[str, int]:
         """How many of each room code were matched, most common first."""
-        counted: dict[str, int] = {}
-        for rooms in self.by_zone.values():
-            for room in rooms:
-                counted[room.code] = counted.get(room.code, 0) + 1
-        return dict(sorted(counted.items(), key=lambda pair: -pair[1]))
+        return _tally(room for rooms in self.by_zone.values() for room in rooms)
+
+    def unplaced_codes(self) -> dict[str, int]:
+        """The same for labels that landed in no apartment.
+
+        Comparing the two tallies is what catches a room type that exists in
+        the project but never reaches an apartment. On the reference project
+        29 labels read ``L/D`` and *none* of them matched, which says the
+        living rooms are somewhere the join is not looking rather than that
+        the building has no living rooms.
+        """
+        return _tally(self.unplaced)
+
+    def missing_kinds(self) -> tuple[str, ...]:
+        """Codes present only among the unplaced labels, most common first.
+
+        A code that exists in the project and never lands in an apartment is
+        the signature of a join that is finding some rooms and missing a whole
+        category of others.
+        """
+        placed = set(self.codes())
+        return tuple(code for code in self.unplaced_codes() if code not in placed)
 
     def describe(self) -> str:
         placed = len(self.by_zone)
@@ -163,6 +250,15 @@ class RoomMatch:
                 f"came from, so this is where they land -- and where they must land, "
                 f"or every apartment would count its rooms twice."
             )
+            missing = self.missing_kinds()
+            if missing:
+                tally = self.unplaced_codes()
+                shown = ", ".join(f"{code} x{tally[code]}" for code in missing[:10])
+                lines.append(
+                    f"  but {len(missing)} room codes appear ONLY among those: {shown}. "
+                    f"A code the project has and no apartment contains means the join "
+                    f"is missing a whole category of room, not just the masters."
+                )
         if self.zones_without_rooms:
             lines.append(
                 f"  {len(self.zones_without_rooms)} apartments contain no room label, "
@@ -200,3 +296,11 @@ def match_rooms(zones: Sequence[ArchicadZone], labels: Sequence[RoomLabel]) -> R
         unplaced=tuple(unplaced),
         zones_without_rooms=tuple(zone.guid for zone in zones if zone.guid not in found),
     )
+
+
+def _tally(labels: Iterable[RoomLabel]) -> dict[str, int]:
+    """Room codes counted, most common first."""
+    counted: dict[str, int] = {}
+    for label in labels:
+        counted[label.code] = counted.get(label.code, 0) + 1
+    return dict(sorted(counted.items(), key=lambda pair: -pair[1]))

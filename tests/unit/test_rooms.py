@@ -192,3 +192,94 @@ def test_the_same_position_on_a_different_storey_is_a_different_apartment() -> N
 
     assert "apt-upper" in match.by_zone
     assert "apt-lower" not in match.by_zone
+
+
+# -- the room vocabulary ---------------------------------------------------
+
+
+def test_the_office_codes_are_built_in_rather_than_configured() -> None:
+    """Every code observed on the reference project is classified, so a run
+    needs no --living to know what a living room is."""
+    from sun_study.archicad.rooms import ROOM_VOCABULARY
+
+    for code in ("L/D", "K", "B1", "B2", "B3", "B", "EN", "LY", "ST", "UT", "MULTI ROOM"):
+        assert code in ROOM_VOCABULARY, code
+
+
+def test_living_dining_is_a_living_room_and_a_bedroom_is_not() -> None:
+    from sun_study.archicad.rooms import is_living_room
+
+    assert is_living_room("L/D")
+    assert is_living_room("l/d"), "codes are compared case-insensitively"
+    assert is_living_room("L/K/D"), "living space is part of what it is"
+    assert not is_living_room("B1")
+    assert not is_living_room("K")
+    assert not is_living_room("EN")
+
+
+def test_an_ambiguous_code_is_not_guessed_at() -> None:
+    """'S' could be study, store or sitting room, and only two of those would
+    matter to ADG 4A-1. Guessing moves the headline percentage on a coin toss."""
+    from sun_study.archicad.rooms import ROOM_VOCABULARY, is_living_room
+
+    assert "S" not in ROOM_VOCABULARY
+    assert not is_living_room("S")
+    assert is_living_room("S", extra=["S"]), "but a project can say so explicitly"
+
+
+def test_an_extra_code_adds_to_the_built_in_set_rather_than_replacing_it() -> None:
+    """A caller silencing the measured vocabulary would do so invisibly."""
+    from sun_study.archicad.rooms import is_living_room
+
+    assert is_living_room("LOUNGE", extra=["LOUNGE"])
+    assert is_living_room("L/D", extra=["LOUNGE"]), "the built-in set still applies"
+
+
+def test_unrecognised_codes_are_reported_not_ignored() -> None:
+    """An unrecognised living room is simply not assessed, and nothing else in
+    the output would say so."""
+    from sun_study.archicad.rooms import unknown_codes
+
+    found = unknown_codes(
+        [
+            _label("L/D", 1.0, 1.0, 9),
+            _label("S", 2.0, 1.0, 9),
+            _label("S", 3.0, 1.0, 9),
+            _label("BP", 4.0, 1.0, 9),
+        ]
+    )
+    assert found == ("S", "BP"), "most common first, and known codes are absent"
+
+
+# -- catching a room type that never reaches an apartment ------------------
+
+
+def test_a_code_present_only_among_unplaced_labels_is_called_out() -> None:
+    """Observed on the reference project: 29 labels read L/D and *none* of
+    them matched, which says the living rooms are somewhere the join is not
+    looking -- not that the building has no living rooms."""
+    zones = [_zone("apt-1", storey=9)]
+    labels = [
+        _label("B1", 2.0, 2.0, storey=9),
+        _label("L/D", 2.0, 4.0, storey=38),
+        _label("L/D", 4.0, 4.0, storey=38),
+    ]
+
+    match = match_rooms(zones, labels)
+
+    assert match.missing_kinds() == ("L/D",)
+    assert match.unplaced_codes() == {"L/D": 2}
+    described = match.describe()
+    assert "appear ONLY among those" in described
+    assert "L/D x2" in described
+
+
+def test_a_code_present_in_both_places_is_not_called_out() -> None:
+    """Masters duplicate every room, so most codes appear on both sides. Only
+    the ones that never land anywhere are a signal."""
+    zones = [_zone("apt-1", storey=9)]
+    labels = [_label("L/D", 2.0, 2.0, storey=9), _label("L/D", 2.0, 2.0, storey=38)]
+
+    match = match_rooms(zones, labels)
+    assert match.missing_kinds() == ()
+    assert "appear ONLY among those" not in match.describe()
