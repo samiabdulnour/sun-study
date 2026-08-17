@@ -446,8 +446,9 @@ def test_two_living_rooms_in_one_apartment_are_reported() -> None:
 
 
 def test_several_bedrooms_are_normal_and_not_flagged() -> None:
-    """B1, B2 and B3 are already distinct codes, and a plain B alongside them
-    is ordinary draughting rather than a fault."""
+    """B1, B2 and B3 are already distinct codes, so three bedrooms in a
+    three-bedroom flat is not a fault. B is the bathroom, and one of those
+    alongside them is the normal arrangement."""
     zones = [_zone("apt-1", storey=9)]
     labels = [
         _label("B", 2.0, 2.0, 9),
@@ -460,6 +461,25 @@ def test_several_bedrooms_are_normal_and_not_flagged() -> None:
     match = match_rooms(zones, labels)
     assert match.duplicated == ()
     assert "should be unique" not in match.describe()
+
+
+def test_b_is_the_bathroom_not_a_bedroom() -> None:
+    """Read off a typical floor plan: the bedrooms are B1 3.0x3.6, B2 and B3
+    3.0x3.0 with beds drawn in, while B is 1.8x3.1 beside the ensuite with
+    sanitary fittings. The letter alone gets this backwards, and a bedroom is
+    habitable where a bathroom is not."""
+    from sun_study.archicad.rooms import ROOM_VOCABULARY
+
+    assert ROOM_VOCABULARY["B"] == "bathroom"
+    assert ROOM_VOCABULARY["B1"] == "bedroom"
+
+
+def test_two_bathrooms_in_one_flat_are_flagged() -> None:
+    """One bathroom per dwelling, beside its ensuite."""
+    zones = [_zone("apt-1", storey=9)]
+    labels = [_label("B", 2.0, 2.0, 9), _label("B", 6.0, 2.0, 9)]
+
+    assert match_rooms(zones, labels).duplicated == (("apt-1", "B", 2),)
 
 
 def test_a_tidy_apartment_reports_no_duplicates() -> None:

@@ -661,6 +661,12 @@ labels, 299 with a code, and the vocabulary is
 
     K 33 · S 32 · LY 29 · L/D 29 · EN 29 · B 29 · B1 28 · B2 28 · B3 26 · ST 18 · UT 9
 
+Three of those read backwards from the obvious guess, and all three were settled by
+looking at a typical floor plan rather than by inference: **`ST` is study, `S` is
+storage, and `B` is the bathroom** — the bedrooms are `B1`, `B2`, `B3`, drawn with beds
+in them, while `B` is a 1.8 × 3.1 room beside the ensuite. A letter is not a
+description, and a bedroom is habitable where a bathroom is not.
+
 `L/D` is living/dining, and ADG 4A-1 is about living rooms, so **that code is the only
 thing in the model that separates the room the standard cares about from the rooms it
 does not.** Neither the Zone nor the window carries it.

@@ -82,7 +82,12 @@ ROOM_VOCABULARY: dict[str, str] = {
     "K": "kitchen",
     "K/D": "kitchen/dining",
     "D": "dining",
-    "B": "bedroom",
+    # B is the *bathroom*, not a bedroom. Read off a typical floor plan: the
+    # bedrooms are B1 3.0x3.6, B2 and B3 3.0x3.0 with beds drawn in, while B
+    # is 1.8x3.1 beside the ensuite with sanitary fittings. Guessing from the
+    # letter alone gets this backwards, and it matters -- a bedroom is
+    # habitable and a bathroom is not.
+    "B": "bathroom",
     "B1": "bedroom",
     "B2": "bedroom",
     "B3": "bedroom",
@@ -507,10 +512,13 @@ def match_rooms(
     )
 
 
-#: Rooms a flat has exactly one of. Bedrooms are absent on purpose -- B1, B2
-#: and B3 are already distinct codes, and a plain ``B`` alongside them is
-#: normal draughting rather than a fault.
-UNIQUE_ROOM_CODES = frozenset({"L/D", "L", "LIV", "LIVING", "LD", "L/K/D", "K", "K/D", "LY", "EN"})
+#: Rooms a flat has exactly one of, so two of any of them means the zone spans
+#: more than one dwelling. Bedrooms are absent on purpose: B1, B2 and B3 are
+#: already distinct codes. ``B`` is here because it is the *bathroom* -- see
+#: the note in ``ROOM_VOCABULARY`` -- and a flat has one, beside its ensuite.
+UNIQUE_ROOM_CODES = frozenset(
+    {"L/D", "L", "LIV", "LIVING", "LD", "L/K/D", "K", "K/D", "LY", "EN", "B"}
+)
 
 
 def _duplicates(found: dict[str, list[RoomLabel]]) -> tuple[tuple[str, str, int], ...]:
