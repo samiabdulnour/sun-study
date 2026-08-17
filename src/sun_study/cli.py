@@ -962,6 +962,18 @@ def archicad_rooms(
         list[str] | None,
         typer.Option("--zone-layer", help="Archicad layer whose zones are the apartments."),
     ] = None,
+    zone_name: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--zone-name",
+            help=(
+                "Only zones with this name. Repeatable. A layer can mix "
+                "dwellings and balconies -- one project has 15 units and 20 "
+                "balconies together on '06 | Zone.Units', told apart only by "
+                "name -- and assessing a balcony as an apartment is silent."
+            ),
+        ),
+    ] = None,
     living: Annotated[
         list[str] | None,
         typer.Option(
@@ -1006,10 +1018,13 @@ def archicad_rooms(
             found = tuple(
                 zone for zone in found if layer_matches(layer_of(zone, names), zone_layer)
             )
+        if zone_name:
+            wanted = {entry.strip().casefold() for entry in zone_name}
+            found = tuple(zone for zone in found if zone.name.strip().casefold() in wanted)
         if not found:
             typer.secho(
                 "No apartment zones. Pass --zone-layer, and run 'archicad-info' "
-                "to see which layers carry zones.",
+                "to see which layers carry zones and what the zones on them are called.",
                 fg=typer.colors.RED,
                 err=True,
             )

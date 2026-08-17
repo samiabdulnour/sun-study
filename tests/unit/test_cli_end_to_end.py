@@ -766,3 +766,28 @@ def test_a_layer_listing_quotes_the_names_it_prints() -> None:
         _report_zone_layers(connection, _zones_on(1, 3))
 
     assert "'06 | Zone.Units '" in typer.testing.CliRunner().invoke(app, []).output
+
+
+def test_zones_can_be_narrowed_by_name_as_well_as_layer() -> None:
+    """A layer mixes dwellings and balconies. On one project '06 | Zone.Units'
+    holds 15 units and 20 balconies, told apart only by name, and assessing a
+    balcony as an apartment is silent -- it just has no living room."""
+    from sun_study.archicad.read import ArchicadZone
+
+    zones = [
+        ArchicadZone(guid="u1", name="G08", number="", layer_index=1),
+        ArchicadZone(guid="b1", name="BY", number="", layer_index=1),
+        ArchicadZone(guid="b2", name="BY", number="", layer_index=1),
+    ]
+    wanted = {"g08"}
+    kept = [zone for zone in zones if zone.name.strip().casefold() in wanted]
+
+    assert [zone.guid for zone in kept] == ["u1"]
+
+
+def test_the_rooms_command_takes_a_zone_name_filter() -> None:
+    import inspect
+
+    from sun_study.cli import archicad_rooms
+
+    assert "zone_name" in inspect.signature(archicad_rooms).parameters
