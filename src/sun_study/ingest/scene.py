@@ -122,6 +122,17 @@ class SceneConfig:
     changes the denominator of the compliance percentage without looking wrong.
     """
 
+    apartment_zone_names: tuple[str, ...] = ()
+    """Only zones with these names are apartments, on top of the layer filter.
+
+    A layer is not always enough. One real project keeps 15 dwellings and 20
+    balconies together on ``06 | Zone.Units``, told apart only by name --
+    ``G08`` against ``BY`` -- and a balcony counted as an apartment is silent:
+    it simply has no living room, so it reads as a flat that failed rather
+    than as one that does not exist. Twenty of those in a denominator of
+    thirty-five halves the compliance percentage.
+    """
+
     open_space_zone_layers: tuple[str, ...] = ()
     """Zones on these Archicad layers are private open space.
 
@@ -185,6 +196,8 @@ class SceneConfig:
             if self.apartment_zone_layers
             else ""
         )
+        if self.apartment_zone_names:
+            zones += f"named {list(self.apartment_zone_names)} | "
         context = f"context layers {list(self.context_layers)} | " if self.context_layers else ""
         return (
             f"timezone {self.timezone} | living rooms matched by [{rooms}] | "
@@ -520,6 +533,22 @@ def _openings_per_apartment(
     return dict(sorted(histogram.items()))
 
 
+def _named_one_of(element: IfcElement, names: Sequence[str]) -> bool:
+    """Whether a zone carries one of the named Zone names.
+
+    Empty means no filter, so the common case is unaffected. Archicad writes
+    the Zone name into ``LongName`` and the apartment identifier into ``Name``,
+    and both are checked for the same reason ``_is_living_room`` checks both:
+    which one holds what varies by translator, and matching neither reads as a
+    building with no apartments rather than as a filter that missed.
+    """
+    if not names:
+        return True
+    wanted = {" ".join(entry.split()).casefold() for entry in names}
+    candidates = (element.name, getattr(element, "long_name", "") or "")
+    return any(" ".join(value.split()).casefold() in wanted for value in candidates if value)
+
+
 def _on_layer(element: IfcElement, layers: Sequence[str]) -> bool:
     """Whether an element sits on one of the named Archicad layers.
 
@@ -631,8 +660,14 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         for space in all_spaces
         if space.global_id not in open_space_ids
         and (not config.apartment_zone_layers or _on_layer(space, config.apartment_zone_layers))
+        and _named_one_of(space, config.apartment_zone_names)
     )
     _require_matches("apartment zone layers", spaces, config.apartment_zone_layers, model)
+    if config.apartment_zone_names and not spaces:
+        raise SceneConfigError(
+            f"No zones are named any of {list(config.apartment_zone_names)}. "
+            f"Run 'sun-study archicad-info' to see the zone names on each layer."
+        )
     _require_matches(
         "open space zone layers", open_space_zones, config.open_space_zone_layers, model
     )

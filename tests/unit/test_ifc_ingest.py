@@ -927,3 +927,37 @@ def test_apartments_with_no_openings_are_not_counted_in_the_spread() -> None:
     histogram = scene.provenance["openings_per_apartment"]
     assert isinstance(histogram, dict)
     assert 0 not in histogram
+
+
+def test_apartments_can_be_narrowed_by_zone_name(model: Any) -> None:
+    """A layer mixes dwellings and balconies. One project keeps 15 units named
+    G08 and 20 balconies named BY together on '06 | Zone.Units', and a balcony
+    counted as an apartment is silent -- it simply has no living room, so it
+    reads as a flat that failed rather than one that does not exist. Twenty of
+    those in a denominator of thirty-five halves the percentage."""
+    from sun_study.ingest.scene import SceneConfig, build_scene
+
+    everything = build_scene(model, SceneConfig(timezone="Australia/Sydney"))
+    assert everything.provenance["spaces_total"] == 4
+
+    # The fixture's zones carry LongName "Living Room" and Name "Apartment L..".
+    narrowed = build_scene(
+        model,
+        SceneConfig(timezone="Australia/Sydney", apartment_zone_names=("Apartment L00-A",)),
+    )
+    assert narrowed.provenance["spaces_total"] == 1
+
+
+def test_a_zone_name_filter_matching_nothing_stops_the_run(model: Any) -> None:
+    """Silently selecting zero apartments reads as a building with none."""
+    from sun_study.ingest.scene import SceneConfig, SceneConfigError, build_scene
+
+    with pytest.raises(SceneConfigError, match="No zones are named"):
+        build_scene(model, SceneConfig(timezone="Australia/Sydney", apartment_zone_names=("BY",)))
+
+
+def test_no_zone_name_filter_leaves_every_apartment(model: Any) -> None:
+    from sun_study.ingest.scene import SceneConfig, build_scene
+
+    scene = build_scene(model, SceneConfig(timezone="Australia/Sydney", apartment_zone_names=()))
+    assert scene.provenance["spaces_total"] == 4

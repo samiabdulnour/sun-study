@@ -198,6 +198,19 @@ def run(
             help="Archicad layer whose zones are the apartments. Repeatable.",
         ),
     ] = None,
+    apartment_zone_name: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--apartment-zone-name",
+            help=(
+                "Only zones with this name are apartments. Repeatable. Needed "
+                "where a layer mixes dwellings and balconies -- one project has "
+                "15 units named G08 and 20 balconies named BY together on "
+                "'06 | Zone.Units', and a balcony counted as an apartment just "
+                "looks like a flat with no living room."
+            ),
+        ),
+    ] = None,
     open_space_zone_layer: Annotated[
         list[str] | None,
         typer.Option(
@@ -233,6 +246,7 @@ def run(
         livable_suffix=livable_suffix,
         balcony=balcony,
         apartment_zone_layer=apartment_zone_layer,
+        apartment_zone_name=apartment_zone_name,
         open_space_zone_layer=open_space_zone_layer,
         grid=grid,
         offset=offset,
@@ -432,6 +446,7 @@ def scene_config(
     livable_suffix: str | None = None,
     balcony: list[str] | None = None,
     apartment_zone_layer: list[str] | None = None,
+    apartment_zone_name: list[str] | None = None,
     open_space_zone_layer: list[str] | None = None,
     grid: float = 0.2,
     offset: float = 0.05,
@@ -1648,6 +1663,19 @@ def archicad_run(
             help="Archicad layer whose zones are the apartments. Repeatable.",
         ),
     ] = None,
+    apartment_zone_name: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--apartment-zone-name",
+            help=(
+                "Only zones with this name are apartments. Repeatable. Needed "
+                "where a layer mixes dwellings and balconies -- one project has "
+                "15 units named G08 and 20 balconies named BY together on "
+                "'06 | Zone.Units', and a balcony counted as an apartment just "
+                "looks like a flat with no living room."
+            ),
+        ),
+    ] = None,
     open_space_zone_layer: Annotated[
         list[str] | None,
         typer.Option(
@@ -1744,6 +1772,7 @@ def archicad_run(
         livable_suffix=livable_suffix,
         balcony=balcony,
         apartment_zone_layer=apartment_zone_layer,
+        apartment_zone_name=apartment_zone_name,
         open_space_zone_layer=open_space_zone_layer,
         grid=grid,
         offset=offset,
