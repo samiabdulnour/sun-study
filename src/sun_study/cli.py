@@ -940,6 +940,17 @@ def archicad_objects(
         int,
         typer.Option("--sample", help="How many matching objects to dump parameters for."),
     ] = 3,
+    parameter: Annotated[
+        str | None,
+        typer.Option(
+            "--parameter",
+            help=(
+                "Read this one GDL parameter across every matching object and "
+                "report its values and the storeys they sit on. This is what "
+                "says whether the objects are placed rooms or hotlink masters."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """List the project's library objects, and open a few to see what they carry.
 
@@ -980,10 +991,54 @@ def archicad_objects(
             typer.secho(f"Nothing matches {match!r}.", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
 
-        _report_objects(connection, hits, names, sample=sample)
+        _report_objects(connection, hits, names, sample=sample, parameter=parameter)
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
+
+
+def _report_parameter(
+    connection: ArchicadConnection, hits: Sequence[Any], name: str, *, cap: int = 2000
+) -> None:
+    """Every value of one named parameter, and where those objects sit.
+
+    The decisive question about room labels: whether the placed instances are
+    reachable at all, or whether only the hotlink *masters* carry them. If
+    every label sits on a storey the apartments are not on, matching a room to
+    an apartment by position cannot work and the join has to go through the
+    module instead.
+    """
+    if len(hits) > cap:
+        typer.secho(
+            f"  reading {name!r} for the first {cap} of {len(hits)} objects",
+            fg=typer.colors.YELLOW,
+        )
+    opened = gdl_parameters(connection, hits[:cap])
+
+    values = collections.Counter(
+        (item.parameter(name) or "").strip() or "(empty)" for item in opened
+    )
+    named = [item for item in opened if (item.parameter(name) or "").strip()]
+
+    typer.echo("")
+    typer.secho(f"{name!r}: {len(named)} of {len(opened)} carry a value", bold=True)
+    for value, how_many in values.most_common(25):
+        typer.echo(f"    {how_many:>5}  {value}")
+    if len(values) > 25:
+        typer.echo(f"    ... and {len(values) - 25} more distinct values")
+
+    if not named:
+        typer.secho(
+            f"  Nothing carries {name!r}. Either the parameter is named "
+            f"differently on this library part, or these are placeholders.",
+            fg=typer.colors.YELLOW,
+        )
+        return
+
+    storeys = collections.Counter(item.storey_index for item in named)
+    typer.echo(f"  those {len(named)} sit on {len(storeys)} storeys:")
+    for storey, how_many in sorted(storeys.items(), key=lambda pair: (pair[0] is None, pair[0])):
+        typer.echo(f"    {how_many:>5}  storey {storey}")
 
 
 def _report_objects(
@@ -992,6 +1047,7 @@ def _report_objects(
     names: dict[int, str],
     *,
     sample: int,
+    parameter: str | None = None,
 ) -> None:
     """Where the matching objects sit, and what one of them holds."""
     typer.echo("")
@@ -1018,6 +1074,17 @@ def _report_objects(
             "above the building. Those are not placed rooms.",
             fg=typer.colors.YELLOW,
         )
+
+    # Storeys, not just heights. A label on a storey no apartment sits on
+    # cannot be matched to an apartment by position, and that is the whole
+    # question about whether these are placed rooms or hotlink masters.
+    storeys = collections.Counter(item.storey_index for item in hits)
+    shown = sorted(storeys.items(), key=lambda pair: -pair[1])[:8]
+    listed = ", ".join(f"{storey} x{how_many}" for storey, how_many in shown)
+    typer.echo(f"    on {len(storeys)} storeys: {listed}" + (" ..." if len(storeys) > 8 else ""))
+
+    if parameter:
+        _report_parameter(connection, hits, parameter)
 
     for item in gdl_parameters(connection, hits[:sample]):
         typer.echo("")
