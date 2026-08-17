@@ -217,14 +217,14 @@ def test_living_dining_is_a_living_room_and_a_bedroom_is_not() -> None:
     assert not is_living_room("EN")
 
 
-def test_an_ambiguous_code_is_not_guessed_at() -> None:
-    """'S' could be study, store or sitting room, and only two of those would
-    matter to ADG 4A-1. Guessing moves the headline percentage on a coin toss."""
+def test_an_unclassified_code_is_not_guessed_at() -> None:
+    """Nobody has said what BP is, so nothing pretends to know. Guessing a
+    room type either way moves the headline percentage on a coin toss."""
     from sun_study.archicad.rooms import ROOM_VOCABULARY, is_living_room
 
-    assert "S" not in ROOM_VOCABULARY
-    assert not is_living_room("S")
-    assert is_living_room("S", extra=["S"]), "but a project can say so explicitly"
+    assert "BP" not in ROOM_VOCABULARY
+    assert not is_living_room("BP")
+    assert is_living_room("BP", extra=["BP"]), "but a project can say so explicitly"
 
 
 def test_an_extra_code_adds_to_the_built_in_set_rather_than_replacing_it() -> None:
@@ -243,12 +243,12 @@ def test_unrecognised_codes_are_reported_not_ignored() -> None:
     found = unknown_codes(
         [
             _label("L/D", 1.0, 1.0, 9),
-            _label("S", 2.0, 1.0, 9),
-            _label("S", 3.0, 1.0, 9),
-            _label("BP", 4.0, 1.0, 9),
+            _label("BP", 2.0, 1.0, 9),
+            _label("BP", 3.0, 1.0, 9),
+            _label("XYZ", 4.0, 1.0, 9),
         ]
     )
-    assert found == ("S", "BP"), "most common first, and known codes are absent"
+    assert found == ("BP", "XYZ"), "most common first, and known codes are absent"
 
 
 # -- catching a room type that never reaches an apartment ------------------
@@ -283,3 +283,59 @@ def test_a_code_present_in_both_places_is_not_called_out() -> None:
     match = match_rooms(zones, labels)
     assert match.missing_kinds() == ()
     assert "appear ONLY among those" not in match.describe()
+
+
+def test_study_and_storage_are_told_apart() -> None:
+    """Confirmed by the practice, and the obvious reading is backwards: ST is
+    study and S is storage. A study is habitable, storage is not."""
+    from sun_study.archicad.rooms import ROOM_VOCABULARY, is_living_room
+
+    assert ROOM_VOCABULARY["ST"] == "study"
+    assert ROOM_VOCABULARY["S"] == "storage"
+    assert not is_living_room("ST"), "habitable, but ADG 4A-1 is about living rooms"
+    assert not is_living_room("S")
+
+
+# -- master, or a placed room the join lost? -------------------------------
+
+
+def test_a_miss_on_a_storey_with_no_apartments_is_just_a_master() -> None:
+    """Landing nowhere is what a parked master is supposed to do."""
+    zones = [_zone("apt-1", storey=9)]
+    match = match_rooms(zones, [_label("L/D", 2.0, 2.0, storey=38)])
+
+    assert len(match.unplaced) == 1
+    assert match.missed_on_live_storeys == ()
+    assert "sit on storeys that DO carry apartments" not in match.describe()
+
+
+def test_a_miss_on_a_storey_that_has_apartments_is_a_lost_room() -> None:
+    """The distinction that matters. A label on an apartment storey that still
+    matches no outline is a placed room falling outside its zone -- missing
+    from the assessment rather than correctly excluded from it."""
+    zones = [_zone("apt-1", storey=9)]
+    outside_the_outline = _label("L/D", 50.0, 50.0, storey=9)
+    master = _label("L/D", 2.0, 2.0, storey=38)
+
+    match = match_rooms(zones, [outside_the_outline, master])
+
+    assert len(match.unplaced) == 2, "both missed"
+    assert [room.guid for room in match.missed_on_live_storeys] == [outside_the_outline.guid]
+    described = match.describe()
+    assert "sit on storeys that DO carry apartments" in described
+    assert "L/D x1" in described
+
+
+def test_the_lost_rooms_are_reported_by_code() -> None:
+    """Which room type is going missing is the whole diagnostic: all the small
+    rooms matching and every living room missing points somewhere specific."""
+    zones = [_zone("apt-1", storey=9)]
+    labels = [
+        _label("B1", 2.0, 2.0, storey=9),
+        _label("L/D", 50.0, 50.0, storey=9),
+        _label("L/D", 60.0, 50.0, storey=9),
+    ]
+
+    match = match_rooms(zones, labels)
+    assert "L/D x2" in match.describe()
+    assert match.codes() == {"B1": 1}, "only the matched rooms count as found"

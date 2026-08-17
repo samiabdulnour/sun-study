@@ -57,10 +57,16 @@ ROOM_NAME_PARAMETER = "room_txt"
 #: Every code observed there is here, so an unrecognised one means the
 #: vocabulary has grown and is worth looking at -- see ``unknown_codes``.
 #:
-#: Deliberately *not* exhaustive by guesswork. ``S`` and ``BP`` are left
-#: unmapped because they are genuinely ambiguous: ``S`` could be study, store
-#: or sitting room, and only the first and last would matter to ADG 4A-1.
-#: Guessing either way moves the headline percentage on a coin toss.
+#: ``ST`` is **study** and ``S`` is **storage**, confirmed by the practice.
+#: Worth stating because the obvious reading is the other way round -- an
+#: earlier version of this table had ``ST`` as "store" -- and the two differ in
+#: kind: a study is habitable, storage is not.
+#:
+#: Neither is a living room, so for ADG 4A-1 the correction changes nothing
+#: today. It would matter the moment a ruleset asks about habitable rooms.
+#:
+#: ``BP`` is still unmapped, because nobody has said what it is. An
+#: unrecognised code is reported rather than guessed at.
 ROOM_VOCABULARY: dict[str, str] = {
     "L/D": "living/dining",
     "L": "living",
@@ -81,7 +87,8 @@ ROOM_VOCABULARY: dict[str, str] = {
     "BATH": "bathroom",
     "WC": "toilet",
     "LY": "laundry",
-    "ST": "store",
+    "ST": "study",
+    "S": "storage",
     "UT": "utility",
     "MULTI ROOM": "multi-purpose",
     "BALC": "balcony",
@@ -202,6 +209,15 @@ class RoomMatch:
     """Labels inside no zone -- hotlink masters, or rooms outside a unit."""
     zones_without_rooms: tuple[str, ...]
     """Apartments that contain no room label at all."""
+    missed_on_live_storeys: tuple[RoomLabel, ...] = ()
+    """Unplaced labels sharing a storey with apartments.
+
+    The distinction that matters. A label on a storey with no apartments on it
+    is a hotlink master, parked above the building, and belongs nowhere. A
+    label on a storey that *does* carry apartments is a placed room that fell
+    outside every outline -- a geometry problem, and a room silently missing
+    from the assessment.
+    """
 
     @property
     def matched(self) -> int:
@@ -259,6 +275,17 @@ class RoomMatch:
                     f"A code the project has and no apartment contains means the join "
                     f"is missing a whole category of room, not just the masters."
                 )
+        if self.missed_on_live_storeys:
+            mix = ", ".join(
+                f"{code} x{count}"
+                for code, count in list(_tally(self.missed_on_live_storeys).items())[:10]
+            )
+            lines.append(
+                f"  {len(self.missed_on_live_storeys)} of them sit on storeys that DO "
+                f"carry apartments: {mix}. Those are not masters -- they are placed "
+                f"rooms falling outside every zone outline, so they are missing from "
+                f"the assessment rather than correctly excluded from it."
+            )
         if self.zones_without_rooms:
             lines.append(
                 f"  {len(self.zones_without_rooms)} apartments contain no room label, "
@@ -291,10 +318,16 @@ def match_rooms(zones: Sequence[ArchicadZone], labels: Sequence[RoomLabel]) -> R
         else:
             found.setdefault(home.guid, []).append(label)
 
+    # Separating the two kinds of miss is the whole diagnostic. Landing on a
+    # storey with no apartments is what a master is *supposed* to do; landing
+    # on a storey that has apartments and still matching none of them is a
+    # placed room the join lost.
+    live = {zone.storey_index for zone in zones}
     return RoomMatch(
         by_zone={guid: tuple(rooms) for guid, rooms in found.items()},
         unplaced=tuple(unplaced),
         zones_without_rooms=tuple(zone.guid for zone in zones if zone.guid not in found),
+        missed_on_live_storeys=tuple(label for label in unplaced if label.storey_index in live),
     )
 
 

@@ -665,6 +665,15 @@ labels, 299 with a code, and the vocabulary is
 thing in the model that separates the room the standard cares about from the rooms it
 does not.** Neither the Zone nor the window carries it.
 
+The vocabulary is built in rather than configured, because it was measured. `--living`
+only *adds* codes; it cannot remove one, since a caller able to replace the measured set
+would silence it invisibly. Two of the codes read backwards from the obvious guess and
+were confirmed by the practice: **`ST` is study, `S` is storage.** Neither is a living
+room, so ADG 4A-1 is unaffected today — it would matter the moment a ruleset asked about
+habitable rooms. `BP` remains unclassified because nobody has said what it is, and every
+unrecognised code is printed each run: an unclassified living room is simply not
+assessed, and no other line of output would say so.
+
 The parameter name was found rather than guessed. `archicad-objects --parameter` exists
 for exactly that: parameter names belong to whoever authored the library part, and every
 office library names them differently.
