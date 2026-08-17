@@ -54,6 +54,7 @@ from sun_study.archicad.read import (
 )
 from sun_study.archicad.read import zones as read_zones
 from sun_study.archicad.rooms import (
+    DEFAULT_TOLERANCE_M,
     LIVING_ROOM_CODES,
     RoomMatch,
     is_living_room,
@@ -949,6 +950,18 @@ def archicad_rooms(
             ),
         ),
     ] = None,
+    tolerance: Annotated[
+        float,
+        typer.Option(
+            "--tolerance",
+            help=(
+                "How far outside an apartment a room label may sit and still "
+                "belong to it, in metres. A label is annotation and gets dragged "
+                "to wherever it reads well. 0 requires strict containment; every "
+                "use of the tolerance is reported with its distance."
+            ),
+        ),
+    ] = DEFAULT_TOLERANCE_M,
 ) -> None:
     """Match room labels to apartments, and say whether that join works.
 
@@ -983,7 +996,7 @@ def archicad_rooms(
         labels = room_labels(gdl_parameters(connection, library_objects(connection)))
         typer.echo(f"  {len(found)} apartments, {len(labels)} named room labels")
 
-        match = match_rooms(found, labels)
+        match = match_rooms(found, labels, tolerance_m=tolerance)
         typer.secho(
             match.describe(),
             fg=typer.colors.GREEN if match.matched else typer.colors.RED,

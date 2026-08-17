@@ -25,18 +25,21 @@ what tells the copy from the original.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from sun_study.archicad.read import ArchicadZone, LibraryObject
 
 __all__ = [
+    "DEFAULT_TOLERANCE_M",
     "LIVING_ROOM_CODES",
     "ROOM_LABEL_PART",
     "ROOM_NAME_PARAMETER",
     "ROOM_VOCABULARY",
     "RoomLabel",
     "RoomMatch",
+    "distance_to_polygon",
     "is_living_room",
     "match_rooms",
     "point_in_polygon",
@@ -176,6 +179,60 @@ def room_labels(
     return tuple(found)
 
 
+#: How far outside a zone outline a room label may sit and still belong to it.
+#:
+#: Not a fudge factor -- a measured one. On a real project 70 placed labels
+#: fell outside every outline, among them every one of the 14 living rooms on
+#: apartment storeys, while bedrooms and ensuites in the same units matched.
+#: A label is annotation: it is dragged to wherever it reads well on the
+#: drawing, which for the biggest room in a plan is often past the wall the
+#: zone stops at. Requiring strict containment therefore loses precisely the
+#: rooms ADG 4A-1 is about.
+#:
+#: 1.5 m is under half the width of a small bedroom, so a label cannot reach
+#: the far side of a neighbouring room, and every use of the tolerance is
+#: reported with its distance so a person can see what it did.
+DEFAULT_TOLERANCE_M = 1.5
+
+
+def distance_to_polygon(
+    point: tuple[float, float], polygon: Sequence[tuple[float, float]]
+) -> float:
+    """How far a point lies outside a polygon. Zero when it is inside.
+
+    Used to attach a label to the apartment it most plausibly belongs to when
+    it sits outside them all. The distance is to the nearest *edge*, so an
+    apartment wrapping a lift core does not appear closer than it is.
+    """
+    if len(polygon) < 3:
+        return float("inf")
+    if point_in_polygon(point, polygon):
+        return 0.0
+
+    x, y = point
+    best = float("inf")
+    previous = polygon[-1]
+    for current in polygon:
+        best = min(best, _distance_to_segment(x, y, previous, current))
+        previous = current
+    return best
+
+
+def _distance_to_segment(
+    x: float, y: float, start: tuple[float, float], end: tuple[float, float]
+) -> float:
+    start_x, start_y = start
+    end_x, end_y = end
+    run_x, run_y = end_x - start_x, end_y - start_y
+    length_squared = run_x * run_x + run_y * run_y
+    if length_squared == 0.0:
+        return math.hypot(x - start_x, y - start_y)
+    # Clamped so the nearest point stays on the segment rather than on the
+    # infinite line through it.
+    along = max(0.0, min(1.0, ((x - start_x) * run_x + (y - start_y) * run_y) / length_squared))
+    return math.hypot(x - (start_x + along * run_x), y - (start_y + along * run_y))
+
+
 def point_in_polygon(point: tuple[float, float], polygon: Sequence[tuple[float, float]]) -> bool:
     """Ray casting, counting crossings to the right of the point.
 
@@ -218,6 +275,15 @@ class RoomMatch:
     outside every outline -- a geometry problem, and a room silently missing
     from the assessment.
     """
+    reached_for: tuple[tuple[RoomLabel, float], ...] = ()
+    """Labels matched by the tolerance rather than by containment, and by how far.
+
+    Every one of these is a judgement call the tool made on a person's behalf,
+    so all of them are reported. A handful at a few centimetres is annotation
+    sitting on a wall line; a lot of them near the limit means the tolerance is
+    papering over a mismatch between the zones and the rooms.
+    """
+    tolerance_m: float = 0.0
 
     @property
     def matched(self) -> int:
@@ -255,6 +321,19 @@ class RoomMatch:
         if self.by_zone:
             mix = ", ".join(f"{code} x{count}" for code, count in list(self.codes().items())[:12])
             lines.append(f"  rooms found: {mix}")
+        if self.reached_for:
+            gaps = sorted(gap for _, gap in self.reached_for)
+            mix = ", ".join(
+                f"{code} x{count}"
+                for code, count in list(_tally(label for label, _ in self.reached_for).items())[:8]
+            )
+            lines.append(
+                f"  {len(self.reached_for)} of those sat outside their apartment and were "
+                f"matched within the {self.tolerance_m:g} m tolerance: {mix}"
+            )
+            lines.append(
+                f"    by {gaps[0]:.2f} m to {gaps[-1]:.2f} m, median {gaps[len(gaps) // 2]:.2f} m"
+            )
             per = sorted(len(rooms) for rooms in self.by_zone.values())
             lines.append(
                 f"  rooms per apartment: min {per[0]}, median {per[len(per) // 2]}, max {per[-1]}"
@@ -294,12 +373,23 @@ class RoomMatch:
         return "\n".join(lines)
 
 
-def match_rooms(zones: Sequence[ArchicadZone], labels: Sequence[RoomLabel]) -> RoomMatch:
-    """Put each room label in the apartment whose outline contains it.
+def match_rooms(
+    zones: Sequence[ArchicadZone],
+    labels: Sequence[RoomLabel],
+    *,
+    tolerance_m: float = DEFAULT_TOLERANCE_M,
+) -> RoomMatch:
+    """Put each room label in the apartment it belongs to.
 
-    Both the point-in-polygon test *and* the storey have to agree. A hotlink
-    master's label shares its X and Y with the placed instance, so position
-    alone matches it to a real apartment -- confidently, and wrongly.
+    Containment first, then the nearest apartment within ``tolerance_m``. Both
+    steps require the same storey. A hotlink master's label shares its X and Y
+    with the placed instance it came from, so position alone matches it to a
+    real apartment -- confidently, and wrongly.
+
+    The tolerance exists because a label is annotation, dragged to wherever it
+    reads well on the drawing. Strict containment lost every living room on a
+    real project while matching the bedrooms around them. Set ``tolerance_m``
+    to zero to require containment.
     """
     by_storey: dict[int | None, list[ArchicadZone]] = {}
     for zone in zones:
@@ -307,16 +397,23 @@ def match_rooms(zones: Sequence[ArchicadZone], labels: Sequence[RoomLabel]) -> R
 
     found: dict[str, list[RoomLabel]] = {}
     unplaced: list[RoomLabel] = []
+    reached: list[tuple[RoomLabel, float]] = []
     for label in labels:
         candidates = by_storey.get(label.storey_index, ())
-        home = next(
-            (zone for zone in candidates if point_in_polygon(label.point, zone.outline)),
-            None,
-        )
-        if home is None:
+        if not candidates:
             unplaced.append(label)
-        else:
-            found.setdefault(home.guid, []).append(label)
+            continue
+
+        home, gap = min(
+            ((zone, distance_to_polygon(label.point, zone.outline)) for zone in candidates),
+            key=lambda pair: pair[1],
+        )
+        if gap > tolerance_m:
+            unplaced.append(label)
+            continue
+        if gap > 0.0:
+            reached.append((label, gap))
+        found.setdefault(home.guid, []).append(label)
 
     # Separating the two kinds of miss is the whole diagnostic. Landing on a
     # storey with no apartments is what a master is *supposed* to do; landing
@@ -328,6 +425,8 @@ def match_rooms(zones: Sequence[ArchicadZone], labels: Sequence[RoomLabel]) -> R
         unplaced=tuple(unplaced),
         zones_without_rooms=tuple(zone.guid for zone in zones if zone.guid not in found),
         missed_on_live_storeys=tuple(label for label in unplaced if label.storey_index in live),
+        reached_for=tuple(reached),
+        tolerance_m=tolerance_m,
     )
 
 

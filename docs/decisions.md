@@ -682,6 +682,23 @@ office library names them differently.
 annotation: nothing in the model relates it to a Zone. So a label belongs to the
 apartment whose outline contains its point — *on the same storey*.
 
+**Containment alone is too strict, and the failure was one-sided.** On the reference
+project, strict containment matched 75 rooms into 10 of 10 apartments — every ensuite,
+bedroom and kitchen — and **not one of the 14 living rooms on those same storeys.** That
+is not a coincidence: a label is dragged to wherever it reads well on the drawing, and
+for the biggest room in a plan that is often past the wall the zone stops at. Requiring
+containment therefore lost precisely the rooms ADG 4A-1 is about, while looking like it
+had worked.
+
+So a label outside every outline is attached to the *nearest* apartment on its storey,
+within `DEFAULT_TOLERANCE_M` = 1.5 m. That is under half the width of a small bedroom, so
+a label cannot reach past its neighbour, and the storey test still holds — a master
+directly above an apartment is 0 m away in plan and must never match. Every use of the
+tolerance is reported with its distance, because each one is a judgement made on a
+person's behalf: a handful at a few centimetres is annotation on a wall line, while many
+near the limit means the zones and the rooms disagree and the tolerance is hiding it.
+`--tolerance 0` restores strict containment.
+
 The storey test is what makes this safe. These labels live inside hotlinked unit-type
 modules whose masters are parked above the building; the reference project has three such
 sets, at roughly 64 m, 158 m and 280 m, on storeys 9–14, 38–39 and 71–76. **A master's

@@ -7,6 +7,8 @@ hotlink masters at 64 m, 158 m and 280 m are the reason the storey test exists.
 
 from __future__ import annotations
 
+import pytest
+
 from sun_study.archicad.read import ArchicadZone, LibraryObject
 from sun_study.archicad.rooms import (
     RoomLabel,
@@ -339,3 +341,88 @@ def test_the_lost_rooms_are_reported_by_code() -> None:
     match = match_rooms(zones, labels)
     assert "L/D x2" in match.describe()
     assert match.codes() == {"B1": 1}, "only the matched rooms count as found"
+
+
+# -- the tolerance ---------------------------------------------------------
+
+
+def test_distance_is_zero_inside_and_the_gap_outside() -> None:
+    from sun_study.archicad.rooms import distance_to_polygon
+
+    assert distance_to_polygon((5.0, 4.0), SQUARE) == 0.0
+    assert distance_to_polygon((12.0, 4.0), SQUARE) == pytest.approx(2.0)
+    assert distance_to_polygon((5.0, -3.0), SQUARE) == pytest.approx(3.0)
+    # Past a corner, so the nearest point is the vertex rather than an edge.
+    assert distance_to_polygon((13.0, 12.0), SQUARE) == pytest.approx(5.0)
+
+
+def test_distance_is_to_the_edge_not_the_centre() -> None:
+    """An apartment wrapping a lift core must not appear closer than it is."""
+    from sun_study.archicad.rooms import distance_to_polygon
+
+    ell = ((0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (4.0, 4.0), (4.0, 8.0), (0.0, 8.0))
+    assert distance_to_polygon((6.0, 5.0), ell) == pytest.approx(1.0), "1 m above the notch edge"
+
+
+def test_a_label_just_outside_is_matched_and_the_reach_is_reported() -> None:
+    """The bug this fixes: on a real project every living room on an apartment
+    storey fell outside its zone while the bedrooms around it matched."""
+    zones = [_zone("apt-1", storey=9)]
+    outside = _label("L/D", 10.4, 4.0, storey=9)
+
+    match = match_rooms(zones, [outside], tolerance_m=1.5)
+
+    assert [room.code for room in match.by_zone["apt-1"]] == ["L/D"]
+    assert match.unplaced == ()
+    assert len(match.reached_for) == 1
+    assert match.reached_for[0][1] == pytest.approx(0.4)
+    described = match.describe()
+    assert "matched within the 1.5 m tolerance" in described
+    assert "L/D x1" in described
+
+
+def test_a_label_beyond_the_tolerance_still_misses() -> None:
+    zones = [_zone("apt-1", storey=9)]
+    match = match_rooms(zones, [_label("L/D", 20.0, 4.0, storey=9)], tolerance_m=1.5)
+
+    assert match.by_zone == {}
+    assert len(match.unplaced) == 1
+
+
+def test_a_contained_label_is_not_counted_as_reached_for() -> None:
+    """Only the judgement calls are reported, or the report is noise."""
+    zones = [_zone("apt-1", storey=9)]
+    match = match_rooms(zones, [_label("L/D", 5.0, 4.0, storey=9)], tolerance_m=1.5)
+
+    assert match.matched == 1
+    assert match.reached_for == ()
+    assert "tolerance" not in match.describe()
+
+
+def test_the_tolerance_picks_the_nearest_apartment_not_the_first() -> None:
+    """Between two apartments, a label belongs to the one it is closest to."""
+    near = _zone("apt-near", storey=9, outline=((11.0, 0.0), (20.0, 0.0), (20.0, 8.0), (11.0, 8.0)))
+    far = _zone("apt-far", storey=9)
+    label = _label("L/D", 10.7, 4.0, storey=9)
+
+    match = match_rooms([far, near], [label], tolerance_m=1.5)
+
+    assert "apt-near" in match.by_zone, "0.3 m away, against 0.7 m for the other"
+    assert "apt-far" not in match.by_zone
+
+
+def test_zero_tolerance_requires_containment() -> None:
+    zones = [_zone("apt-1", storey=9)]
+    match = match_rooms(zones, [_label("L/D", 10.1, 4.0, storey=9)], tolerance_m=0.0)
+
+    assert match.by_zone == {}
+    assert len(match.missed_on_live_storeys) == 1
+
+
+def test_the_tolerance_never_reaches_across_a_storey() -> None:
+    """A master directly above an apartment is 0 m away in plan."""
+    zones = [_zone("apt-1", storey=9)]
+    match = match_rooms(zones, [_label("L/D", 5.0, 4.0, storey=38)], tolerance_m=1.5)
+
+    assert match.by_zone == {}
+    assert len(match.unplaced) == 1
