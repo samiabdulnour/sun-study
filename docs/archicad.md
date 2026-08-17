@@ -335,6 +335,11 @@ it reports just id, index and name, so reading any detail is always two calls.
 `GetPenTables` also accepts `fields`, which is worth using: each pen table carries 255
 pens, and finding out which of several tables is active should not pull all of them.
 
+**A modal dialog blocks the entire API.** Leave Object Settings — or any modal window —
+open in Archicad and every command fails with `Invalid program status` (code 4001), which
+reads like a fault in the tool rather than a window that needs closing. Archicad names the
+dialog in the message, so the tool keeps that and adds the fix.
+
 **A zone name is not an identifier.** One project holds 1341 zones, of which the eight
 sampled were all called `RESI` with no number. Collapsing failures by display name then
 reported seven refusing elements as "56 failures over 1 elements", and a list of six

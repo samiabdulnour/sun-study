@@ -224,6 +224,28 @@ def _project_name(probe: HttpTransport) -> str:
     return str(name) if isinstance(name, str) else ""
 
 
+#: Archicad refuses every API call while a modal dialog is open, and answers
+#: with this. It is the single most common way a run fails on a workstation
+#: somebody is also *using*: leave Object Settings open, and nothing works
+#: until it is closed. Worth its own message, because "Invalid program status"
+#: reads like a fault in the tool.
+BUSY_STATUS_CODE = 4001
+
+
+def _explain(command: str, error: dict[str, Any]) -> str:
+    """A failed official command, in words that name the fix where there is one."""
+    message = str(error.get("message", "no message"))
+    code = error.get("code", "none")
+    if code == BUSY_STATUS_CODE:
+        return (
+            f"Archicad is busy and refused the request: {message}\n"
+            f"Close the dialog in Archicad and run this again. Archicad blocks its "
+            f"whole API while a modal dialog is open, so nothing will work until "
+            f"then -- this is not a problem with the project or the tool."
+        )
+    return f"{command} failed: {message} (code {code})"
+
+
 def where_archicad_actually_is(
     tried: int, host: str = DEFAULT_HOST, ports: Iterable[int] = PORT_RANGE
 ) -> str:
@@ -261,10 +283,7 @@ class ArchicadConnection:
 
         if not response.get("succeeded", False):
             error = response.get("error") or {}
-            raise CommandFailedError(
-                f"{command} failed: {error.get('message', 'no message')} "
-                f"(code {error.get('code', 'none')})"
-            )
+            raise CommandFailedError(_explain(command, error))
         return response.get("result")
 
     def run_tapir(self, command: str, parameters: dict[str, Any] | None = None) -> Any:

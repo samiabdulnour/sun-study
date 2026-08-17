@@ -2538,3 +2538,44 @@ def test_a_hotlink_master_is_visible_by_its_height() -> None:
 def test_a_project_with_no_objects_is_not_an_error() -> None:
     connection, _ = connect({"GetElementsByType": {"elements": []}})
     assert library_objects(connection) == ()
+
+
+def test_an_open_modal_dialog_is_explained_rather_than_relayed() -> None:
+    """The most common way a run fails on a workstation somebody is also using.
+
+    Archicad blocks its entire API while a modal dialog is open and answers
+    "Invalid program status", which reads like a fault in the tool.
+    """
+
+    class Busy:
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "succeeded": False,
+                "error": {
+                    "code": 4001,
+                    "message": (
+                        "Invalid program status (there is an open modal dialog: "
+                        "Object Selection Settings)"
+                    ),
+                },
+            }
+
+    connection = ArchicadConnection(Busy())
+    with pytest.raises(CommandFailedError) as raised:
+        connection.run_official("API.GetAllClassificationSystems")
+
+    message = str(raised.value)
+    assert "Object Selection Settings" in message, "the dialog Archicad named is kept"
+    assert "Close the dialog in Archicad" in message
+    assert "not a problem with the project or the tool" in message
+
+
+def test_other_failures_keep_their_code_for_looking_up() -> None:
+    """Only 4001 has a known fix. Everything else needs its number."""
+
+    class Failing:
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"succeeded": False, "error": {"code": -2130312909, "message": "no access"}}
+
+    with pytest.raises(CommandFailedError, match=r"code -2130312909"):
+        ArchicadConnection(Failing()).run_official("API.GetAllClassificationSystems")
