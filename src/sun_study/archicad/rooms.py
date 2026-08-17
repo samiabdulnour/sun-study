@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sun_study.archicad.read import ArchicadZone, LibraryObject
 
@@ -329,6 +329,12 @@ class RoomMatch:
     papering over a mismatch between the zones and the rooms.
     """
     tolerance_m: float = 0.0
+    storey_of: dict[str, int | None] = field(default_factory=dict)
+    """Zone GUID -> its storey, so a problem zone can be found in Archicad.
+
+    A project where every zone carries the same name and no number gives a
+    reader a GUID, which locates nothing. A storey number opens the plan.
+    """
 
     @property
     def matched(self) -> int:
@@ -423,15 +429,23 @@ class RoomMatch:
                 f"and a run reading both measures some apartments twice."
             )
         if self.duplicated:
-            worst = sorted(self.duplicated, key=lambda item: -item[2])[:6]
-            mix = ", ".join(f"{code} x{count}" for _, code, count in worst)
-            affected = len({guid for guid, _, _ in self.duplicated})
+            affected = {guid for guid, _, _ in self.duplicated}
+            worst: dict[str, list[str]] = {}
+            for guid, code, count in sorted(self.duplicated, key=lambda item: -item[2]):
+                worst.setdefault(guid, []).append(f"{code} x{count}")
             lines.append(
-                f"  {affected} apartments hold more than one of a room that should be "
-                f"unique: {mix}. A flat has one living room and one kitchen, so those "
-                f"zones are covering more than one unit -- either the outline spans "
-                f"several flats, or the apartments are on a layer this run did not read."
+                f"  {len(affected)} apartments hold more than one of a room that should "
+                f"be unique. A flat has one living room and one kitchen, so those zones "
+                f"cover more than one dwelling -- the outline spans several flats, or "
+                f"some flats have no zone and their labels fall to a neighbour:"
             )
+            for guid, codes in list(worst.items())[:6]:
+                # Named by storey, because a project where every zone is called
+                # the same thing gives a GUID nobody can find in Archicad, while
+                # a storey number opens the right plan.
+                where = self.storey_of.get(guid)
+                place = f"storey {where}" if where is not None else "storey unknown"
+                lines.append(f"    {place}: {', '.join(codes[:6])}")
         return "\n".join(lines)
 
 
@@ -509,6 +523,7 @@ def match_rooms(
         tolerance_m=tolerance_m,
         inside_several=tuple(overlapped),
         duplicated=_duplicates(found),
+        storey_of={zone.guid: zone.storey_index for zone in zones},
     )
 
 

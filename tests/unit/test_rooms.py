@@ -586,3 +586,26 @@ def test_a_nearer_zone_still_beats_a_smaller_distant_one() -> None:
 
     match = match_rooms([far_small, near_big], [_label("K", 5.0, 4.0, storey=9)])
     assert "near" in match.by_zone
+
+
+def test_a_problem_zone_is_named_by_its_storey() -> None:
+    """A project where every zone is called the same thing and carries no
+    number gives a reader a GUID, which locates nothing in Archicad. A storey
+    number opens the right plan."""
+    zones = [_zone("apt-1", storey=7)]
+    labels = [_label("K", 2.0, 2.0, 7), _label("K", 6.0, 2.0, 7)]
+
+    described = match_rooms(zones, labels).describe()
+    assert "storey 7: K x2" in described
+
+
+def test_a_zone_with_no_storey_says_so_rather_than_guessing() -> None:
+    from sun_study.archicad.read import ArchicadZone
+
+    zone = ArchicadZone(guid="apt-1", name="RESI", number="", storey_index=None, outline=SQUARE)
+    labels = [
+        RoomLabel(guid="a", code="K", x=2.0, y=2.0, storey_index=None),
+        RoomLabel(guid="b", code="K", x=6.0, y=2.0, storey_index=None),
+    ]
+
+    assert "storey unknown: K x2" in match_rooms([zone], labels).describe()
