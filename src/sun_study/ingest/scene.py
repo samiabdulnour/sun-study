@@ -767,9 +767,8 @@ def _clip_to_radius(model: IfcModel, radius_m: float) -> TriangleMesh:
 
     kept = [
         element.mesh
-        for element in model.elements
-        if element.ifc_class != "IfcSpace"
-        and float(np.linalg.norm(element.centroid[:2] - subject[:2])) <= radius_m
+        for element in model.occluders()
+        if float(np.linalg.norm(element.centroid[:2] - subject[:2])) <= radius_m
     ]
     return TriangleMesh.concatenate(kept)
 
@@ -903,7 +902,7 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
 
     # IfcSpace is a void, never a solid; it would shade the building from
     # inside. Everything else occludes, subject and context alike.
-    solids = [element for element in model.elements if element.ifc_class != "IfcSpace"]
+    solids = model.occluders()
     subject = [element for element in solids if not _is_context(element, config)]
     context = [element for element in solids if _is_context(element, config)]
 

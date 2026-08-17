@@ -313,11 +313,17 @@ def test_facade_area_matches_hand_calculation() -> None:
 
     Walls 4 x (2*20*3 + 2*0.2*3) = 484.8, windows 4 x (2*2.4*1.8 + 2*0.2*1.8)
     = 37.44, balcony edges 4 x (2*3*0.25 + 2*2*0.25) = 10, slab edges
-    2 x (2*20*0.25 + 2*12*0.25) = 32. Total 564.24 m2.
+    2 x (2*20*0.25 + 2*12*0.25) = 32. That is 564.24 before the openings.
+
+    Each of the 4 window openings then cuts a 2.4 x 1.8 hole through a 0.2
+    wall: it removes the hole from both wall faces (-2 x 2.4 x 1.8 = -8.64)
+    and adds two upright jambs (+2 x 1.8 x 0.2 = +0.72). The head and sill are
+    horizontal, so they are not upright faces and do not count. Net -7.92 per
+    window, so 564.24 - 4 x 7.92 = 532.56 m2.
     """
     model = read_ifc(SAMPLE)
     scene = build_massing_scene(model, MassingConfig(timezone="Australia/Sydney"))
-    assert scene.facade_samples.total_area_m2 == pytest.approx(564.24, abs=0.01)
+    assert scene.facade_samples.total_area_m2 == pytest.approx(532.56, abs=0.01)
 
 
 def test_context_is_an_occluder_but_not_in_the_denominator() -> None:
@@ -329,9 +335,7 @@ def test_context_is_an_occluder_but_not_in_the_denominator() -> None:
     context = next(e for e in model.elements if e.name.startswith("Context"))
     assert context.global_id not in set(scene.facade_samples.parent_ids)
     # ...but its triangles are still in the occluder set.
-    assert scene.occluders.triangle_count == sum(
-        e.mesh.triangle_count for e in model.elements if e.ifc_class != "IfcSpace"
-    )
+    assert scene.occluders.triangle_count == sum(e.mesh.triangle_count for e in model.occluders())
 
 
 def test_ground_grid_excludes_building_footprints() -> None:

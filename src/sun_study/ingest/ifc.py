@@ -48,12 +48,29 @@ from sun_study.core.orientation import SiteOrientation
 FloatArray = npt.NDArray[np.float64]
 
 __all__ = [
+    "GLAZING_CLASSES",
     "OCCLUDER_CLASSES",
+    "VOID_CLASSES",
     "GeoreferencingError",
     "IfcElement",
     "IfcModel",
     "read_ifc",
 ]
+
+#: Never occluders, whatever else is asked for. Both are holes in the model
+#: rather than matter in it: an ``IfcSpace`` is the air inside a room, and an
+#: ``IfcOpeningElement`` is the void a window sits in. Archicad exports the
+#: openings as products with real geometry, so an earlier version quietly
+#: plugged every window it had just cut -- the wall had a hole and the hole
+#: had a solid in it, which no amount of leaving the window out could fix.
+VOID_CLASSES = ("IfcSpace", "IfcOpeningElement")
+
+#: What to make transparent when sunlight has to reach a point *inside* the
+#: building. Doors are in here with windows because in this building type the
+#: living room's glazing is very often a sliding door -- in one reference
+#: model, 110 of 252 marked openings were sliding doors -- and leaving those
+#: opaque would under-report the rooms that matter most.
+GLAZING_CLASSES = ("IfcWindow", "IfcDoor", "IfcPlate", "IfcCurtainWall")
 
 # Brief section 5.2. The subject building is both analysed and an occluder:
 # self-shading from balconies above, fins and reveals is the whole point.
@@ -176,14 +193,49 @@ class IfcModel:
     def by_id(self, global_id: str) -> IfcElement | None:
         return next((e for e in self.elements if e.global_id == global_id), None)
 
-    def occluder_mesh(self, *, include_spaces: bool = False) -> TriangleMesh:
+    def occluder_mesh(
+        self,
+        *,
+        include_spaces: bool = False,
+        transparent: Sequence[str] = (),
+    ) -> TriangleMesh:
         """Every solid element merged into one triangle soup.
 
-        ``IfcSpace`` is excluded by default: a Zone is a void, and treating it
-        as an occluder would have every apartment shade itself completely.
+        ``IfcSpace`` and ``IfcOpeningElement`` are always excluded, because
+        both are *voids*. A Zone treated as an occluder has every apartment
+        shade itself completely; an opening treated as one plugs the very hole
+        it cuts, so a window becomes a solid block whether or not the window
+        itself is in the set.
+
+        ``transparent`` drops further classes -- ``IfcWindow`` and ``IfcDoor``
+        when sunlight has to reach a point *inside* the building. That is the
+        difference between sampling a glazing plane from outside, where the
+        glass may as well be solid, and sampling a room's floor, where the
+        whole question is what comes through it.
         """
-        skip = {"IfcSpace"} if not include_spaces else set()
-        return TriangleMesh.concatenate([e.mesh for e in self.elements if e.ifc_class not in skip])
+        return TriangleMesh.concatenate(
+            [e.mesh for e in self.occluders(include_spaces=include_spaces, transparent=transparent)]
+        )
+
+    def occluders(
+        self,
+        *,
+        include_spaces: bool = False,
+        transparent: Sequence[str] = (),
+    ) -> list[IfcElement]:
+        """The elements that block sunlight, as elements rather than a mesh.
+
+        The single place that decides what casts a shadow. Callers that need
+        to filter further -- by distance, say -- start here rather than
+        re-deriving the rule, because an earlier version had two such filters
+        and only one of them knew that an ``IfcOpeningElement`` is a void.
+        The clipped scene then came back with *more* geometry than the
+        unclipped one.
+        """
+        skip = set(VOID_CLASSES) | {str(name) for name in transparent}
+        if include_spaces:
+            skip.discard("IfcSpace")
+        return [element for element in self.elements if element.ifc_class not in skip]
 
     def describe(self, timezone: str | None = None) -> str:
         counts: dict[str, int] = {}

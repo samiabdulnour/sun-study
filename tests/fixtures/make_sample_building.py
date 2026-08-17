@@ -265,19 +265,19 @@ def build() -> ifcopenshell.file:
                 PredefinedType="FLOOR",
             )
         )
-        # North facade, in project coordinates. Windows sit in this wall.
-        contained.append(
-            b.element(
-                "IfcWall",
-                f"Facade L{level:02d}",
-                BUILDING_WIDTH,
-                WALL_THICKNESS,
-                STOREY_HEIGHT,
-                0.0,
-                half_depth,
-                base,
-            )
+        # North facade, in project coordinates. Windows sit in this wall, in
+        # real openings -- see the IfcRelVoidsElement below.
+        facade = b.element(
+            "IfcWall",
+            f"Facade L{level:02d}",
+            BUILDING_WIDTH,
+            WALL_THICKNESS,
+            STOREY_HEIGHT,
+            0.0,
+            half_depth,
+            base,
         )
+        contained.append(facade)
         # Rear wall, so the building is a real occluder rather than a plane.
         contained.append(
             b.element(
@@ -327,6 +327,38 @@ def build() -> ifcopenshell.file:
                 OverallHeight=WINDOW_HEIGHT,
             )
             contained.append(window)
+
+            # A real opening, cut through the facade and filled by the window.
+            #
+            # This is what makes the wall *permeable to sunlight* once the
+            # window itself is left out of the occluder set. Without it the
+            # wall is a solid box with the window parked in front of it: fine
+            # while samples sit outside the glazing, and fatal for sampling a
+            # room's floor, where every interior point would be shaded by its
+            # own window. A real Archicad export always carries these, so the
+            # fixture without them was not representing what it stood for.
+            #
+            # Deliberately a touch deeper than the wall. An opening flush with
+            # both faces leaves coplanar triangles, and whether a ray grazing
+            # a zero-thickness sliver counts as a hit is exactly the numerical
+            # coin-toss a fixture should not be built on.
+            opening = b.element(
+                "IfcOpeningElement",
+                f"Opening {label}",
+                WINDOW_WIDTH,
+                WALL_THICKNESS * 2.0,
+                WINDOW_HEIGHT,
+                offset,
+                half_depth,
+                base + WINDOW_SILL,
+                PredefinedType="OPENING",
+            )
+            b.relate(
+                "IfcRelVoidsElement", RelatingBuildingElement=facade, RelatedOpeningElement=opening
+            )
+            b.relate(
+                "IfcRelFillsElement", RelatingOpeningElement=opening, RelatedBuildingElement=window
+            )
 
             # At the apartment's own floor level. The balcony one storey up is
             # then the overhang shading this apartment's window, which is the

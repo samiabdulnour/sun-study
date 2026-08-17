@@ -367,14 +367,57 @@ def test_planar_face_grid_returns_none_for_empty_geometry() -> None:
     assert planar_face_grid(TriangleMesh.empty(), "w", np.array([0.0, 1.0, 0.0])) is None
 
 
-def test_spaces_are_not_occluders(model: Any) -> None:
-    """A Zone is a void; treating it as solid shades every apartment completely."""
+def test_voids_are_not_occluders(model: Any) -> None:
+    """A Zone and an opening are both holes, not matter.
+
+    A Zone treated as solid shades every apartment completely. An
+    ``IfcOpeningElement`` treated as solid plugs the very hole it cuts, so a
+    window stays opaque however the window itself is handled -- which is
+    exactly what stopped sunlight reaching a room's floor.
+    """
     with_spaces = model.occluder_mesh(include_spaces=True).triangle_count
     without = model.occluder_mesh().triangle_count
     assert without < with_spaces
-    assert without == sum(
-        e.mesh.triangle_count for e in model.elements if e.ifc_class != "IfcSpace"
+    assert without == sum(e.mesh.triangle_count for e in model.occluders())
+    assert {e.ifc_class for e in model.occluders()}.isdisjoint({"IfcSpace", "IfcOpeningElement"})
+    assert model.of_class("IfcOpeningElement"), "the fixture must carry openings to prove it"
+
+
+def test_glazing_can_be_made_transparent(model: Any) -> None:
+    """Sampling a glazing plane from outside does not care whether glass is
+    solid. Sampling a room's floor is entirely about what comes through it."""
+    from sun_study.ingest.ifc import GLAZING_CLASSES
+
+    opaque = model.occluder_mesh().triangle_count
+    glazed = model.occluder_mesh(transparent=GLAZING_CLASSES).triangle_count
+    assert glazed < opaque
+    assert {e.ifc_class for e in model.occluders(transparent=GLAZING_CLASSES)}.isdisjoint(
+        GLAZING_CLASSES
     )
+
+
+def test_a_window_opening_lets_sunlight_through_once_glazing_is_transparent(
+    model: Any,
+) -> None:
+    """The whole point of cutting the opening. A ray from inside the room, out
+    through the glazing, must escape -- and the wall beside it must not."""
+    import numpy as np
+
+    from sun_study.core.occlusion import Occluder
+    from sun_study.ingest.ifc import GLAZING_CLASSES
+
+    through = Occluder(model.occluder_mesh(transparent=GLAZING_CLASSES))
+    # 'Window L00-B' faces open ground; L00-A faces the context block.
+    window = next(w for w in model.of_class("IfcWindow") if w.name.endswith("L00-B"))
+    low, high = window.mesh.vertices.min(axis=0), window.mesh.vertices.max(axis=0)
+    centre = (low + high) / 2.0
+    out = np.array([[0.0, 1.0, 0.0]])
+
+    inside = (centre - out[0] * 1.5).reshape(1, 3)
+    assert not through.any_hit(inside, out).ravel()[0], "the opening must be a hole"
+
+    beside = inside + np.array([[3.0, 0.0, 0.0]])
+    assert through.any_hit(beside, out).ravel()[0], "the wall beside it must still block"
 
 
 def test_context_radius_drops_distant_occluders(model: Any) -> None:
