@@ -649,3 +649,43 @@ shared ground.
 **A failed sheet does not fail the run.** By the time layouts are attempted the numbers
 are written and the fills are drawn — those are the deliverable. Losing the convenience
 on top is worth a warning, not an exit code.
+
+### D29 — Rooms are label objects, matched to apartments by position and storey
+
+*Milestone M6. Settled by measurement on a real project, not by convention.*
+
+A Zone in this practice's projects is a whole apartment **unit**. The rooms inside it are
+not Zones at all — they are GDL label objects (`Room Name and Size Label 19`) carrying a
+short code in the `room_txt` parameter. Measured on the reference project: 329 such
+labels, 299 with a code, and the vocabulary is
+
+    K 33 · S 32 · LY 29 · L/D 29 · EN 29 · B 29 · B1 28 · B2 28 · B3 26 · ST 18 · UT 9
+
+`L/D` is living/dining, and ADG 4A-1 is about living rooms, so **that code is the only
+thing in the model that separates the room the standard cares about from the rooms it
+does not.** Neither the Zone nor the window carries it.
+
+The parameter name was found rather than guessed. `archicad-objects --parameter` exists
+for exactly that: parameter names belong to whoever authored the library part, and every
+office library names them differently.
+
+**The join is geometric, and the storey half of it is not optional.** A label is
+annotation: nothing in the model relates it to a Zone. So a label belongs to the
+apartment whose outline contains its point — *on the same storey*.
+
+The storey test is what makes this safe. These labels live inside hotlinked unit-type
+modules whose masters are parked above the building; the reference project has three such
+sets, at roughly 64 m, 158 m and 280 m, on storeys 9–14, 38–39 and 71–76. **A master's
+label sits at the same X and Y as the placed instance it came from.** Point-in-polygon
+alone therefore matches it to a real apartment — confidently, silently — and every
+apartment ends up holding two or four copies of every room. Comparing storeys is the only
+thing that tells the copy from the original, and there is a test named after that trap.
+
+**Codes are configuration, echoed every run.** `--living` defaults to `L/D` and the room
+mix found is always printed, because which code means "living room" is a practice's own
+business and a wrong one moves the headline percentage without any other symptom.
+
+Two consequences worth stating plainly. An apartment with no label in it cannot be
+assessed against 4A-1 at all — the run names those rather than assuming the whole unit is
+a living room. And labels with a blank code are dropped rather than counted as unnamed
+rooms; 30 of 329 were blank, and a room with no name cannot be classified as anything.

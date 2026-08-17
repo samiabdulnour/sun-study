@@ -53,6 +53,7 @@ from sun_study.archicad.read import (
     read_geo_location,
 )
 from sun_study.archicad.read import zones as read_zones
+from sun_study.archicad.rooms import RoomMatch, match_rooms, room_labels
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     PROPERTY_GROUP_NAME,
@@ -919,6 +920,103 @@ def init_properties_command(
         typer.secho(
             f"  {skipped} unclassified zones will not accept these properties. "
             f"Classify them and run this again.",
+            fg=typer.colors.YELLOW,
+        )
+
+
+@app.command("archicad-rooms")
+def archicad_rooms(
+    port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    zone_layer: Annotated[
+        list[str] | None,
+        typer.Option("--zone-layer", help="Archicad layer whose zones are the apartments."),
+    ] = None,
+    living: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--living",
+            help=(
+                "Room codes that are living rooms for ADG 4A-1. Repeatable. "
+                "Default 'L/D'. Wrong values change the headline percentage, so "
+                "the mix found is always printed for checking."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Match room labels to apartments, and say whether that join works.
+
+    Where a Zone is a whole unit, the rooms inside it are label objects
+    carrying a code -- ``L/D`` for living/dining, ``B1`` for a bedroom. ADG
+    4A-1 is about living rooms, so that code is the only thing separating the
+    room the standard cares about from the rooms it does not.
+
+    Run this before trusting any per-room result. It says how many apartments
+    actually contain a labelled living room, which is the ceiling on what the
+    assessment can measure.
+    """
+    banner()
+    connection = _connect(port)
+    try:
+        names = layer_names(connection)
+        found = read_zones(connection)
+        if zone_layer:
+            wanted = {entry.casefold() for entry in zone_layer}
+            found = tuple(
+                zone for zone in found if names.get(zone.layer_index or -1, "").casefold() in wanted
+            )
+        if not found:
+            typer.secho(
+                "No apartment zones. Pass --zone-layer, and run 'archicad-info' "
+                "to see which layers carry zones.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+        labels = room_labels(gdl_parameters(connection, library_objects(connection)))
+        typer.echo(f"  {len(found)} apartments, {len(labels)} named room labels")
+
+        match = match_rooms(found, labels)
+        typer.secho(
+            match.describe(),
+            fg=typer.colors.GREEN if match.matched else typer.colors.RED,
+            bold=True,
+        )
+        _report_living_rooms(match, living or ["L/D"])
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+
+def _report_living_rooms(match: RoomMatch, living: Sequence[str]) -> None:
+    """How many apartments have a living room the assessment could measure."""
+    wanted = {code.strip().upper() for code in living}
+    with_living = [
+        guid for guid, rooms in match.by_zone.items() if any(room.code in wanted for room in rooms)
+    ]
+    total = len(match.by_zone) + len(match.zones_without_rooms)
+
+    typer.echo("")
+    if not match.matched:
+        typer.secho(
+            "  Nothing matched, so no per-room assessment is possible from these "
+            "labels. Either the apartments are on a different layer, or every "
+            "label belongs to a hotlink master rather than a placed unit.",
+            fg=typer.colors.RED,
+        )
+        return
+
+    typer.secho(
+        f"  {len(with_living)} of {total} apartments contain a room coded "
+        f"{', '.join(sorted(wanted))}",
+        fg=typer.colors.GREEN if len(with_living) == total else typer.colors.YELLOW,
+        bold=True,
+    )
+    if len(with_living) < total:
+        typer.secho(
+            "  The rest cannot be assessed against ADG 4A-1, which is about living "
+            "rooms. Check the room mix above: if the living room is coded something "
+            "other than 'L/D' here, pass it with --living.",
             fg=typer.colors.YELLOW,
         )
 
