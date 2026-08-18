@@ -791,3 +791,27 @@ def test_the_rooms_command_takes_a_zone_name_filter() -> None:
     from sun_study.cli import archicad_rooms
 
     assert "zone_name" in inspect.signature(archicad_rooms).parameters
+
+
+def test_a_write_failure_does_not_cancel_the_drawing() -> None:
+    """A fill is geometry on a layer: it needs no property, no classification
+    and no schedule.
+
+    The bug: a real run asking for --write --draw against a project that had
+    never had init-properties produced neither the values nor the picture, and
+    the picture was the part that needed nothing. The exit code still reports
+    the failure.
+    """
+    import inspect
+
+    from sun_study.cli import archicad_run
+
+    source = inspect.getsource(archicad_run)
+    write_at = source.index("write_assessment(connection")
+    draw_at = source.index("draw_assessment(")
+    between = source[write_at:draw_at]
+
+    assert "if not draw:" in between, (
+        "the write's error path must check whether a drawing was also asked for"
+    )
+    assert "Continuing to the drawing" in between

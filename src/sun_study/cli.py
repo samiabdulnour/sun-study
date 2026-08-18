@@ -1845,16 +1845,29 @@ def archicad_run(
             try:
                 written = write_assessment(connection, result.assessment, match=match)
             except ArchicadError as error:
+                # Not fatal when a drawing was also asked for. A fill is
+                # geometry on a layer: it needs no property, no classification
+                # and no schedule. An earlier version exited here, so a run
+                # asking for --write --draw against a project that had never
+                # had init-properties produced neither the values nor the
+                # picture, and the picture was the part that needed nothing.
                 typer.secho(str(error), fg=typer.colors.RED, err=True)
-                raise typer.Exit(code=2) from error
-
-            report_write(connection, written)
-            if not written.complete:
+                if not draw:
+                    raise typer.Exit(code=2) from error
                 typer.secho(
-                    "  The project now holds a partial set of results. Schedules "
-                    "built on them will be missing rows.",
-                    fg=typer.colors.RED,
+                    "  Continuing to the drawing, which needs no properties.",
+                    fg=typer.colors.YELLOW,
                 )
+                partial = True
+            else:
+                report_write(connection, written)
+                if not written.complete:
+                    partial = True
+                    typer.secho(
+                        "  The project now holds a partial set of results. Schedules "
+                        "built on them will be missing rows.",
+                        fg=typer.colors.RED,
+                    )
 
         if draw:
             typer.echo("")
