@@ -8,10 +8,11 @@ threshold before reading a result rather than after quoting one.
 from __future__ import annotations
 
 import collections
+import contextlib
 import datetime as dt
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
@@ -1288,6 +1289,134 @@ def _looks_numeric(value: str) -> bool:
     except ValueError:
         return value.startswith("<array")
     return True
+
+
+@app.command("archicad-report")
+def archicad_report(
+    port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    out: Annotated[
+        Path,
+        typer.Option("--out", help="Where to write the report."),
+    ] = Path("sun-study-report.txt"),
+) -> None:
+    """Everything the tool can learn about a project, in one file.
+
+    Written for the case where whoever is reading the output is not sitting at
+    the workstation. Every question this tool has needed answering so far --
+    which layer holds the apartments, what the zones are called, which
+    parameter carries the room name, whether the room labels reach the
+    apartments, whether the properties exist -- took its own command, its own
+    run and its own round trip. This asks all of them once.
+
+    Read-only throughout. It creates nothing, writes no property and draws
+    nothing, so it is safe on a live project someone else has open.
+    """
+    banner()
+    connection = _connect(port)
+    with _also_writing_to(out):
+        _report_everything(connection)
+    typer.echo("")
+    typer.secho(f"wrote {out}", bold=True)
+    typer.echo("  Read-only: nothing in the project was created or changed.")
+
+
+@contextlib.contextmanager
+def _also_writing_to(path: Path) -> Iterator[None]:
+    """Send everything printed inside the block to a file as well as the screen.
+
+    A tee rather than a redirect, because a long silent command looks hung and
+    the point of the file is that it can be sent on afterwards.
+    """
+
+    class Tee:
+        def __init__(self, *streams: Any) -> None:
+            self.streams = streams
+
+        def write(self, text: str) -> int:
+            for stream in self.streams:
+                stream.write(text)
+            return len(text)
+
+        def flush(self) -> None:
+            for stream in self.streams:
+                stream.flush()
+
+    handle = path.open("w", encoding="utf-8", errors="replace")
+    original = sys.stdout
+    sys.stdout = Tee(original, handle)
+    try:
+        yield
+    finally:
+        sys.stdout = original
+        handle.close()
+
+
+def _report_everything(connection: ArchicadConnection) -> None:
+    """Each section guarded, because one unanswerable question must not cost
+    the answers to the others -- the whole value here is getting them together."""
+    sections: list[tuple[str, Any]] = [
+        ("CONNECTION AND SITE", lambda: typer.echo(describe_connection(connection))),
+        ("ZONES", lambda: _report_zones_section(connection)),
+        ("LIBRARY OBJECTS", lambda: _report_objects_section(connection)),
+        ("ROOMS PER CANDIDATE LAYER", lambda: _report_rooms_section(connection)),
+        ("PROPERTIES", lambda: _report_properties(connection)),
+    ]
+    for title, run in sections:
+        typer.echo("")
+        typer.secho(f"--- {title} " + "-" * max(0, 60 - len(title)), bold=True)
+        try:
+            run()
+        except ArchicadError as error:
+            typer.secho(f"  unavailable: {error}", fg=typer.colors.YELLOW)
+
+
+def _report_zones_section(connection: ArchicadConnection) -> None:
+    found = read_zones(connection)
+    typer.echo(f"  {len(found)} zones")
+    if found:
+        _report_zone_layers(connection, found)
+        _report_zone_names(found, limit=20)
+
+
+def _report_objects_section(connection: ArchicadConnection) -> None:
+    found = library_objects(connection)
+    counted = collections.Counter(item.library_part or "(unnamed part)" for item in found)
+    typer.echo(f"  {len(found)} library objects across {len(counted)} library parts:")
+    for part, how_many in counted.most_common(10):
+        typer.echo(f"    {how_many:>5}  {part}")
+
+
+def _report_rooms_section(connection: ArchicadConnection) -> None:
+    """The room match against every zone layer that could hold apartments.
+
+    Trying each candidate rather than asking which to try is the point: on one
+    project the answer was a layer whose name nobody would have guessed, and
+    finding it cost several exchanges.
+    """
+    names = layer_names(connection)
+    zones = read_zones(connection)
+    labels = room_labels(gdl_parameters(connection, library_objects(connection)))
+    typer.echo(f"  {len(labels)} named room labels in the project")
+    if not labels:
+        return
+
+    candidates = sorted(
+        {
+            layer_of(zone, names)
+            for zone in zones
+            if layer_of(zone, names).replace(" ", "").casefold().startswith("06|zone.")
+        }
+    )
+    if not candidates:
+        typer.echo("  no '06 | Zone.*' layers, so no obvious apartment layer to try")
+        return
+
+    for layer in candidates:
+        on_layer = [zone for zone in zones if layer_of(zone, names) == layer]
+        typer.echo("")
+        typer.secho(f"  {layer!r} -- {len(on_layer)} zones", bold=True)
+        for line in match_rooms(on_layer, labels).describe().splitlines():
+            typer.echo(f"  {line}")
 
 
 @app.command("archicad-probe")
