@@ -98,6 +98,11 @@ column is the add-on version the command first appeared in.
 | `CreateHatches` | 1.5.7 | Tapir | The apartment fills and legend swatches |
 | `CreateTexts` | 1.5.7 | Tapir | The legend labels |
 | `DeleteElements` | 1.0.7 | Tapir | Clearing the previous run |
+| `GetNavigatorItemTree` | 1.1.7 | Tapir | The storeys to place, and the masters to place them on |
+| `CloneProjectMapItemToViewMap` | 1.1.7 | Tapir | A View per storey, because a Drawing is placed from one |
+| `CreateLayout` | 1.4.0 | Tapir | The sheet |
+| `CreateDrawings` | 1.4.0 | Tapir | The linked plan on the sheet, at a stated scale |
+| `GetLayoutSettings` | 1.1.7 | Tapir | The page size, so the drawings land on the paper |
 
 `GetAllClassificationSystems` is one of **Archicad's own** commands, not a Tapir one.
 Tapir has no getter for classification systems — only for an element's classification
@@ -123,6 +128,125 @@ classification, not its type. An unclassified Zone cannot receive one.
 
 `IFCFileOperation` takes `method` (`save` | `merge` | `open`), `ifcFilePath` and an
 optional `fileType` (`ifc` | `ifcxml` | `ifczip` | `ifcxmlzip`).
+
+### Two identifiers for one element, and only one of them matches
+
+`GetElementsByIFCIds` is asked in the spelling the *export* wrote and answers in the
+spelling *Archicad* keeps, and on AC26 those are not the same string:
+
+| | |
+|---|---|
+| What an IFC export writes | `0UHJKXnLzA2OlQcIwF4FFe` — 22 characters, base64 |
+| What `GetIFCIdsOfElements` returns | `1E453521-C55F-4A09-8BDA-992E8F10F3E8` |
+| What `GetElementsByIFCIds` matched | the second only |
+
+They are the same 128 bits: an `IfcRoot.GlobalId` is that GUID compressed. Asked with the
+compressed form, all fifteen of the reference project's apartment Zones came back
+unmatched — which reads as an export that has drifted away from the project rather than
+as two spellings of one number. The drawing step then reported "10 assessed apartments had
+no zone to draw" over a project where every one of them was still there.
+
+`read.elements_by_ifc_ids` offers both forms in one request and maps the answer back onto
+whichever the caller asked with. `expanded_ifc_guid` does the conversion.
+
+### `CreateLayout` needs a master, whatever its schema says
+
+The published `inputScheme` requires only `layoutName`. The implementation refuses that
+with `APIERR_BADPARS` (-2130313112), *"Either masterLayoutName or masterNavigatorItemId
+must be provided"*.
+
+Masters are read from the Layout Book — `GetNavigatorItemTree` with
+`navigatorMapId: "LayoutBook"`, where they arrive as `MasterLayoutItem` under a
+`MasterFolderItem`. That map's enum is `PublicViewMap | ProjectMap | LayoutBook |
+PublisherSets`: there is no `ViewMap`, and asking for one is a schema violation rather
+than an empty tree.
+
+Which master is a judgement, and never a silent one. The reference project keeps **67**,
+and they are not interchangeable — a title block sized for A3 puts a 1:200 plan off the
+page. `layout.choose_master` prefers one whose name states the scale being drawn
+("A1 - VERTICAL 1:200", "DA A1 - VERTICAL 1:200"), falls back to the first in the book,
+and `--master-layout` settles it by hand. The run always prints what it used.
+
+`GetLayoutSettings` then gives the page size, and the drawings are tiled inside it. The
+first implementation placed them in a row 420 mm apart, which for six storeys is 2.5 m of
+paper: five of the six sat outside the A1, and the sheet read as empty.
+
+### The active database, and what a selection quietly does to an export
+
+Two pieces of Archicad state that no command parameter mentions decide where a
+drawing lands and what an export contains. Both were found the hard way, live.
+
+**A selection empties the export.** With even one element selected, the
+office translator exports an `IfcSite` and an `IfcBuilding` and nothing else —
+**5.8 kB against 86 MB**. The run then fails much later, in the scene filter, as
+"apartment zone layers matched nothing", which sends the reader to check a layer
+name that was correct. This tool creates the trap itself: `CreateHatches` leaves
+its last fill selected, so `--draw` on one run silently empties the export of the
+next. `read.clear_selection` runs before every export and reports what it cleared.
+
+**Element creation follows the current *database*, which `ChangeWindow` can
+move.** `CreateHatches` takes `layerIndex` and `floorInd` but no database, so it
+draws into whatever database is current — that part of [D28](decisions.md) is
+right. What D28 says next, that nothing can change it, is **wrong**:
+`ChangeWindow` (1.3.1) takes `{"databaseId": {...}, "windowType": "..."}` and
+calls `ACAPI_Database_ChangeCurrentDatabase`, which is exactly the call element
+creation follows.
+
+Measured on AC26 with Tapir 1.5.7, drawing one fill with the worksheet `CLIENT`
+active:
+
+| | |
+|---|---|
+| Hatches visible before, on the floor plan | 1648 |
+| Hatches visible after `ChangeWindow` to the worksheet | 3570 |
+| After creating one fill | 3571 |
+| Back on the floor plan | 1648, and the new fill is **not** among them |
+
+So fills *can* be drawn into a worksheet. Three cautions, all measured:
+
+- **On AC26 the `navigatorItemId` form is rejected** — *"navigatorItemId requires
+  Archicad 27 or later; use databaseId instead"*. Get the id from
+  `GetDatabaseIdFromNavigatorItemId`, or from `CreateWorksheets` directly.
+- **A worksheet created in this session cannot be activated in it.**
+  `CreateWorksheets` succeeds and returns a database id, the navigator lists the
+  item, `GetDatabaseIdFromNavigatorItemId` returns the same id — and
+  `ChangeWindow` still fails with `-2130313110`, *"Failed to change current
+  database"*, before and after `RebuildView`. Existing worksheets activate
+  first time. So a worksheet target has to already exist.
+- **`GetCurrentWindowType` still reports `FloorPlan` afterwards.** The database
+  moved; the visible window did not. Do not use it to confirm the switch — check
+  `ChangeWindow`'s own `{"success": true}`, and remember the state is global and
+  outlives the command.
+
+### A fill cannot carry a property, and a label can only carry text
+
+Asked directly, twice, on a fill created for the purpose:
+
+| Attempt | Result |
+|---|---|
+| `SetPropertyValuesOfElements` on an unclassified fill | `-2130312908` *Failed to set property value for element* |
+| `SetClassificationsOfElements` on that fill, using the item its Zone carries | `-2130312907` *Failed to set classification item for element* |
+| `SetPropertyValuesOfElements` after that | refused again; `GetClassificationsOfElements` still returns `[]` |
+
+Archicad grants a custom property through a classification and will not classify
+a Hatch, so **the numbers cannot live in the fill**. Nothing in Tapir's schema
+forbids it — the refusal comes from Archicad itself.
+
+`CreateLabels` (1.2.5) is the other half of the same question, and it splits:
+
+| Shape | Result |
+|---|---|
+| `begCoordinate` + `midCoordinate` + `endCoordinate`, static `text` | **works** |
+| `parentElementId` (a Zone) + `text` | `-2130312912` *Failed to create new Label* |
+| `parentElementId` + coordinates + text | `-2130312912` |
+
+The add-on's own example places a live property label with
+`<PROPERTY-{guid}>` autotext in `text` alongside `parentElementId`, and the
+element-creation base class deliberately suppresses autotext resolution so the
+token is stored rather than frozen. It fails here anyway: the text branch runs
+only when the Label tool's *current default* is a text-class label, and this
+project's is not. Until that is settled, annotation is **static text on a leader**
+— which is what the office's own reference drawing uses.
 
 ### One place the schema and the implementation disagree
 
@@ -307,6 +431,18 @@ machine-checked against a fake transport:
 | `GetDetailsOfElements` layer index, `GetHotlinks` — why a write was refused | **works**: named a locked layer as the cause |
 | Layer create and lookup, element delete | works |
 | `CreateHatches`, `CreateTexts` — fills and legend | **works**: 8 fills and a 7-item legend, replacing the previous run's 15 |
+| `GetElementsByIFCIds` — the results-to-Zones join | **works, once both spellings are offered**: 0 of 15 matched on the export's own GlobalIds, 15 of 15 on the expanded GUIDs |
+| `clear_selection` before an export | **required**: with one element selected the export is 5.8 kB instead of 86 MB |
+| Drawing into an existing Worksheet via `ChangeWindow` | **works**: fill landed in `CLIENT`, absent from the floor plan |
+| Drawing into a Worksheet created in the same session | **fails**: `-2130313110`, before and after `RebuildView` |
+| Properties or classifications on a Fill | **refused by Archicad**: `-2130312908` / `-2130312907` |
+| `CreateLabels` with coordinates and static text | **works** |
+| `CreateLabels` with `parentElementId` (live property autotext) | **fails**: `-2130312912`, the Label tool default is not text-class |
+| Property values onto hotlinked Zones | **refused**: 6 of 10 apartments are hotlink instances, read-only in the host |
+| `CreateWorksheets` then `ChangeWindow` then `CreateHatches` | **works on an existing worksheet**: 6396 fills and 19 captions landed in `Solar Penetration Outlines`, none of them on the floor plan |
+| Leaving a worksheet, programmatically | **cannot be done on AC26**: `windowType` alone, with `storyIndex`, and with a floor plan's `databaseId` all answer `{"success": true}` and change nothing |
+| An IFC export taken with a worksheet in front | **unaffected**: 86 MB, the whole project. The window is cosmetic; only the *selection* empties an export |
+| The layout chain — navigator tree, clone, `CreateLayout`, `CreateDrawings` | **works, once a master is supplied**: 6 linked plans at 1:200 on `DA A1 - VERTICAL 1:200`, tiled on the 841 × 594 sheet `GetLayoutSettings` reported |
 | `GetPenTables` — reading the office palette | **works**: 255 pens, one band matched exactly, one had no pen within 110 |
 
 **The write refusal is per element, not per request.** The decisive observation: in one
@@ -345,6 +481,12 @@ sampled were all called `RESI` with no number. Collapsing failures by display na
 reported seven refusing elements as "56 failures over 1 elements", and a list of six
 zones with holes read as "RESI, RESI, RESI, RESI, RESI". Reports now collapse on the
 element GUID, and `disambiguated` tags only the colliding names with a GUID fragment.
+
+**Excluding the hotlink layers is not always possible.** The advice above — switch the
+masters off in the export — assumes they have layers of their own. On the reference project
+they do not: masters and real building share `01 | Wall.External`,
+`01 | Wall.Unit Internal` and the rest, so no layer combination separates them. What does
+separate them is height, and `--exclude-above` is the knob. See [D30](decisions.md).
 
 **A zone's layer is what says whether it is an apartment.** The same project's zones sat
 on `10 | Calc.GFA` — area take-off, not housing — and were locked because a calculation

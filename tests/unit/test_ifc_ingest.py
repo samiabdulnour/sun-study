@@ -19,6 +19,7 @@ import ifcopenshell
 import numpy as np
 import pytest
 
+from sun_study.core.geometry import TriangleMesh, horizontal_rectangle
 from sun_study.core.orientation import SiteOrientation
 from sun_study.ingest.ifc import GeoreferencingError, read_ifc
 from sun_study.ingest.scene import SceneConfig, build_scene, planar_face_grid
@@ -809,12 +810,17 @@ def test_open_space_zones_are_never_apartments(tmp_path: Path) -> None:
 
     assert scene.provenance["spaces_total"] == 1
 
-    # It went down the open-space route rather than being dropped. It does not
-    # attach here because the fixture's two zones sit 10 m apart side by side,
-    # not one above the other -- a balcony that far from its apartment is
-    # correctly treated as communal. The attachment rule itself is covered by
-    # the slab-based cases.
-    assert scene.provenance["open_space_unattached"] == 1
+    # It went down the open-space route rather than being dropped silently.
+    # It does not attach to L00-A, the one apartment being assessed: it sits
+    # 10 m away, and the apartment it does stand under -- L01-B, on no named
+    # layer -- is not in this run. So it is neither this run's open space nor
+    # communal, and it is counted as belonging to another room rather than
+    # added to either total. The attachment rule itself is covered by the
+    # slab-based cases.
+    routes = scene.provenance["open_space_resolution"]
+    assert isinstance(routes, dict)
+    assert routes == {"another-room": 1}
+    assert scene.provenance["open_space_unattached"] == 0
 
 
 def test_the_scene_description_states_which_routes_were_used() -> None:
@@ -1004,3 +1010,133 @@ def test_a_roof_overhead_is_not_flagged(model: Any) -> None:
         ]
         == 0
     )
+
+
+# ---------------------------------------------------------------------------
+# The floor patch: a picture of where the sun landed, not how long it stayed.
+# ---------------------------------------------------------------------------
+def test_no_floor_patch_unless_it_is_asked_for() -> None:
+    """It is a second ray-cast pass over a second surface, so it is opt-in."""
+    scene = build_scene(read_ifc(SAMPLE), SceneConfig(timezone="Australia/Sydney"))
+
+    assert scene.floor_samples is None
+    assert scene.glazed_occluders is None
+    assert scene.provenance["floor_samples"] == 0
+
+
+def test_the_floor_patch_grids_the_floor_not_the_ceiling() -> None:
+    """A Zone is a void: its top face is the slab above, and gridding that
+    would put every sample a storey too high and still look plausible."""
+    scene = build_scene(
+        read_ifc(SAMPLE),
+        SceneConfig(timezone="Australia/Sydney", floor_patch_spacing_m=0.25),
+    )
+
+    assert scene.floor_samples is not None
+    assert len(scene.floor_samples) > 0
+    assert (scene.floor_samples.normals[:, 2] > 0.9).all(), "a floor faces the sky"
+
+    # Every sample sits 50 mm above a real walking surface: the underside of a
+    # Zone's volume, or the top of a balcony slab. A Zone gridded on its top
+    # face instead would put the whole patch a storey up, silently.
+    model = read_ifc(SAMPLE)
+    surfaces = {round(float(e.mesh.vertices[:, 2].min()), 2) for e in model.of_class("IfcSpace")}
+    surfaces |= {round(float(e.mesh.vertices[:, 2].max()), 2) for e in model.of_class("IfcSlab")}
+    sampled = {round(float(z) - 0.05, 2) for z in scene.floor_samples.positions[:, 2]}
+    assert sampled <= surfaces, (
+        f"samples at {sorted(sampled)} sit on no surface in {sorted(surfaces)}"
+    )
+
+
+def test_the_glazing_is_taken_out_of_the_occluders_the_patch_uses() -> None:
+    """A window is a solid in the export, so the set that answers 'is this
+    pane lit' would have the pane shading the room behind it."""
+    scene = build_scene(
+        read_ifc(SAMPLE),
+        SceneConfig(timezone="Australia/Sydney", floor_patch_spacing_m=0.25),
+    )
+
+    assert scene.glazed_occluders is not None
+    assert scene.glazed_occluders.triangle_count < scene.occluders.triangle_count, (
+        "the glazing has to be missing from it, or the sun never gets indoors"
+    )
+
+
+def test_the_patch_configuration_is_echoed_like_every_other_assumption() -> None:
+    described = SceneConfig(timezone="Australia/Sydney", floor_patch_spacing_m=0.25).describe()
+    assert "floor patch at 0.25 m" in described
+
+
+# ---------------------------------------------------------------------------
+# Clipping a floor grid to the room it belongs to. Without it the grid covers
+# the room's bounding rectangle, and a sun patch drawn from that reaches into
+# rooms the apartment does not contain.
+# ---------------------------------------------------------------------------
+def l_shaped_floor() -> TriangleMesh:
+    """A 6 x 6 m floor with a 3 x 3 m bite out of the far corner."""
+    return TriangleMesh.concatenate(
+        [
+            horizontal_rectangle(np.array([3.0, 1.5, 0.0]), 6.0, 3.0, 0.0),
+            horizontal_rectangle(np.array([1.5, 4.5, 0.0]), 3.0, 3.0, 0.0),
+        ]
+    )
+
+
+def test_an_unclipped_grid_covers_the_bounding_rectangle() -> None:
+    """The behaviour a window wants, recorded so the difference is visible."""
+    samples = planar_face_grid(l_shaped_floor(), "flat", np.array([0.0, 0.0, 1.0]), spacing_m=0.5)
+    assert samples is not None
+    in_the_notch = (samples.positions[:, 0] > 3.0) & (samples.positions[:, 1] > 3.0)
+    assert in_the_notch.any(), "the whole 6 x 6 box is gridded, notch included"
+
+
+def test_a_clipped_grid_stops_at_the_room() -> None:
+    samples = planar_face_grid(
+        l_shaped_floor(),
+        "flat",
+        np.array([0.0, 0.0, 1.0]),
+        spacing_m=0.5,
+        clip_to_face=True,
+    )
+
+    assert samples is not None
+    in_the_notch = (samples.positions[:, 0] > 3.0) & (samples.positions[:, 1] > 3.0)
+    assert not in_the_notch.any(), "no sample may sit in a part of the plan the room lacks"
+
+    # 27 m2 of floor at 0.25 m2 a cell, give or take the boundary.
+    assert samples.areas.sum() == pytest.approx(27.0, rel=0.08)
+
+
+def test_clipping_keeps_a_sample_that_sits_on_a_shared_edge() -> None:
+    """Two triangles of one floor meet along a diagonal; a sample exactly on
+    it must belong to the floor rather than fall between them."""
+    samples = planar_face_grid(
+        horizontal_rectangle(np.array([2.0, 2.0, 0.0]), 4.0, 4.0, 0.0),
+        "flat",
+        np.array([0.0, 0.0, 1.0]),
+        spacing_m=0.5,
+        clip_to_face=True,
+    )
+    unclipped = planar_face_grid(
+        horizontal_rectangle(np.array([2.0, 2.0, 0.0]), 4.0, 4.0, 0.0),
+        "flat",
+        np.array([0.0, 0.0, 1.0]),
+        spacing_m=0.5,
+    )
+    assert samples is not None and unclipped is not None
+    assert len(samples) == len(unclipped), "a rectangle loses nothing to clipping"
+
+
+def test_clipping_survives_the_surface_offset() -> None:
+    """The samples are lifted off the plane before the test, and testing them
+    where they ended up would miss the face entirely."""
+    samples = planar_face_grid(
+        l_shaped_floor(),
+        "flat",
+        np.array([0.0, 0.0, 1.0]),
+        spacing_m=0.5,
+        surface_offset_m=1.0,
+        clip_to_face=True,
+    )
+    assert samples is not None and len(samples) > 0
+    assert samples.positions[:, 2] == pytest.approx(1.0)

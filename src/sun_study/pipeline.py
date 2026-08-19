@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 
 from sun_study.core.analysis import (
     BandedResult,
@@ -23,10 +24,12 @@ from sun_study.core.analysis import (
     band_by_area,
     cumulative_minutes,
     instant_weights,
+    lit_share_per_instant,
     longest_continuous_minutes,
     sunlit_matrix,
 )
 from sun_study.core.occlusion import Occluder
+from sun_study.core.patches import Rectangle, merge_lit_cells
 from sun_study.core.sampling import SamplePoints
 from sun_study.core.solar import assessment_times, solar_position
 from sun_study.ingest.ifc import IfcModel, read_ifc
@@ -46,12 +49,130 @@ from sun_study.rules.assessment import (
 from sun_study.rules.ruleset import Ruleset, load_ruleset
 from sun_study.rules.ruleset import Weighting as RulesetWeighting
 
+FloatArray = npt.NDArray[np.float64]
+BoolArray = npt.NDArray[np.bool_]
+
 __all__ = ["MassingResult", "PipelineResult", "run_assessment", "run_massing"]
 
 _WEIGHTING = {
     RulesetWeighting.TRAPEZOIDAL: Weighting.TRAPEZOIDAL,
     RulesetWeighting.UNIFORM: Weighting.UNIFORM,
 }
+
+
+@dataclass(frozen=True)
+class InstantSeries:
+    """When each apartment was in sun, rather than for how long in total.
+
+    The assessment answers "does this apartment get two hours". A study
+    drawing answers "where is the sun at 09:15", and no amount of the first
+    reconstructs the second. Both come off the same boolean matrix, which
+    used to be computed and dropped inside ``_durations``.
+    """
+
+    times: tuple[dt.datetime, ...]
+    """The instants, in the project's own timezone, in order."""
+
+    apartment_ids: tuple[str, ...]
+    """Rows of ``living_share`` and ``open_space_share``, in order."""
+
+    living_share: FloatArray
+    """``(n_apartments, n_instants)``, area-weighted share of the living-room
+    glazing in sun at each instant."""
+
+    open_space_share: FloatArray
+    """The same for private open space. Rows for apartments with none are
+    absent from ``open_space_ids`` rather than zero -- no balcony and a balcony
+    in shadow are different facts."""
+
+    open_space_ids: tuple[str, ...]
+
+    floor_positions: FloatArray | None = None
+    """``(n, 3)`` centres of the floor grid cells, or None when no patch was
+    asked for."""
+
+    floor_parent_ids: tuple[str, ...] = ()
+    """The apartment each floor cell belongs to, parallel to ``floor_positions``."""
+
+    floor_sunlit: BoolArray | None = None
+    """``(n_cells, n_instants)``: did the sun reach this piece of floor then."""
+
+    floor_is_open_space: BoolArray | None = None
+    """Which floor cells are balcony rather than room."""
+
+    floor_minutes: FloatArray | None = None
+    """Total sunlit minutes on each floor cell across the whole window.
+
+    The same weighting the compliance figure uses, over the same instants, so
+    a banded plan and the schedule beside it cannot disagree about how long
+    the sun was on a given piece of floor."""
+
+    floor_areas: FloatArray | None = None
+    """Square metres each floor cell stands for."""
+
+    floor_spacing_m: float = 0.0
+
+    def patches_at(self, instant: int) -> dict[str, tuple[Rectangle, ...]]:
+        """The sun patch on each apartment's floor at one instant.
+
+        Apartment id -> the rectangles that tile the lit part of its floor,
+        ready to be drawn. Empty when the run was not asked for a patch, and
+        an apartment with no sun at that instant is simply absent rather than
+        present with an empty tuple -- there is nothing to draw for it.
+        """
+        if self.floor_sunlit is None or self.floor_positions is None:
+            return {}
+        lit = self.floor_sunlit[:, instant]
+        patches: dict[str, tuple[Rectangle, ...]] = {}
+        for apartment in dict.fromkeys(self.floor_parent_ids):
+            mine = np.array([pid == apartment for pid in self.floor_parent_ids])
+            rectangles = merge_lit_cells(
+                self.floor_positions[mine], lit[mine], self.floor_spacing_m
+            )
+            if rectangles:
+                patches[apartment] = rectangles
+        return patches
+
+    def lit_areas_at(self, instant: int) -> dict[str, tuple[float, float]]:
+        """Apartment id -> (room area, open-space area) in sun, square metres.
+
+        The two figures the office's own study sheet prints against each flat.
+        Taken from the patch cells rather than from the duration, so the number
+        in the annotation is the area of the fill drawn beside it -- they
+        cannot drift apart.
+        """
+        if self.floor_sunlit is None or self.floor_positions is None:
+            return {}
+        cell = self.floor_spacing_m**2
+        lit = self.floor_sunlit[:, instant]
+        open_space = (
+            self.floor_is_open_space
+            if self.floor_is_open_space is not None
+            else np.zeros(len(lit), dtype=bool)
+        )
+        areas: dict[str, tuple[float, float]] = {}
+        for index, apartment in enumerate(self.floor_parent_ids):
+            if not lit[index]:
+                continue
+            room, outside = areas.get(apartment, (0.0, 0.0))
+            if open_space[index]:
+                areas[apartment] = (room, outside + cell)
+            else:
+                areas[apartment] = (room + cell, outside)
+        return areas
+
+    def living_at(self, instant: int) -> dict[str, float]:
+        """Apartment id -> lit share at one instant, for drawing it."""
+        return {
+            apartment: float(self.living_share[row, instant])
+            for row, apartment in enumerate(self.apartment_ids)
+        }
+
+    def open_space_at(self, instant: int) -> dict[str, float]:
+        return {
+            apartment: float(self.open_space_share[row, instant])
+            for row, apartment in enumerate(self.open_space_ids)
+        }
 
 
 @dataclass(frozen=True)
@@ -64,6 +185,21 @@ class PipelineResult:
     assessment: BuildingAssessment
     sun_position_count: int
     assessment_date: dt.date
+    instants: InstantSeries | None = None
+    """Per-instant sunlit shares. Optional only so a caller that predates it
+    keeps working; ``run_assessment`` always fills it in."""
+
+
+@dataclass(frozen=True)
+class _Durations:
+    """What one set of sample points yielded, aggregated and per instant."""
+
+    cumulative: dict[str, float]
+    continuous: dict[str, float]
+    parents: tuple[str, ...]
+    lit_share: FloatArray
+    """``(n_parents, n_instants)``. Kept rather than dropped: it costs one
+    float per parent per instant and it is the only record of *when*."""
 
 
 def _durations(
@@ -72,7 +208,7 @@ def _durations(
     sun_vectors: np.ndarray,
     timestep_minutes: float,
     weighting: Weighting,
-) -> tuple[dict[str, float], dict[str, float]]:
+) -> _Durations:
     """Cumulative and longest-continuous minutes, per parent element.
 
     Samples are reduced by mean, so an element's figure is the share of its
@@ -80,7 +216,7 @@ def _durations(
     ruleset question and is available on ``summarise_by_parent``.
     """
     if len(points) == 0:
-        return {}, {}
+        return _Durations({}, {}, (), np.zeros((0, len(sun_vectors)), dtype=np.float64))
 
     sunlit = sunlit_matrix(points, occluder, sun_vectors)
     weights = instant_weights(sunlit.shape[1], timestep_minutes, weighting)
@@ -93,7 +229,12 @@ def _durations(
         mask = points.mask_for(parent)
         cumulative[parent] = float(np.mean(per_sample[mask]))
         continuous[parent] = float(np.mean(per_sample_continuous[mask]))
-    return cumulative, continuous
+    return _Durations(
+        cumulative=cumulative,
+        continuous=continuous,
+        parents=points.unique_parents,
+        lit_share=lit_share_per_instant(points, sunlit),
+    )
 
 
 def run_assessment(
@@ -138,12 +279,24 @@ def run_assessment(
     timestep = float(rules.assessment.timestep_minutes)
     weighting = _WEIGHTING[rules.assessment.weighting]
 
-    living_cumulative, living_continuous = _durations(
-        scene.window_samples, occluder, sun_vectors, timestep, weighting
-    )
-    open_cumulative, open_continuous = _durations(
-        scene.open_space_samples, occluder, sun_vectors, timestep, weighting
-    )
+    living = _durations(scene.window_samples, occluder, sun_vectors, timestep, weighting)
+    open_space = _durations(scene.open_space_samples, occluder, sun_vectors, timestep, weighting)
+
+    # A second pass, over a second surface, against a different occluder set:
+    # the glazing is taken out so the sun can reach the floor through it. Only
+    # run when a patch was asked for -- it is a drawing, not a number, and it
+    # roughly doubles the ray casting.
+    floor_sunlit = None
+    floor_minutes = None
+    if scene.floor_samples is not None and scene.glazed_occluders is not None:
+        floor_sunlit = sunlit_matrix(
+            scene.floor_samples, Occluder(scene.glazed_occluders), sun_vectors
+        )
+        floor_minutes = cumulative_minutes(
+            floor_sunlit, instant_weights(floor_sunlit.shape[1], timestep, weighting)
+        )
+    living_cumulative, living_continuous = living.cumulative, living.continuous
+    open_cumulative, open_continuous = open_space.cumulative, open_space.continuous
 
     names = {element.global_id: element.name for element in model.elements}
     measurements = [
@@ -168,6 +321,24 @@ def run_assessment(
         assessment=assess_building(measurements, rules, area),
         sun_position_count=len(times),
         assessment_date=rules.assessment.date_in(year),
+        instants=InstantSeries(
+            times=tuple(times),
+            apartment_ids=living.parents,
+            living_share=living.lit_share,
+            open_space_share=open_space.lit_share,
+            open_space_ids=open_space.parents,
+            floor_positions=(
+                scene.floor_samples.positions if scene.floor_samples is not None else None
+            ),
+            floor_parent_ids=(
+                scene.floor_samples.parent_ids if scene.floor_samples is not None else ()
+            ),
+            floor_sunlit=floor_sunlit,
+            floor_is_open_space=scene.floor_is_open_space,
+            floor_minutes=floor_minutes,
+            floor_areas=(scene.floor_samples.areas if scene.floor_samples is not None else None),
+            floor_spacing_m=config.floor_patch_spacing_m or 0.0,
+        ),
     )
 
 

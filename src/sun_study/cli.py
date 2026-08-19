@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
 
+import numpy as np
 import typer
 
 from sun_study import __version__
@@ -40,11 +41,25 @@ from sun_study.archicad.draw import (
     match_pens,
     pen_table,
 )
-from sun_study.archicad.layout import layout_results
+from sun_study.archicad.layout import (
+    DEFAULT_LAYOUT_SCALE,
+    layout_from_views,
+    layout_results,
+    layout_sheet,
+    project_map,
+)
+from sun_study.archicad.penetration import (
+    PATCH_STYLE,
+    CellGroup,
+    PlanInstant,
+    draw_cell_groups,
+    draw_penetration,
+)
 from sun_study.archicad.read import (
     ArchicadZone,
     classification_item_names,
     classification_items_of,
+    clear_selection,
     cross_check_georeferencing,
     describe_connection,
     export_ifc,
@@ -63,12 +78,35 @@ from sun_study.archicad.rooms import (
     room_labels,
     unknown_codes,
 )
+from sun_study.archicad.series import (
+    FLOOR_STYLE,
+    SUNLIT_STYLE,
+    PatchRow,
+    activate,
+    database_of,
+    draw_patch_series,
+    ensure_model_database,
+    find_worksheet,
+    restore_after,
+)
+from sun_study.archicad.sheets import TableRow, draw_table, straighten_and_tile
+from sun_study.archicad.views import (
+    VIEW_PREFIX,
+    ensure_layer_combination,
+    next_view_folder,
+    remove_previous,
+    tool_layers,
+    views_for_storeys,
+)
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
+    NOT_ASSESSED_HOURS,
     PROPERTY_GROUP_NAME,
+    ApartmentMatch,
     WriteReport,
     all_properties,
     default_property_value,
+    delete_properties,
     diagnose_write_access,
     ensure_property_group,
     enum_values,
@@ -76,6 +114,7 @@ from sun_study.archicad.write import (
     match_apartments,
     write_assessment,
 )
+from sun_study.core.analysis import band_by_area
 from sun_study.disclaimer import DISCLAIMER, STATUS
 from sun_study.ingest.ifc import GeoreferencingError, read_ifc
 from sun_study.ingest.scene import (
@@ -222,6 +261,17 @@ def run(
             ),
         ),
     ] = None,
+    open_space_zone_name: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--open-space-zone-name",
+            help=(
+                "Only zones with this name are private open space. Repeatable. "
+                "Needed where one layer carries both, as '06 | Zone.Units' does "
+                "with 15 units named G08 and 20 balconies named BY."
+            ),
+        ),
+    ] = None,
     grid: Annotated[float, typer.Option("--grid", help="Sample grid spacing in metres.")] = 0.2,
     offset: Annotated[
         float,
@@ -230,6 +280,19 @@ def run(
     context_radius: Annotated[
         float | None,
         typer.Option("--context-radius", help="Drop occluders beyond this many metres."),
+    ] = None,
+    exclude_above: Annotated[
+        float | None,
+        typer.Option(
+            "--exclude-above",
+            help=(
+                "Drop geometry lying entirely above this height, in project "
+                "metres. Hotlinked unit-type masters are parked overhead and "
+                "export on the same layers as the real building, so nothing "
+                "else separates them. The overhead warning reports the height "
+                "to use."
+            ),
+        ),
     ] = None,
     csv_out: Annotated[
         Path | None, typer.Option("--csv", help="Write per-apartment results as CSV.")
@@ -249,9 +312,11 @@ def run(
         apartment_zone_layer=apartment_zone_layer,
         apartment_zone_name=apartment_zone_name,
         open_space_zone_layer=open_space_zone_layer,
+        open_space_zone_name=open_space_zone_name,
         grid=grid,
         offset=offset,
         context_radius=context_radius,
+        exclude_above=exclude_above,
     )
 
     try:
@@ -348,7 +413,13 @@ def layer_matches(name: str, wanted: Sequence[str]) -> bool:
     return name.strip().casefold() in {entry.strip().casefold() for entry in wanted}
 
 
-def report_layout(connection: ArchicadConnection, storeys: Sequence[int], *, name: str) -> None:
+def report_layout(
+    connection: ArchicadConnection,
+    storeys: Sequence[int],
+    *,
+    name: str,
+    master: str | None = None,
+) -> None:
     """Put the drawn storeys on a sheet, and say what happened.
 
     Never fatal. The fills are already in the project by this point, and a
@@ -357,7 +428,7 @@ def report_layout(connection: ArchicadConnection, storeys: Sequence[int], *, nam
     the layout is a convenience on top.
     """
     try:
-        placed = layout_results(connection, storeys, layout_name=name)
+        placed = layout_results(connection, storeys, layout_name=name, master_layout=master)
     except ArchicadError as error:
         typer.secho(
             f"  the fills are drawn, but the layout could not be made ({error})",
@@ -369,6 +440,666 @@ def report_layout(connection: ArchicadConnection, storeys: Sequence[int], *, nam
         fg=typer.colors.GREEN if placed.complete else typer.colors.YELLOW,
         bold=True,
     )
+
+
+#: Coarser than the 200 mm assessment grid on purpose: the patch is drawn, not
+#: quoted, and four times the rectangles buys nothing anybody can see on a sheet.
+DEFAULT_PATCH_GRID_M = 0.25
+
+
+def report_series(
+    connection: ArchicadConnection,
+    result: PipelineResult,
+    *,
+    worksheet_name: str,
+    every: int,
+    layer_name: str,
+) -> bool:
+    """Draw the per-instant series into a worksheet. True if anything is wrong.
+
+    The worksheet is left *not* current whatever happens. A worksheet current
+    at export time produces an IFC with no building in it, and that failure
+    surfaces three steps later as a scene with no apartments -- the same trap
+    a stray selection sets.
+    """
+    series = result.instants
+    if series is None or series.floor_sunlit is None or series.floor_positions is None:
+        typer.secho(
+            "  no floor patch was computed, so there is no series to draw. Pass --patch-grid.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    home = None
+    storeys = {i.storey_index: i for i in project_map(connection) if i.storey_index is not None}
+    if storeys:
+        home = database_of(connection, storeys[min(storeys)].identifier)
+
+    try:
+        target = find_worksheet(connection, worksheet_name)
+        chosen = list(range(0, len(series.times), max(1, every)))
+        captions = [f"{series.times[i]:%d %b %H:%M}" for i in chosen]
+
+        floor, sunlit = series_styles(connection)
+        rows = storey_rows(result)
+        activate(connection, target.database_id, "Worksheet")
+        drawn = draw_patch_series(
+            connection,
+            worksheet=target,
+            positions=series.floor_positions,
+            sunlit=series.floor_sunlit[:, chosen],
+            times=captions,
+            spacing_m=series.floor_spacing_m,
+            layer_name=layer_name,
+            rows=rows,
+            floor_style=floor,
+            sunlit_style=sunlit,
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        return True
+    finally:
+        back = restore_after(connection, home) if home is not None else False
+
+    typer.echo(drawn.describe())
+    if not back:
+        typer.secho(
+            "  Archicad is left showing the worksheet, and on this version it "
+            "cannot be switched back from here: every form of the command "
+            "reports success and does nothing.\n"
+            "  OPEN A FLOOR PLAN BEFORE THE NEXT RUN. The IFC export follows "
+            "the window, not the database, so an export taken with a worksheet "
+            "in front is 5.8 kB of empty project, and the run then fails much "
+            "later as a scene with no apartments in it.",
+            fg=typer.colors.YELLOW,
+        )
+    return False
+
+
+def report_area_bands(
+    connection: ArchicadConnection,
+    result: PipelineResult,
+    *,
+    match: ApartmentMatch,
+    layer_prefix: str,
+    bands: bool,
+    hours: float | None,
+    csv_out: Path | None = None,
+    sheets: bool = False,
+    master_layout: str | None = None,
+    storeys: Sequence[int] = (),
+    zoom: tuple[float, float, float, float] | None = None,
+    folder: str = "",
+) -> bool:
+    """The whole-day area figures: printed, drawn, and written out.
+
+    Two tables, inside and outside, because the ADG asks separately about the
+    living room and the private open space and a single figure over both
+    answers neither. The bands are the ones the reference study uses.
+    """
+    series = result.instants
+    if series is None or series.floor_minutes is None or series.floor_positions is None:
+        typer.secho(
+            "  no floor patch was computed, so there are no areas to band. Pass --patch-grid.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    samples = result.scene.floor_samples
+    if samples is None:
+        return True
+    outside = (
+        series.floor_is_open_space
+        if series.floor_is_open_space is not None
+        else np.zeros(len(series.floor_minutes), dtype=bool)
+    )
+
+    tables = {
+        "inside (rooms)": band_by_area(samples, series.floor_minutes, mask=~outside),
+        "outside (open space)": band_by_area(samples, series.floor_minutes, mask=outside),
+    }
+    for where, table in tables.items():
+        typer.secho(f"  {where}: {table.total_area_m2:.1f} m2 of floor", bold=True)
+        for band in table.bands:
+            typer.echo(f"    {band.label:<9} {band.area_m2:9.2f} m2   {band.share:6.2%}")
+        typer.echo(f"    {table.summary()}")
+
+    if csv_out:
+        destination = csv_out.with_name(f"{csv_out.stem}-areas.csv")
+        _write_area_csv(destination, tables)
+        typer.echo(f"  wrote {destination}")
+
+    styles = resolve_bands(connection, None)
+    extents = {
+        apartment: element.mesh.vertices
+        for apartment in match.by_apartment
+        if (element := result.model.by_id(apartment)) is not None
+    }
+    shared: dict[str, Any] = {
+        "positions": series.floor_positions,
+        "parent_ids": series.floor_parent_ids,
+        "spacing_m": series.floor_spacing_m,
+        "zone_by_apartment": match.by_apartment,
+        "zones": read_zones(connection),
+        "export_extents": extents,
+    }
+
+    problem = False
+    sheet_tables: dict[str, Sequence[TableRow]] = {}
+    sheet_titles: dict[str, str] = {}
+    if bands:
+        whole = band_by_area(samples, series.floor_minutes)
+        # The same figures the console prints, on the sheet where a reader
+        # looks for them rather than in a terminal nobody keeps.
+        sheet_tables["Bands"] = [
+            row for where, table in tables.items() for row in _table_rows(where, table, styles)
+        ]
+        sheet_titles["Bands"] = (
+            f"Direct sun on the floor, {result.assessment_date:%d %B}, hours by area"
+        )
+        groups = [
+            CellGroup(
+                label=band.label,
+                mask=_band_mask(series.floor_minutes, band.lower_minutes, band.upper_minutes),
+                style=style,
+                area_m2=band.area_m2,
+                share=band.share,
+            )
+            for band, style in zip(whole.bands, styles, strict=False)
+        ]
+        problem |= _draw_groups(
+            connection,
+            groups,
+            shared,
+            layer_name=f"{layer_prefix} Bands",
+            title=f"Direct sun on the floor, {result.assessment_date:%d %b}",
+        )
+
+    if hours:
+        minimum = hours * 60.0
+        achieved = series.floor_minutes >= minimum
+        area = float(samples.areas[achieved].sum())
+        total = float(samples.areas.sum())
+        typer.secho(
+            f"  {area:.1f} m2 of {total:.1f} receives at least {hours:g} hours "
+            f"({area / total if total else 0:.1%})",
+            bold=True,
+        )
+        groups = [
+            CellGroup(
+                label=f"{hours:g} hrs or more",
+                mask=achieved,
+                style=styles[-1],
+                area_m2=area,
+                share=area / total if total else 0.0,
+            ),
+            CellGroup(
+                label=f"under {hours:g} hrs",
+                mask=~achieved,
+                style=styles[0],
+                area_m2=total - area,
+                share=(total - area) / total if total else 0.0,
+            ),
+        ]
+        sheet_tables[f"{hours:g}h"] = [
+            TableRow(
+                f"{hours:g} hrs or more",
+                area,
+                area / total if total else 0.0,
+                fill_pen=styles[-1].fill_pen,
+            ),
+            TableRow(
+                f"under {hours:g} hrs",
+                total - area,
+                (total - area) / total if total else 0.0,
+                fill_pen=styles[0].fill_pen,
+            ),
+            TableRow("all floor", total, 1.0),
+        ]
+        sheet_titles[f"{hours:g}h"] = (
+            f"Floor receiving {hours:g} hours or more, {result.assessment_date:%d %B}"
+        )
+        problem |= _draw_groups(
+            connection,
+            groups,
+            shared,
+            layer_name=f"{layer_prefix} {hours:g}h",
+            title=f"Floor receiving {hours:g} hours or more, {result.assessment_date:%d %b}",
+        )
+
+    if sheets and (bands or hours):
+        made = [("Bands", f"{layer_prefix} Bands")] if bands else []
+        if hours:
+            made.append((f"{hours:g}h", f"{layer_prefix} {hours:g}h"))
+        _sheet_per_instant(
+            connection,
+            labels=[label for label, _ in made],
+            layers=[layer for _, layer in made],
+            storeys=storeys,
+            layer_prefix=layer_prefix,
+            master_layout=master_layout,
+            zoom=zoom,
+            tables=sheet_tables,
+            titles=sheet_titles,
+            # Coarser than the instant sheets: these carry a legend beside the
+            # plan, so the tile is wider and six of them will not fit an A1 at
+            # 1:200.
+            scale=300.0,
+            folder=folder,
+        )
+    return problem
+
+
+def _table_rows(where: str, table: Any, styles: Sequence[BandStyle]) -> list[TableRow]:
+    """One surface's figures as table lines: a heading, the bands, the roll-up."""
+    rows = [TableRow(where.upper(), table.total_area_m2, 1.0)]
+    for band, style in zip(table.bands, styles, strict=False):
+        rows.append(TableRow(band.label, band.area_m2, band.share, fill_pen=style.fill_pen))
+    hours = table.threshold_minutes / 60.0
+    rows.append(
+        TableRow(
+            f">{hours:g}hrs",
+            table.at_or_above_threshold_m2,
+            table.at_or_above_threshold_share,
+        )
+    )
+    return rows
+
+
+def _band_mask(minutes: Any, lower: float, upper: float | None) -> Any:
+    """Cells whose duration falls in one band, half-open above an exact zero.
+
+    upper is None on the open-ended top band, which is the one that has to
+    catch everything above its floor rather than nothing.
+    """
+    if upper is not None and upper <= 0.0:
+        return minutes <= 1e-9
+    above = (minutes > 1e-9) & (minutes >= lower)
+    return above if upper is None else above & (minutes < upper)
+
+
+def _draw_groups(
+    connection: ArchicadConnection,
+    groups: Sequence[CellGroup],
+    shared: dict[str, Any],
+    *,
+    layer_name: str,
+    title: str,
+) -> bool:
+    try:
+        drawn = draw_cell_groups(
+            connection, groups=groups, layer_name=layer_name, title=title, **shared
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        return True
+    typer.echo(drawn.describe())
+    return not drawn.complete
+
+
+def _write_area_csv(destination: Path, tables: dict[str, Any]) -> None:
+    """One row per band per surface, so the figures can be checked outside."""
+    import csv as _csv
+
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = _csv.writer(handle)
+        writer.writerow(["surface", "band", "area_m2", "share"])
+        for where, table in tables.items():
+            for band in table.bands:
+                writer.writerow([where, band.label, f"{band.area_m2:.3f}", f"{band.share:.5f}"])
+            writer.writerow([where, "total", f"{table.total_area_m2:.3f}", "1.0"])
+
+
+def instant_key(result: PipelineResult, instant: int, label: str) -> list[TableRow]:
+    """The key for one moment's sheet: what the colour means, and how much.
+
+    A band table would be meaningless here -- a single instant has no bands --
+    but a sheet with a coloured patch and nothing saying what it is, or how
+    much floor it covers, leaves the reader to guess at both.
+    """
+    series = result.instants
+    samples = result.scene.floor_samples
+    if series is None or samples is None or series.floor_sunlit is None:
+        return []
+
+    outside = (
+        series.floor_is_open_space
+        if series.floor_is_open_space is not None
+        else np.zeros(len(samples.areas), dtype=bool)
+    )
+    lit = series.floor_sunlit[:, instant]
+    rows: list[TableRow] = []
+    for where, mask in (("rooms", ~outside), ("open space", outside)):
+        total = float(samples.areas[mask].sum())
+        area = float(samples.areas[mask & lit].sum())
+        rows.append(
+            TableRow(where, area, area / total if total else 0.0, fill_pen=PATCH_STYLE.fill_pen)
+        )
+    whole = float(samples.areas.sum())
+    everything = float(samples.areas[lit].sum())
+    rows.append(TableRow("all floor", everything, everything / whole if whole else 0.0))
+    return rows
+
+
+def annotation_for(result: PipelineResult, instant: int) -> dict[str, list[str]]:
+    """The text block against each apartment, in the reference drawing's form.
+
+    Three lines: how much of the dwelling floor is in sun at this instant, how
+    much of its private open space is, and the day's verdict.
+
+    The first line is deliberately *not* called "Living". The office's own
+    drawing says Living because its model has a living-room zone to measure;
+    this one has a Zone per dwelling and rooms that are only label objects, so
+    the honest figure is the whole floor of the flat. Printing that under the
+    other name would overstate the room the ADG actually asks about.
+    """
+    series = result.instants
+    if series is None:
+        return {}
+    verdicts = {a.apartment_id: a.meets_minimum for a in result.assessment.apartments}
+    areas = series.lit_areas_at(instant)
+
+    blocks: dict[str, list[str]] = {}
+    for apartment, verdict in verdicts.items():
+        room, open_space = areas.get(apartment, (0.0, 0.0))
+        blocks[apartment] = [
+            f"Sunlit floor {room:.2f} m\u00b2",
+            f"P.O.S. {open_space:.2f} m\u00b2",
+            "Achieved" if verdict else "Not Achieved",
+        ]
+    return blocks
+
+
+def report_penetration(
+    connection: ArchicadConnection,
+    result: PipelineResult,
+    *,
+    wanted: Sequence[str],
+    match: ApartmentMatch,
+    layer_prefix: str,
+    sheets: bool,
+    master_layout: str | None,
+    folder: str = "",
+) -> bool:
+    """Draw the study diagram on the floor plan. True if anything is wrong."""
+    series = result.instants
+    if series is None or series.floor_sunlit is None or series.floor_positions is None:
+        typer.secho(
+            "  no floor patch was computed, so there is nothing to draw. Pass --patch-grid.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    clock = [f"{stamp:%H:%M}" for stamp in series.times]
+    chosen: list[PlanInstant] = []
+    missing: list[str] = []
+    for asked in wanted:
+        tidy = asked.strip()
+        if tidy in clock:
+            index = clock.index(tidy)
+            chosen.append(PlanInstant(label=tidy, lit=series.floor_sunlit[:, index]))
+        else:
+            missing.append(tidy)
+
+    if missing:
+        typer.secho(
+            f"  no instant at {', '.join(missing)}. The run holds "
+            f"{clock[0]} to {clock[-1]} every "
+            f"{result.ruleset.assessment.timestep_minutes} minutes.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    try:
+        drawn = draw_penetration(
+            connection,
+            instants=chosen,
+            positions=series.floor_positions,
+            parent_ids=series.floor_parent_ids,
+            spacing_m=series.floor_spacing_m,
+            zone_by_apartment=match.by_apartment,
+            zones=read_zones(connection),
+            # The dwelling's own extent, not its floor cells: those include
+            # the balcony and pull the centre off by a different amount for
+            # every flat. See penetration.fit_to_plan.
+            export_extents={
+                apartment: element.mesh.vertices
+                for apartment in match.by_apartment
+                if (element := result.model.by_id(apartment)) is not None
+            },
+            annotations=annotation_for(result, clock.index(chosen[0].label)),
+            layer_prefix=layer_prefix,
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        return True
+
+    typer.echo(drawn.describe())
+    if sheets:
+        clock = [f"{stamp:%H:%M}" for stamp in series.times]
+        _sheet_per_instant(
+            connection,
+            labels=[instant.label for instant in chosen],
+            storeys=drawn.storeys,
+            layer_prefix=layer_prefix,
+            master_layout=master_layout,
+            zoom=assessed_extent(read_zones(connection), match, margin_m=10.0),
+            tables={
+                instant.label: instant_key(result, clock.index(instant.label), instant.label)
+                for instant in chosen
+            },
+            titles={
+                instant.label: (
+                    f"Direct sun on the floor at {instant.label}, {result.assessment_date:%d %B}"
+                )
+                for instant in chosen
+            },
+            folder=folder,
+        )
+    return not drawn.complete
+
+
+def assessed_extent(
+    zones: Sequence[ArchicadZone], match: ApartmentMatch, margin_m: float = 8.0
+) -> tuple[float, float, float, float] | None:
+    """The plan extent of the apartments being assessed, with a margin.
+
+    Pinned onto every view this makes, because a view inherits whatever the
+    storey was last zoomed to -- so a drawing taken from it crops the building
+    wherever somebody happened to leave the screen, and the sheet quietly
+    shows half a plan.
+    """
+    wanted = set(match.by_apartment.values())
+    outlines = [zone.outline for zone in zones if zone.guid in wanted and zone.outline]
+    if not outlines:
+        return None
+    points = [point for outline in outlines for point in outline]
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    return (
+        min(xs) - margin_m,
+        min(ys) - margin_m,
+        max(xs) + margin_m,
+        max(ys) + margin_m,
+    )
+
+
+def _sheet_per_instant(
+    connection: ArchicadConnection,
+    *,
+    labels: Sequence[str],
+    storeys: Sequence[int],
+    layer_prefix: str,
+    master_layout: str | None,
+    zoom: tuple[float, float, float, float] | None = None,
+    scale: float = DEFAULT_LAYOUT_SCALE,
+    layers: Sequence[str] | None = None,
+    tables: dict[str, Sequence[TableRow]] | None = None,
+    titles: dict[str, str] | None = None,
+    folder: str = "",
+) -> None:
+    """A layer combination, a set of views and a Layout for each instant.
+
+    ``folder`` and the clearing out of the last run both belong to the *run*,
+    not to this call: a study makes two sets of sheets and each of them
+    calling ``remove_previous`` would delete what the other had just made,
+    while each choosing its own folder scattered one run's views across two.
+
+
+    Without the combination the sheet shows the plan and none of the study: a
+    Drawing inherits its View's layer combination, and the layer this tool
+    just made is hidden in every combination the project already had. That is
+    the whole reason this exists rather than reusing the storey views.
+    """
+    # One layer per label by default -- the instants -- or an explicit list,
+    # which is how the whole-day sheets get theirs.
+    every = list(layers) if layers else [f"{layer_prefix} {label}" for label in labels]
+    # And every *other* layer this tool owns, whether or not this call knows
+    # about it: a combination that names only its own group leaves the rest
+    # showing, which put the 2-hour and banded plans on top of the 09:00 sheet.
+    mine_all = set(tool_layers(connection, layer_prefix)) | set(every)
+    # A fresh, numbered folder each run: neither a view nor a folder can be
+    # deleted through the API, so reusing one would mix this run's views with
+    # the last run's inside it.
+    # Cleaning is once per *run*, not once per call: a second call clearing up
+    # again would delete the sheets the first one had just made, which is
+    # exactly what happened when the whole-day sheets were added beside the
+    # instants.
+    finished: list[tuple[str, str]] = []
+    items = {item.storey_index: item for item in project_map(connection)}
+    wanted = [items[storey] for storey in storeys if storey in items]
+    if not wanted:
+        typer.secho("  no Project Map storey to make a view of", fg=typer.colors.YELLOW)
+        return
+
+    for label, mine in zip(labels, every, strict=True):
+        try:
+            combination = ensure_layer_combination(
+                connection,
+                f"{VIEW_PREFIX} Sun Study {label}",
+                show=[mine],
+                hide=sorted(mine_all - {mine}),
+            )
+            views = views_for_storeys(
+                connection,
+                wanted,
+                combination=combination,
+                suffix=label,
+                drawing_scale=scale,
+                zoom=zoom,
+                folder=folder,
+            )
+            placed = layout_from_views(
+                connection,
+                [(view.navigator_id, view.name) for view in views],
+                layout_name=f"{VIEW_PREFIX} Sun Study {label}",
+                scale=scale,
+                master_layout=master_layout,
+            )
+        except ArchicadError as error:
+            typer.secho(f"  {label}: {error}", fg=typer.colors.RED, err=True)
+            continue
+        typer.echo(f"  {label}: {placed.describe().splitlines()[0]}")
+        typer.echo(f"    views pinned to layer combination {combination!r}")
+        finished.append((label, placed.database_id))
+
+    if not finished:
+        return
+
+    # Saving is what makes a layout readable, and everything below reads it:
+    # a drawing's angle and size are only knowable once it exists. See D39.
+    connection.run_tapir("SaveProject", {})
+    for label, database_id in finished:
+        try:
+            sheet, _ = layout_sheet(connection, database_id)
+            turned, moved = straighten_and_tile(connection, database_id, sheet)
+            rows = (tables or {}).get(label)
+            drawn = (
+                draw_table(
+                    connection, database_id, title=(titles or {}).get(label, label), rows=rows
+                )
+                if rows
+                else 0
+            )
+        except ArchicadError as error:
+            typer.secho(f"  {label}: {error}", fg=typer.colors.YELLOW, err=True)
+            continue
+        typer.echo(
+            f"    straightened {turned}, tiled {moved}"
+            + (f", table of {drawn} rows on the sheet" if drawn else "")
+        )
+    ensure_model_database(connection)
+    connection.run_tapir("SaveProject", {})
+
+
+def storey_rows(result: PipelineResult) -> list[PatchRow]:
+    """Split the floor cells by storey, lowest first.
+
+    A worksheet has no storeys of its own, so without this every level of the
+    building is drawn at its own coordinates and lands on top of the others --
+    one tile showing a composite of the whole tower, which is a plan of
+    nothing. The storey comes off the ``IfcSpace`` each cell belongs to, which
+    is the export's own answer rather than one inferred from height.
+    """
+    series = result.instants
+    if series is None or series.floor_positions is None:
+        return []
+
+    parents = np.array(series.floor_parent_ids)
+    # Grouped by the floor's own elevation, not by the storey the export
+    # names: on the reference project every IfcSpace comes through with no
+    # storey at all, and the whole tower then draws as one composite tile. The
+    # geometry always knows what level it is on.
+    level_of: dict[str, float] = {}
+    named: dict[float, str] = {}
+    for apartment in dict.fromkeys(series.floor_parent_ids):
+        cells = series.floor_positions[parents == apartment]
+        if not len(cells):
+            continue
+        level = round(float(cells[:, 2].min()), 1)
+        level_of[apartment] = level
+        element = result.model.by_id(apartment)
+        storey = element.storey if element is not None else None
+        if storey:
+            named.setdefault(level, storey)
+
+    rows: list[PatchRow] = []
+    for level in sorted(set(level_of.values()), reverse=True):
+        mask = np.array([level_of.get(parent) == level for parent in series.floor_parent_ids])
+        if mask.any():
+            rows.append(PatchRow(label=named.get(level, f"RL {level:.1f}"), mask=mask))
+    return rows
+
+
+def series_styles(connection: ArchicadConnection) -> tuple[BandStyle, ...]:
+    """The two fills of a patch tile, pointed at the project's own pens.
+
+    Same rule as the band diagram, D27: the colour is the input and the pen is
+    looked up, because a pen index means nothing outside the table it came
+    from. Falls back to the built-in indices, loudly, when the table cannot be
+    read -- a series drawn in the wrong two colours is still a readable
+    drawing, which is not true of a banded one.
+    """
+    wanted = (FLOOR_STYLE, SUNLIT_STYLE)
+    try:
+        pens = pen_table(connection)
+    except ArchicadError as error:
+        typer.secho(
+            f"  could not read the pen table ({error}); using default pen indices",
+            fg=typer.colors.YELLOW,
+        )
+        return wanted
+
+    styles, distances = match_pens(wanted, pens)
+    for style in styles:
+        gap = distances.get(style.label, 0.0)
+        quality = "exact" if gap < 12 else ("close" if gap < 60 else "POOR MATCH")
+        typer.echo(f"  {style.label:<7} rgb{style.rgb} -> pen {style.fill_pen:<4} {quality}")
+    return styles
 
 
 def report_write(connection: ArchicadConnection, written: WriteReport) -> None:
@@ -449,9 +1180,12 @@ def scene_config(
     apartment_zone_layer: list[str] | None = None,
     apartment_zone_name: list[str] | None = None,
     open_space_zone_layer: list[str] | None = None,
+    open_space_zone_name: list[str] | None = None,
     grid: float = 0.2,
     offset: float = 0.05,
     context_radius: float | None = None,
+    exclude_above: float | None = None,
+    patch_grid: float | None = None,
 ) -> SceneConfig:
     """Turn the shared scene options into a config.
 
@@ -465,10 +1199,14 @@ def scene_config(
         livable_opening_suffix=livable_suffix,
         balcony_name_prefixes=tuple(balcony) if balcony else ("Balcony",),
         apartment_zone_layers=tuple(apartment_zone_layer or ()),
+        apartment_zone_names=tuple(apartment_zone_name or ()),
         open_space_zone_layers=tuple(open_space_zone_layer or ()),
+        open_space_zone_names=tuple(open_space_zone_name or ()),
         grid_spacing_m=grid,
         surface_offset_m=offset,
         context_radius_m=context_radius,
+        exclude_above_m=exclude_above,
+        floor_patch_spacing_m=patch_grid,
     )
 
 
@@ -673,6 +1411,19 @@ def _connect(port: int) -> ArchicadConnection:
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
+
+    # Every read below is scoped to the current database, so a worksheet left
+    # in front by the last run makes the project look empty of Zones.
+    try:
+        was = ensure_model_database(connection)
+    except ArchicadError:
+        was = None
+    if was:
+        typer.secho(
+            f"  Archicad was showing a {was}, where the project has no Zones "
+            f"and no walls. Switched the current database back to a floor plan.",
+            fg=typer.colors.YELLOW,
+        )
     return connection
 
 
@@ -930,6 +1681,19 @@ def _report_zone_names(found: Sequence[ArchicadZone], *, limit: int) -> None:
 @app.command("init-properties")
 def init_properties_command(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    recreate: Annotated[
+        bool,
+        typer.Option(
+            "--recreate",
+            help=(
+                "Delete this tool's properties and make them again. The only "
+                "way to correct a default already in the project -- an hours "
+                "column created with a default of 0 reads as 'no sunlight' on "
+                "every Zone that never took a write. Discards the values "
+                "written so far, so follow it with a fresh archicad-run --write."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Create the 'Sun Study' property group and its properties in the project.
 
@@ -952,6 +1716,14 @@ def init_properties_command(
             )
             raise typer.Exit(code=2)
 
+        if recreate:
+            removed = delete_properties(connection)
+            typer.secho(
+                f"  deleted {len(removed)} existing properties and every value "
+                f"written to them: {', '.join(removed) or 'none were there'}",
+                fg=typer.colors.YELLOW,
+            )
+
         classified = classification_items_of(connection, [zone.guid for zone in found])
         properties = init_properties(connection, classified)
     except ArchicadError as error:
@@ -969,6 +1741,11 @@ def init_properties_command(
             f"Classify them and run this again.",
             fg=typer.colors.YELLOW,
         )
+    typer.echo(
+        f"  an hours column reads {NOT_ASSESSED_HOURS:g} where nothing was ever "
+        f"written to it, which no measurement can be. Schedule on 'Sun Study "
+        f"Run' being non-empty to show only assessed apartments."
+    )
 
 
 @app.command("archicad-rooms")
@@ -1812,10 +2589,34 @@ def archicad_run(
             help="Archicad layer whose zones are private open space. Repeatable.",
         ),
     ] = None,
+    open_space_zone_name: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--open-space-zone-name",
+            help=(
+                "Only zones with this name are private open space. Repeatable. "
+                "Needed where one layer carries both, as '06 | Zone.Units' does "
+                "with 15 units named G08 and 20 balconies named BY."
+            ),
+        ),
+    ] = None,
     grid: Annotated[float, typer.Option("--grid", help="Sample grid spacing in metres.")] = 0.2,
     offset: Annotated[
         float, typer.Option("--offset", help="Outward sample offset from glazing, in metres.")
     ] = 0.05,
+    exclude_above: Annotated[
+        float | None,
+        typer.Option(
+            "--exclude-above",
+            help=(
+                "Drop geometry lying entirely above this height, in project "
+                "metres. Hotlinked unit-type masters are parked overhead and "
+                "export on the same layers as the real building, so nothing "
+                "else separates them. The overhead warning reports the height "
+                "to use."
+            ),
+        ),
+    ] = None,
     write: Annotated[
         bool,
         typer.Option("--write/--no-write", help="Write the results back onto the project's Zones."),
@@ -1849,6 +2650,81 @@ def archicad_run(
         str,
         typer.Option("--sheet-name", help="Name for the Layout that --sheet creates."),
     ] = "Sun Study",
+    series_worksheet: Annotated[
+        str | None,
+        typer.Option(
+            "--series-worksheet",
+            help=(
+                "Draw the nine-to-three series into this Worksheet: one small "
+                "plan per instant, the sun patch on the floor of each "
+                "apartment. The worksheet must already exist -- one created "
+                "through the API cannot be opened in the same session -- and "
+                "it is regenerated in full on every run."
+            ),
+        ),
+    ] = None,
+    patch_grid: Annotated[
+        float | None,
+        typer.Option(
+            "--patch-grid",
+            help=(
+                "Grid spacing in metres for the floor patch. Enables the "
+                "patch, which is a second ray-cast pass and roughly doubles "
+                "the run. Implied by --series-worksheet."
+            ),
+        ),
+    ] = None,
+    plan_instant: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--plan-instant",
+            help=(
+                "Draw the sun patch on the floor plan at this time, e.g. "
+                "'12:00'. Repeatable, one layer per instant, with the assessed "
+                "area outlined and the lit areas annotated. This is the study "
+                "drawing; --draw is the whole-day summary."
+            ),
+        ),
+    ] = None,
+    plan_bands: Annotated[
+        bool,
+        typer.Option(
+            "--plan-bands/--no-plan-bands",
+            help=(
+                "Draw the whole day banded by hours of sun on the floor, with "
+                "a legend carrying each band's area and share -- the reference "
+                "study's own summary sheet. Implies --patch-grid."
+            ),
+        ),
+    ] = False,
+    plan_hours: Annotated[
+        float | None,
+        typer.Option(
+            "--plan-hours",
+            help=(
+                "Draw the floor area receiving at least this many hours, as "
+                "its own diagram. 2 is the ADG figure. Implies --patch-grid."
+            ),
+        ),
+    ] = None,
+    series_every: Annotated[
+        int,
+        typer.Option(
+            "--series-every",
+            help="Draw every Nth instant. 3 turns a 10 minute step into half-hourly.",
+        ),
+    ] = 3,
+    master_layout: Annotated[
+        str | None,
+        typer.Option(
+            "--master-layout",
+            help=(
+                "Master layout to build the sheet on. Archicad refuses to make "
+                "a Layout without one. Defaults to a master whose name states "
+                "the drawing scale, and the run says which it used."
+            ),
+        ),
+    ] = None,
     allow_georeference_mismatch: Annotated[
         bool,
         typer.Option(
@@ -1903,8 +2779,17 @@ def archicad_run(
         apartment_zone_layer=apartment_zone_layer,
         apartment_zone_name=apartment_zone_name,
         open_space_zone_layer=open_space_zone_layer,
+        open_space_zone_name=open_space_zone_name,
         grid=grid,
         offset=offset,
+        exclude_above=exclude_above,
+        # A series needs the patch, so asking for one is asking for both.
+        patch_grid=patch_grid
+        or (
+            DEFAULT_PATCH_GRID_M
+            if (series_worksheet or plan_instant or plan_bands or plan_hours)
+            else None
+        ),
     )
 
     with tempfile.TemporaryDirectory(prefix="sun-study-") as scratch:
@@ -1912,6 +2797,14 @@ def archicad_run(
         try:
             location = read_geo_location(connection)
             typer.echo(f"  exporting IFC to {destination} ...")
+            cleared = clear_selection(connection)
+            if cleared:
+                typer.secho(
+                    f"  cleared a selection of {cleared} element(s) first: with one "
+                    f"in place the translator exports the selection alone, and the "
+                    f"run would analyse an empty model",
+                    fg=typer.colors.YELLOW,
+                )
             exported = export_ifc(connection, destination)
         except ArchicadError as error:
             typer.secho(str(error), fg=typer.colors.RED, err=True)
@@ -1959,7 +2852,7 @@ def archicad_run(
         report_assessment(result, timezone=timezone, area=area, csv_out=csv_out, json_out=json_out)
 
         partial = False
-        if write or draw:
+        if write or draw or plan_instant or plan_bands or plan_hours:
             # One join, shared. Two independent ones would agree almost always,
             # and the time they did not would be a diagram whose colours
             # belonged to the neighbouring apartments.
@@ -2028,7 +2921,82 @@ def archicad_run(
                 fg=typer.colors.YELLOW,
             )
             if sheet:
-                report_layout(connection, drawn.storeys, name=sheet_name)
+                report_layout(connection, drawn.storeys, name=sheet_name, master=master_layout)
+
+        # One clearing out and one folder for the whole run, before any sheet
+        # is made: the two sheet-building steps would otherwise delete each
+        # other's work and file their views separately.
+        view_folder = ""
+        if sheet:
+            gone, left = remove_previous(connection)
+            view_folder = next_view_folder(connection)
+            typer.echo("")
+            typer.echo(f"  views go in {view_folder!r}")
+            if gone:
+                typer.echo(f"  removed {gone} views and layouts from the previous run")
+            if left:
+                typer.secho(
+                    f"  {left} could not be removed and are still there. A View "
+                    f"a placed Drawing points at cannot be deleted, and Archicad "
+                    f"reports success either way.",
+                    fg=typer.colors.YELLOW,
+                )
+
+        if plan_instant:
+            typer.echo("")
+            partial = (
+                report_penetration(
+                    connection,
+                    result,
+                    wanted=plan_instant,
+                    match=match,
+                    layer_prefix=layer,
+                    sheets=sheet,
+                    master_layout=master_layout,
+                    folder=view_folder,
+                )
+                or partial
+            )
+
+        if plan_bands or plan_hours:
+            typer.echo("")
+            partial = (
+                report_area_bands(
+                    connection,
+                    result,
+                    match=match,
+                    layer_prefix=layer,
+                    bands=plan_bands,
+                    hours=plan_hours,
+                    csv_out=csv_out,
+                    sheets=sheet,
+                    master_layout=master_layout,
+                    folder=view_folder,
+                    storeys=sorted(
+                        {
+                            zone.storey_index
+                            for zone in read_zones(connection)
+                            if zone.guid in set(match.by_apartment.values())
+                            and zone.storey_index is not None
+                        }
+                    ),
+                    zoom=assessed_extent(read_zones(connection), match, margin_m=10.0),
+                )
+                or partial
+            )
+
+        if series_worksheet:
+            typer.echo("")
+            partial = (
+                report_series(
+                    connection,
+                    result,
+                    worksheet_name=series_worksheet,
+                    every=series_every,
+                    layer_name=layer,
+                )
+                or partial
+            )
 
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)

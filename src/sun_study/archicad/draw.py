@@ -429,13 +429,28 @@ def ensure_layer(connection: ArchicadConnection, name: str) -> LayerState:
     a hidden layer makes a successful run look exactly like one that did
     nothing: the command reports fills drawn, and the drawing does not change.
 
-    Existing layers are never modified. The layer may carry settings somebody
-    chose deliberately, so this reports the state and leaves the decision to a
-    person.
+    A layer created here is *shown*, and shown again on every later run. That
+    is a deliberate exception to leaving existing attributes alone: visibility
+    is not really a property of the layer but of the layer combination in
+    force, and a layer this tool has just made is hidden in every combination
+    the project already had. Measured on the reference project -- a fresh
+    results layer came back ``isHidden=True`` immediately after being created
+    with ``isHidden: False``, and the run drew a thousand fills nobody could
+    see. Everything else about the layer is left as it is.
     """
     existing = _find_layer(connection, name)
-    if existing is not None:
+    if existing is not None and not (existing.hidden or existing.locked):
         return existing
+    if existing is not None:
+        connection.run_tapir(
+            "CreateLayers",
+            {
+                "layerDataArray": [{"name": name, "isHidden": False, "isLocked": False}],
+                "overwriteExisting": True,
+            },
+        )
+        shown = _find_layer(connection, name)
+        return shown if shown is not None else existing
 
     connection.run_tapir(
         "CreateLayers",
@@ -511,13 +526,29 @@ def _layer_visibility(connection: ArchicadConnection, index: int, identifier: st
 
 
 def clear_layer(connection: ArchicadConnection, layer_index: int) -> int:
-    """Delete every Hatch and Text on the results layer. Returns the count.
+    """Delete every Hatch, Text and PolyLine on the results layer. Returns the count.
+
+    The count is **verified**, not assumed. ``DeleteElements`` answers
+    ``{"success": true}`` whether or not it deleted anything, and there is one
+    condition under which it deletes nothing at all: the elements are on a
+    **hidden** layer. Since a layer this tool creates is hidden in every layer
+    combination the project already had, that is the normal case rather than a
+    rare one -- on the reference project a worksheet grew to 15,889 fills over
+    three runs, each of which reported clearing the last.
+
+    Callers reach this through ``ensure_layer``, which forces the layer
+    visible first. What is left here is to check the result and say what
+    really happened.
 
     Scoped to the two element types this module creates, so a person who put
     something else on the layer does not lose it without warning.
     """
     removed: list[dict[str, Any]] = []
-    for element_type in ("Hatch", "Text"):
+    # ``PolyLine``, with a capital L: ``Polyline`` is rejected outright as an
+    # invalid element type. The study's assessed-area outlines are polylines,
+    # so a delete that missed them left every previous run's outlines on the
+    # layer under the new ones.
+    for element_type in ("Hatch", "Text", "PolyLine"):
         found = connection.run_tapir("GetElementsByType", {"elementType": element_type})
         elements = found.get("elements") if isinstance(found, dict) else None
         if not elements:
@@ -549,6 +580,11 @@ def _fill_for(zone: ArchicadZone, band: BandStyle, layer_index: int) -> dict[str
         "fillPenIndex": band.fill_pen,
         "fillBackgroundPenIndex": band.background_pen,
         "contourPenIndex": band.contour_pen,
+        # A Fill inherits the Fill tool's current default, and on a real
+        # project that default has "Show Area Text" on -- so every fill
+        # arrives with its own square-metre figure printed across it, over
+        # the apartment it is meant to be colouring.
+        "showArea": False,
     }
     if zone.storey_index is not None:
         data["floorInd"] = zone.storey_index
@@ -586,6 +622,9 @@ def _legend(
                 "fillPenIndex": band.fill_pen,
                 "fillBackgroundPenIndex": band.background_pen,
                 "contourPenIndex": band.contour_pen,
+                # A swatch showing its own area is a legend annotated with
+                # "1.00 m2" seven times. See _fill_for.
+                "showArea": False,
             }
         )
         texts.append(

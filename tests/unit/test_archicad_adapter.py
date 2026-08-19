@@ -52,8 +52,13 @@ from sun_study.archicad.draw import (
     pen_table,
 )
 from sun_study.archicad.layout import (
+    DEFAULT_SHEET,
+    LayoutSheet,
     NavigatorItem,
+    choose_master,
     layout_results,
+    layout_sheet,
+    master_layouts,
     project_map,
     storey_items,
 )
@@ -62,6 +67,7 @@ from sun_study.archicad.read import (
     classification_items_of,
     cross_check_georeferencing,
     elements_by_ifc_ids,
+    expanded_ifc_guid,
     export_ifc,
     gdl_parameters,
     ifc_ids_of_elements,
@@ -74,6 +80,7 @@ from sun_study.archicad.read import (
 )
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
+    NOT_ASSESSED_HOURS,
     PROPERTY_GROUP_NAME,
     all_properties,
     default_property_value,
@@ -636,6 +643,41 @@ def test_no_zones_short_circuits_before_asking_for_details() -> None:
     connection, transport = connect({"GetElementsByType": {"elements": []}})
     assert zones(connection) == ()
     assert transport.commands() == ["GetElementsByType"]
+
+
+def test_an_ifc_global_id_is_offered_as_a_plain_guid_too() -> None:
+    """AC26 matches the expanded spelling, and an export writes the compressed one.
+
+    Live, ``GetElementsByIFCIds`` answered nothing for all fifteen of a
+    project's apartment Zones when asked with the 22-character GlobalId its
+    own export had just written, and answered every one of them when asked
+    with the hyphenated GUID. The two are the same 128 bits.
+    """
+    assert expanded_ifc_guid("0UHJKXnLzA2OlQcIwF4FFe") == "1E453521-C55F-4A09-8BDA-992E8F10F3E8"
+    assert expanded_ifc_guid("not a global id") is None
+
+    connection, transport = connect(
+        {
+            "GetElementsByIFCIds": {
+                "elementsByIFCIds": [
+                    {"ifcId": "0UHJKXnLzA2OlQcIwF4FFe", "elements": []},
+                    {
+                        "ifcId": "1E453521-C55F-4A09-8BDA-992E8F10F3E8",
+                        "elements": [{"elementId": {"guid": "zone-1"}}],
+                    },
+                ]
+            }
+        }
+    )
+    mapping = elements_by_ifc_ids(connection, ["0UHJKXnLzA2OlQcIwF4FFe"])
+    assert mapping == {"0UHJKXnLzA2OlQcIwF4FFe": ["zone-1"]}, (
+        "the caller asked in one spelling and must be answered in it"
+    )
+    sent = transport.parameters_for("GetElementsByIFCIds")["ifcIds"]
+    assert sent == [
+        "0UHJKXnLzA2OlQcIwF4FFe",
+        "1E453521-C55F-4A09-8BDA-992E8F10F3E8",
+    ], "both spellings go in one request, not two"
 
 
 def test_elements_by_ifc_ids_reports_missing_and_ambiguous_matches() -> None:
@@ -1445,6 +1487,7 @@ def _draw_responses(*, layer_index: int = 7, **overrides: Any) -> dict[str, Any]
             ]
         },
         "GetElementsByType": {"elements": []},
+        "CreateLayers": {"attributeIds": [{"attributeId": {"guid": "l"}}]},
         "CreateHatches": {"elements": [{"elementId": {"guid": "h"}}] * 99},
         "CreateTexts": {"elements": [{"elementId": {"guid": "t"}}] * 99},
     }
@@ -1503,10 +1546,14 @@ def test_the_previous_run_is_deleted_before_drawing() -> None:
     )
 
     deleted = transport.parameters_for("DeleteElements")["elements"]
-    assert deleted == [{"elementId": {"guid": "old-1"}}] * 2, (
-        "only elements on the results layer are deleted, from both Hatch and Text"
+    # Three because the fake answers the same list for each element type, and
+    # the clear now asks about PolyLines too: the assessed-area outlines are
+    # polylines, and a clear that missed them left every run's outlines under
+    # the next one's.
+    assert deleted == [{"elementId": {"guid": "old-1"}}] * 3, (
+        "only elements on the results layer are deleted, across all three types"
     )
-    assert report.fills_removed == 2
+    assert report.fills_removed == 3
     assert transport.commands().index("DeleteElements") < transport.commands().index(
         "CreateHatches"
     )
@@ -2071,10 +2118,18 @@ def test_every_definition_carries_a_default_value() -> None:
 def test_the_default_value_matches_the_declared_type() -> None:
     """A string default on a number property would be rejected the same way."""
     assert default_property_value("string")["basicDefaultValue"]["value"] == ""
-    assert default_property_value("number")["basicDefaultValue"]["value"] == 0.0
-    assert default_property_value("integer")["basicDefaultValue"]["value"] == 0
+    assert default_property_value("number")["basicDefaultValue"]["value"] == NOT_ASSESSED_HOURS
+    assert default_property_value("integer")["basicDefaultValue"]["value"] == -1
     assert default_property_value("boolean")["basicDefaultValue"]["value"] is False
-    assert default_property_value("area")["basicDefaultValue"]["value"] == 0.0
+    assert default_property_value("area")["basicDefaultValue"]["value"] == NOT_ASSESSED_HOURS
+
+
+def test_an_unwritten_hours_column_cannot_be_mistaken_for_a_measurement() -> None:
+    """A Zone in a hotlinked module refuses every write, so its default is
+    what a schedule prints. Zero was indistinguishable from a flat measured
+    and found to get no sun -- 11 of 15 apartments on the reference project
+    read 0.000 for that reason."""
+    assert NOT_ASSESSED_HOURS < 0, "no duration is negative, so this cannot be a reading"
 
 
 def test_layers_are_enumerated_not_asked_for_by_id() -> None:
@@ -2197,13 +2252,17 @@ def test_a_hidden_results_layer_is_called_out() -> None:
             }
         ]
     }
-    connection, _ = connect(responses)
+    connection, transport = connect(responses)
     report = draw_assessment(
         connection,
         _assessment(_apartment("apt-1")),
         [_zone("z1", storey=4)],
         zone_by_apartment={"apt-1": "z1"},
     )
+
+    shown = transport.parameters_for("CreateLayers")["layerDataArray"][0]
+    assert shown["isHidden"] is False, "the run must try to show it first"
+    assert transport.parameters_for("CreateLayers")["overwriteExisting"] is True
 
     assert report.layer.hidden
     assert "THE LAYER IS HIDDEN" in report.describe()
@@ -2236,6 +2295,17 @@ def test_an_unreadable_layer_state_does_not_stop_the_drawing() -> None:
 
 
 # -- putting the drawing on a sheet ---------------------------------------
+
+
+def master(identifier: str, name: str) -> dict[str, Any]:
+    return {
+        "navigatorItem": {
+            "type": "MasterLayoutItem",
+            "name": name,
+            "navigatorItemId": {"guid": identifier},
+            "prefix": "",
+        }
+    }
 
 
 def _navigator_tree() -> dict[str, Any]:
@@ -2288,9 +2358,36 @@ def _navigator_tree() -> dict[str, Any]:
     }
 
 
+def _layout_book_tree() -> dict[str, Any]:
+    """The Layout Book, where masters live nested under a Masters folder."""
+    return {
+        "navigatorItemTree": {
+            "type": "BookItem",
+            "name": "SAMPLE",
+            "navigatorItemId": {"guid": "book"},
+            "prefix": "",
+            "children": [
+                {
+                    "navigatorItem": {
+                        "type": "MasterFolderItem",
+                        "name": "Masters",
+                        "navigatorItemId": {"guid": "masters"},
+                        "prefix": "",
+                        "children": [
+                            master("m-a3", "A3 - HORIZONTAL"),
+                            master("m-a1-200", "A1 - VERTICAL 1:200"),
+                            master("m-a1-100", "A1 - VERTICAL 1:100"),
+                        ],
+                    }
+                },
+            ],
+        }
+    }
+
+
 def _layout_responses(**overrides: Any) -> dict[str, Any]:
     responses: dict[str, Any] = {
-        "GetNavigatorItemTree": _navigator_tree(),
+        "GetNavigatorItemTree": Sequential(_navigator_tree(), _layout_book_tree()),
         "CloneProjectMapItemToViewMap": {
             "navigatorItems": [
                 {"navigatorItemId": {"guid": "v8"}},
@@ -2298,6 +2395,19 @@ def _layout_responses(**overrides: Any) -> dict[str, Any]:
             ]
         },
         "CreateLayout": {"databases": [{"databaseId": {"guid": "lay"}}]},
+        "GetLayoutSettings": {
+            "layoutSettings": [
+                {
+                    "layoutName": "Sun Study",
+                    "horizontalSize": 841.0,
+                    "verticalSize": 594.0,
+                    "leftMargin": 10.0,
+                    "topMargin": 10.0,
+                    "rightMargin": 10.0,
+                    "bottomMargin": 10.0,
+                }
+            ]
+        },
         "CreateDrawings": {"elements": [{"elementId": {"guid": "d"}}] * 9},
     }
     responses.update(overrides)
@@ -2340,10 +2450,81 @@ def test_one_linked_drawing_per_storey_lands_on_the_layout() -> None:
     )
     assert all(d["layoutDatabaseId"] == {"guid": "lay"} for d in drawings)
     assert all(d["scale"] == 100.0 for d in drawings)
-    assert {d["position"]["x"] for d in drawings} == {420.0, 840.0}, "laid out in a row"
+    assert all(10.0 <= d["position"]["x"] <= 831.0 for d in drawings), "on the page"
+    assert all(10.0 <= d["position"]["y"] <= 584.0 for d in drawings), "on the page"
     assert report.storeys == (8, 9)
     assert report.drawings_placed == 2
     assert report.complete
+
+
+def test_a_layout_is_built_on_a_master_that_names_the_scale() -> None:
+    """CreateLayout refuses a Layout with no master.
+
+    Its schema says only ``layoutName`` is required; the implementation fails
+    with -2130313112, "Either masterLayoutName or masterNavigatorItemId must be
+    provided". An office keeps dozens of masters and they are not
+    interchangeable, so the one whose name states the scale wins and the run
+    reports it.
+    """
+    connection, transport = connect(_layout_responses())
+    report = layout_results(connection, [8, 9], layout_name="Sun Study", scale=200.0)
+
+    sent = transport.parameters_for("CreateLayout")["layoutsData"]
+    assert sent == [{"layoutName": "Sun Study", "masterNavigatorItemId": {"guid": "m-a1-200"}}], (
+        "the 1:200 master, not the first in the book"
+    )
+    assert report.master_name == "A1 - VERTICAL 1:200"
+    assert "on master 'A1 - VERTICAL 1:200'" in report.describe()
+
+
+def test_drawings_are_tiled_inside_the_sheet_not_run_off_it() -> None:
+    """Six storeys at a fixed 420 mm spacing is 2.5 m of paper.
+
+    Five of the six plans then sit outside an A1 and the sheet reads as empty,
+    which looks like a study that produced nothing.
+    """
+    sheet = LayoutSheet(width_mm=841.0, height_mm=594.0, left_mm=10.0, top_mm=10.0)
+    positions = sheet.grid(6)
+
+    assert len(positions) == 6
+    assert all(10.0 <= x <= 841.0 and 10.0 <= y <= 594.0 for x, y in positions)
+    assert len({y for _, y in positions}) > 1, "six drawings do not fit on one row"
+
+
+def test_a_sheet_that_will_not_describe_itself_falls_back_and_says_so() -> None:
+    """The fills are already drawn by then; no sheet at all would be worse."""
+    connection, _ = connect({"GetLayoutSettings": {"layoutSettings": []}})
+    sheet, assumed = layout_sheet(connection, "lay")
+
+    assert sheet == DEFAULT_SHEET
+    assert assumed
+
+
+def test_the_sheet_size_comes_from_the_layout_when_it_is_stated() -> None:
+    connection, _ = connect(_layout_responses())
+    sheet, assumed = layout_sheet(connection, "lay")
+
+    assert (sheet.width_mm, sheet.height_mm) == (841.0, 594.0)
+    assert not assumed
+
+
+def test_a_named_master_that_does_not_exist_lists_the_ones_that_do() -> None:
+    """Falling back to an arbitrary sheet would issue the study on somebody
+    else's title block."""
+    connection, _ = connect(_layout_responses())
+    with pytest.raises(ArchicadError, match="A1 - VERTICAL 1:200"):
+        layout_results(
+            connection, [8, 9], layout_name="Sun Study", master_layout="A1 VERTICAL 1:250"
+        )
+
+
+def test_a_master_is_matched_past_spacing_and_case() -> None:
+    connection, _ = connect({"GetNavigatorItemTree": _layout_book_tree()})
+    masters = master_layouts(connection)
+    assert choose_master(masters, "a1 -  vertical 1:100", 200.0).name == "A1 - VERTICAL 1:100"
+    assert choose_master(masters, None, 50.0).name == "A3 - HORIZONTAL", (
+        "no master names 1:50, so the first in the book is used"
+    )
 
 
 def test_only_the_storeys_that_carry_fills_are_cloned() -> None:

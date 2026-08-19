@@ -15,6 +15,7 @@ from sun_study.core.analysis import (
     Weighting,
     cumulative_minutes,
     instant_weights,
+    lit_share_per_instant,
     longest_continuous_minutes,
     summarise_by_parent,
     sunlit_matrix,
@@ -359,3 +360,65 @@ def test_as_dict_pairs_parents_with_durations() -> None:
     points = build_two_element_samples()
     result = summarise_by_parent(points, np.ones((3, 37), dtype=bool), 10.0)
     assert result.as_dict() == {"apartment-1": 360.0, "apartment-2": 360.0}
+
+
+# ---------------------------------------------------------------------------
+# Per-instant shares. The aggregate says whether an apartment complies; this
+# says when, which is what a nine-to-three drawing series is made of.
+# ---------------------------------------------------------------------------
+def test_lit_share_per_instant_is_weighted_by_area_not_by_sample_count() -> None:
+    """One big pane lit and one small pane dark is mostly lit.
+
+    Counting samples would let a 0.8 m highlight window outvote a 6 m slider
+    in the same room, which is the wrong answer in the one direction that
+    matters -- it flatters a room whose real glazing is in shadow.
+    """
+    points = SamplePoints(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        normals=np.array([[0.0, -1.0, 0.0], [0.0, -1.0, 0.0]]),
+        parent_ids=("apartment", "apartment"),
+        areas=np.array([9.0, 1.0]),
+    )
+    sunlit = np.array([[True, False], [False, False]])
+
+    shares = lit_share_per_instant(points, sunlit)
+
+    assert shares.shape == (1, 2)
+    assert shares[0, 0] == pytest.approx(0.9), "the 9 m2 sample carries nine tenths"
+    assert shares[0, 1] == pytest.approx(0.0)
+
+
+def test_lit_share_per_instant_agrees_with_the_aggregate_it_is_drawn_beside() -> None:
+    """The series and the compliance number must come from the same booleans.
+
+    With equal sample areas the weighted duration is exactly the share summed
+    over instants, so any drift between the two is a bug in one of them --
+    and a drawing that disagreed with the schedule beside it would be the
+    worst possible failure of this tool.
+    """
+    points = SamplePoints(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        normals=np.array([[0.0, -1.0, 0.0], [0.0, -1.0, 0.0]]),
+        parent_ids=("apartment", "apartment"),
+    )
+    sunlit = np.array([[True, True, False], [True, False, False]])
+    weights = instant_weights(3, 60.0, Weighting.UNIFORM)
+
+    shares = lit_share_per_instant(points, sunlit)
+    from_series = float(shares[0] @ weights)
+    from_samples = float(np.mean(cumulative_minutes(sunlit, weights)))
+
+    assert from_series == pytest.approx(from_samples)
+
+
+def test_lit_share_per_instant_survives_a_parent_with_no_area() -> None:
+    """A degenerate element must not divide by zero mid-run."""
+    points = SamplePoints(
+        positions=np.array([[0.0, 0.0, 0.0]]),
+        normals=np.array([[0.0, 0.0, 1.0]]),
+        parent_ids=("flat",),
+        areas=np.array([0.0]),
+    )
+    shares = lit_share_per_instant(points, np.array([[True, True]]))
+    assert shares.shape == (1, 2)
+    assert not shares.any()

@@ -80,7 +80,11 @@ select = [
 "tests/**" = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+# No `python_version` pin: mypy then checks against the interpreter it is
+# running on, which is the one whose stubs are installed. Pinning 3.11 while
+# a 3.12+ interpreter is in use fails on numpy's own stubs, which are written
+# in `type`-statement syntax. The CI matrix runs 3.11 and 3.12, so the oldest
+# supported version is still checked.
 strict = true
 files = ["src", "tests"]
 warn_unreachable = true

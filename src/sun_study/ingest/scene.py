@@ -39,6 +39,7 @@ from sun_study.core.sampling import (
 from sun_study.ingest.ifc import IfcElement, IfcModel
 
 FloatArray = npt.NDArray[np.float64]
+BoolArray = npt.NDArray[np.bool_]
 
 __all__ = [
     "DEFAULT_MASSING_SPACING_M",
@@ -59,6 +60,11 @@ ResolutionMethod = Literal["space-boundary", "geometric", "unresolved"]
 # depth: far enough to tolerate a deep reveal, near enough that a stairwell
 # window does not get attached to a bedroom.
 WINDOW_MAX_DISTANCE_M = 2.0
+
+#: How much nearer a room this run is not assessing has to be before a window
+#: is taken to belong to it rather than to the apartment it resolved to. See
+#: ``_belongs_elsewhere`` for why a bare comparison is not enough.
+UNASSESSED_OWNER_MARGIN_M = 0.5
 
 
 @dataclass(frozen=True)
@@ -140,6 +146,60 @@ class SceneConfig:
     in the direction the decision hoped for.
     """
 
+    open_space_zone_names: tuple[str, ...] = ()
+    """Only zones with these names are private open space, on top of the layer.
+
+    The mirror of ``apartment_zone_names``, and needed for the same reason: a
+    practice that keeps its dwellings and its balconies on one layer tells
+    them apart by name alone. On the reference project, ``06 | Zone.Units``
+    carries 15 dwellings named ``G08`` and 20 balconies named ``BY``, so
+    without this the balconies can only be reached by naming a layer that
+    would drag the dwellings in with them, and every apartment reports as
+    having no private open space at all.
+    """
+
+    floor_patch_spacing_m: float | None = None
+    """Grid spacing for the sun patch drawn on the floor, or None for no patch.
+
+    Opt-in, because it is a second ray-cast pass over a second set of samples
+    and it answers a different question. The assessment asks whether the
+    *glazing* saw the sun for two hours; a patch asks how far into the room
+    the sun reached at one instant, which is what a study drawing shows and
+    what nobody can read off a duration.
+
+    Coarser than the assessment grid by default. The patch is drawn, not
+    quoted: 250 mm is a stepped edge a reader understands as a sampling
+    resolution, while 200 mm over a whole floor plate is four times the
+    rectangles for a difference nobody can see on an A1.
+    """
+
+    floor_patch_height_m: float = 0.05
+    """How far above the floor the patch is sampled.
+
+    Not the 1 m open-space plane: this is a picture of sun *on the floor*, and
+    sampling it at waist height would put the patch a metre out of place under
+    a low winter sun -- at 20 degrees elevation, 2.7 m out.
+    """
+
+    exclude_above_m: float | None = None
+    """Drop every element whose geometry lies entirely above this height, in
+    project metres.
+
+    The knob for hotlinked masters. A practice parks its unit-type masters
+    high above the site, and they export as ordinary geometry on the *same
+    layers* as the real building -- ``01 | Wall.External`` is the wall of the
+    real tower and of the master alike -- so no layer filter can separate
+    them, and geometry above a building can only shade it. On the reference
+    project the real building tops out at 85 m and three sets of masters sit
+    at 157 m, 166 m and 262 m; cutting at 100 m drops them and, with them,
+    four Zones that would otherwise have entered the denominator as
+    apartments.
+
+    Entirely above, not partly: a roof that crosses the plane is kept. The
+    height is a project coordinate, which is what the overhead warning reports
+    so the number can be read straight off a run that did not use this.
+    """
+
     context_layers: tuple[str, ...] = ()
     """Elements on these layers shade the subject but are never measured.
 
@@ -186,8 +246,9 @@ class SceneConfig:
             )
         else:
             rooms = ", ".join(self.living_room_space_names) or "all spaces"
+        named = f" named {list(self.open_space_zone_names)}" if self.open_space_zone_names else ""
         open_space = (
-            f"zones on layers {list(self.open_space_zone_layers)}"
+            f"zones on layers {list(self.open_space_zone_layers)}{named}"
             if self.open_space_zone_layers
             else f"slabs by prefix {list(self.balcony_name_prefixes)}"
         )
@@ -199,6 +260,16 @@ class SceneConfig:
         if self.apartment_zone_names:
             zones += f"named {list(self.apartment_zone_names)} | "
         context = f"context layers {list(self.context_layers)} | " if self.context_layers else ""
+        patch = (
+            f"floor patch at {self.floor_patch_spacing_m:g} m | "
+            if self.floor_patch_spacing_m
+            else ""
+        )
+        cut = (
+            f"geometry above {self.exclude_above_m:g} m dropped | "
+            if self.exclude_above_m is not None
+            else ""
+        )
         return (
             f"timezone {self.timezone} | living rooms matched by [{rooms}] | "
             f"{zones}{context}"
@@ -207,6 +278,8 @@ class SceneConfig:
             f"surface offset {self.surface_offset_m * 1000:.0f} mm | "
             f"open space at {self.open_space_height_m:g} m | "
             f"context radius {radius} | "
+            f"{patch}"
+            f"{cut}"
             f"vegetation {'included' if self.include_vegetation else 'excluded'}"
         )
 
@@ -234,6 +307,29 @@ class Scene:
     config: SceneConfig
     provenance: dict[str, object] = field(default_factory=dict)
 
+    floor_samples: SamplePoints | None = None
+    """The floors of the assessed apartments and their open space, gridded in
+    plan. Present only when ``SceneConfig.floor_patch_spacing_m`` asks for it."""
+
+    floor_is_open_space: BoolArray | None = None
+    """Which of those cells are balcony rather than room, parallel to
+    ``floor_samples``.
+
+    Both are parented to the apartment, because a patch belongs to the flat it
+    is drawn on. But the ADG asks separately about the living room and about
+    the private open space, and the office's own drawings annotate them
+    separately too, so the two have to stay tellable apart after the fact."""
+
+    glazed_occluders: TriangleMesh | None = None
+    """The occluder set with the glazing taken out of it.
+
+    A window is a solid in the export, so the set that answers "is this pane
+    lit" is exactly the wrong one for "did the sun get through that pane and
+    onto the floor" -- the pane would shade the room behind it. The opening in
+    the wall is a real hole in the wall mesh, so removing the glazing leaves
+    the sun a way in and leaves every wall, sill and balcony above still
+    blocking it."""
+
     def describe(self) -> str:
         by_method: dict[str, int] = {}
         for assignment in self.assignments:
@@ -244,7 +340,8 @@ class Scene:
             f"  {self.config.describe()}",
             f"  occluders {self.occluders.triangle_count} triangles | "
             f"{len(self.window_samples)} window samples | "
-            f"{len(self.open_space_samples)} open space samples",
+            f"{len(self.open_space_samples)} open space samples"
+            + (f" | {len(self.floor_samples)} floor samples" if self.floor_samples else ""),
             f"  window to space resolution: {routes or 'none'}",
             f"  {self._openings_summary()}",
         ]
@@ -305,6 +402,7 @@ def planar_face_grid(
     spacing_m: float = DEFAULT_GRID_SPACING_M,
     surface_offset_m: float = DEFAULT_SURFACE_OFFSET_M,
     angle_tolerance_deg: float = 5.0,
+    clip_to_face: bool = False,
 ) -> SamplePoints | None:
     """Grid the dominant planar face of a mesh, facing along ``outward_hint``.
 
@@ -317,6 +415,15 @@ def planar_face_grid(
     face normal rather than assumed axis-aligned. It does *not* handle a curved
     or faceted window as anything but its largest flat face, which is a real
     limitation for curtain walling and is recorded rather than hidden.
+
+    The grid covers the face's **bounding rectangle**, which is the face itself
+    for a window and is not for a room. ``clip_to_face`` drops the samples that
+    fall outside the face's own triangles: an L-shaped flat otherwise gets a
+    grid over the whole rectangle it fits inside, and a sun patch drawn from it
+    reaches into rooms the apartment does not contain. Measured on the
+    reference project, 37% of the drawn patch area sat outside any apartment
+    before this. It is off by default because a window needs no clipping and
+    the test is not free.
 
     Returns ``None`` when the mesh has no usable planar face.
     """
@@ -374,13 +481,67 @@ def planar_face_grid(
     if float(np.cross(edge_u, edge_v) @ normal) < 0.0:
         edge_u, edge_v = edge_v, edge_u
 
-    return grid_on_rectangle(
+    grid = grid_on_rectangle(
         corner,
         edge_u,
         edge_v,
         parent_id,
         spacing_m=spacing_m,
         surface_offset_m=surface_offset_m,
+    )
+    if not clip_to_face:
+        return grid
+    return _clip_to_triangles(grid, vertices, origin, axis_u, axis_v, surface_offset_m, normal)
+
+
+def _clip_to_triangles(
+    grid: SamplePoints,
+    vertices: FloatArray,
+    origin: FloatArray,
+    axis_u: FloatArray,
+    axis_v: FloatArray,
+    surface_offset_m: float,
+    normal: FloatArray,
+) -> SamplePoints | None:
+    """Keep only the samples that land on the face, not merely in its box.
+
+    Both the samples and the face are flattened onto the face's own basis and
+    tested by barycentric sign, which is exact for a triangulated surface and
+    needs nothing but numpy.
+    """
+    # The samples were lifted off the surface by the offset; put them back on
+    # the plane before testing, or every one of them misses it.
+    on_plane = grid.positions - surface_offset_m * normal - origin
+    points = np.column_stack((on_plane @ axis_u, on_plane @ axis_v))
+
+    corners = vertices.reshape(-1, 3, 3) - origin
+    triangles = np.stack((corners @ axis_u, corners @ axis_v), axis=-1)  # (n_triangles, 3, 2)
+
+    a, b, c = triangles[:, 0, :], triangles[:, 1, :], triangles[:, 2, :]
+    v0, v1 = b - a, c - a
+    denominator = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+    usable = np.abs(denominator) > 1e-12
+    if not usable.any():
+        return grid
+
+    a, v0, v1 = a[usable], v0[usable], v1[usable]
+    denominator = denominator[usable]
+
+    offset = points[:, None, :] - a[None, :, :]
+    u = (offset[..., 0] * v1[None, :, 1] - offset[..., 1] * v1[None, :, 0]) / denominator
+    v = (offset[..., 1] * v0[None, :, 0] - offset[..., 0] * v0[None, :, 1]) / denominator
+    # A small tolerance so a sample exactly on a shared edge belongs to the
+    # face rather than falling between two triangles of it.
+    inside = ((u >= -1e-9) & (v >= -1e-9) & (u + v <= 1.0 + 1e-9)).any(axis=1)
+    if not inside.any():
+        return None
+
+    return SamplePoints(
+        positions=grid.positions[inside],
+        normals=grid.normals[inside],
+        parent_ids=tuple(np.asarray(grid.parent_ids)[inside].tolist()),
+        areas=grid.areas[inside],
+        surface_offset_m=grid.surface_offset_m,
     )
 
 
@@ -452,6 +613,65 @@ def _assign_windows(
     return tuple(assignments)
 
 
+def _belongs_elsewhere(
+    element: IfcElement, owner: IfcElement, unassessed: tuple[IfcElement, ...]
+) -> bool:
+    """Whether a room this run is not assessing is the better owner.
+
+    Clearly nearer, not merely nearer. A living-room slider sits in the wall
+    between the unit Zone and its own balcony Zone, near enough to equidistant
+    from both that a bare nearest-wins hands it to whichever the iteration
+    reaches first: on the reference project, resolving that way lost 3 of 40
+    marked openings. A neighbouring apartment's window, which is what this is
+    for, is metres away.
+    """
+    if not unassessed:
+        return False
+    here = _distance_to_box(element.centroid, *owner.bounds)
+    there = min(_distance_to_box(element.centroid, *space.bounds) for space in unassessed)
+    return there + UNASSESSED_OWNER_MARGIN_M < here
+
+
+def _drop_other_rooms_windows(
+    model: IfcModel,
+    assignments: tuple[WindowAssignment, ...],
+    spaces: tuple[IfcElement, ...],
+    unassessed: tuple[IfcElement, ...],
+) -> tuple[WindowAssignment, ...]:
+    """Drop the windows that belong to a room outside the assessed set.
+
+    Windows resolve against the assessed rooms alone, so filtering an
+    apartment out leaves its glazing looking for a home and the nearest
+    surviving apartment takes it. On the fixture, restricting a run to one
+    apartment doubled its window count and moved its living room from 106 to
+    202 minutes -- a fail turned into a pass by narrowing the denominator,
+    which must never move the numerator.
+
+    An unresolved window is kept: "no room could be found for it" is a fact
+    about the model and is reported as one, while "it serves a room this run
+    is not assessing" is not.
+    """
+    if not unassessed:
+        return assignments
+    by_id = {space.global_id: space for space in spaces}
+    elsewhere = {space.global_id for space in unassessed}
+    kept = []
+    for assignment in assignments:
+        owner = by_id.get(assignment.space_id) if assignment.space_id else None
+        window = model.by_id(assignment.window_id)
+        if owner is None or window is None:
+            kept.append(assignment)
+            continue
+        # A space boundary is the export stating which room the window serves,
+        # and that beats any distance.
+        if model.space_boundaries.get(assignment.window_id) in elsewhere:
+            continue
+        if _belongs_elsewhere(window, owner, unassessed):
+            continue
+        kept.append(assignment)
+    return tuple(kept)
+
+
 def _open_space_grid(
     element: IfcElement, owner_id: str, config: SceneConfig
 ) -> SamplePoints | None:
@@ -483,6 +703,47 @@ def _open_space_grid(
         np.array([0.0, 0.0, -1.0]),
         spacing_m=config.grid_spacing_m,
         surface_offset_m=-config.open_space_height_m,
+    )
+    if samples is None:
+        return None
+    return replace(samples, normals=-samples.normals)
+
+
+def _floor_grid(element: IfcElement, owner_id: str, config: SceneConfig) -> SamplePoints | None:
+    """Grid a Zone's floor in plan, for drawing the sun patch on it.
+
+    The same trick as ``_open_space_grid`` uses on a balcony Zone, and for the
+    same reason: a Zone is a void, so its *top* face is the underside of the
+    slab above and gridding that puts every sample in the storey overhead.
+    Take the face whose normal points down out of the volume, offset against
+    that normal to rise off the floor, then flip the normals back up, because
+    a floor faces the sky whichever way the face it came from pointed.
+
+    Only the height differs, and it differs for a stated reason: open space is
+    assessed at 1 m, while a patch is a picture of sun on the floor and has to
+    be sampled there.
+    """
+    spacing = config.floor_patch_spacing_m
+    if spacing is None:
+        return None
+    if element.ifc_class != "IfcSpace":
+        # A balcony *slab* is a solid, so the surface anybody stands on -- and
+        # the one a patch lands on -- is its top face, not its underside.
+        return planar_face_grid(
+            element.mesh,
+            owner_id,
+            np.array([0.0, 0.0, 1.0]),
+            spacing_m=spacing,
+            surface_offset_m=config.floor_patch_height_m,
+            clip_to_face=True,
+        )
+    samples = planar_face_grid(
+        element.mesh,
+        owner_id,
+        np.array([0.0, 0.0, -1.0]),
+        spacing_m=spacing,
+        surface_offset_m=-config.floor_patch_height_m,
+        clip_to_face=True,
     )
     if samples is None:
         return None
@@ -663,10 +924,14 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
     not noise to be removed.
     """
     orientation = model.orientation(config.timezone)
+    model, cut_above = _cut_above(model, config.exclude_above_m)
 
     all_spaces = model.of_class("IfcSpace")
     open_space_zones = tuple(
-        space for space in all_spaces if _on_layer(space, config.open_space_zone_layers)
+        space
+        for space in all_spaces
+        if _on_layer(space, config.open_space_zone_layers)
+        and _named_one_of(space, config.open_space_zone_names)
     )
     # A balcony Zone is not an apartment, so it never enters the denominator
     # even when the apartment layer filter is left wide open.
@@ -687,16 +952,39 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
     _require_matches(
         "open space zone layers", open_space_zones, config.open_space_zone_layers, model
     )
+    if config.open_space_zone_names and not open_space_zones:
+        raise SceneConfigError(
+            f"No zones on {list(config.open_space_zone_layers)} are named any of "
+            f"{list(config.open_space_zone_names)}. Run 'sun-study archicad-info' "
+            f"to see the zone names on each layer."
+        )
+
+    apartment_ids = {space.global_id for space in spaces}
+    # The rooms the filters excluded. They are not assessed, but a window or a
+    # balcony may still belong to one, and one that does is dropped rather
+    # than handed to the nearest apartment that survived. Open-space Zones are
+    # deliberately not here: a marked slider sits in the wall between a living
+    # room and its own balcony, so treating the balcony as a rival owner would
+    # drop exactly the glazing D24 marks.
+    unassessed = tuple(
+        space
+        for space in all_spaces
+        if space.global_id not in apartment_ids and space.global_id not in open_space_ids
+    )
 
     if config.livable_opening_suffix:
         # D24: the glazing is marked, so the room needs no name and every
         # space a marked opening serves is an apartment.
         openings = tuple(e for e in model.elements if _is_livable_opening(e, config))
-        assignments = _assign_windows(model, openings, spaces)
+        assignments = _drop_other_rooms_windows(
+            model, _assign_windows(model, openings, spaces), spaces, unassessed
+        )
         living_rooms = {a.space_id for a in assignments if a.space_id is not None}
     else:
         openings = model.of_class("IfcWindow")
-        assignments = _assign_windows(model, openings, spaces)
+        assignments = _drop_other_rooms_windows(
+            model, _assign_windows(model, openings, spaces), spaces, unassessed
+        )
         living_rooms = {space.global_id for space in spaces if _is_living_room(space, config)}
 
     space_by_id = {space.global_id: space for space in spaces}
@@ -748,18 +1036,30 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         )
 
     balcony_groups, unattached_open_space = [], 0
+    owned_open_space: list[tuple[IfcElement, str]] = []
     open_space_routes: dict[str, int] = {}
     for slab in open_space_elements:
         # Parent open space to the apartment it serves, not to the slab, so
         # window and open-space results join on one key downstream. Communal
         # open space has no apartment and is counted separately rather than
         # attached to the nearest one.
+        # Resolved against the excluded rooms as well, because what decides
+        # this one is vertical -- an apartment stands on top of its balcony --
+        # and a distance margin cannot separate a balcony from the apartment
+        # whose ceiling it is flush against. Where the winner is a room this
+        # run is not assessing, the balcony is dropped: it is neither ours nor
+        # communal, and counting it as either is a wrong number rather than a
+        # missing one.
         owner, route = _open_space_owner(
             slab,
-            spaces,
+            spaces + unassessed,
             config.open_space_max_distance_m,
             config.open_space_level_tolerance_m,
         )
+        if owner is not None and owner.global_id not in apartment_ids:
+            route = "another-room"
+            open_space_routes[route] = open_space_routes.get(route, 0) + 1
+            continue
         open_space_routes[route] = open_space_routes.get(route, 0) + 1
         if owner is None:
             unattached_open_space += 1
@@ -768,6 +1068,23 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         samples = _open_space_grid(slab, owner.global_id, config)
         if samples is not None:
             balcony_groups.append(samples)
+        # Kept for the floor patch, which grids the same Zone at floor level
+        # rather than at the 1 m assessment plane.
+        owned_open_space.append((slab, owner.global_id))
+
+    floor_groups: list[SamplePoints] = []
+    floor_kinds: list[BoolArray] = []
+    if config.floor_patch_spacing_m:
+        for space in spaces:
+            grid = _floor_grid(space, space.global_id, config)
+            if grid is not None:
+                floor_groups.append(grid)
+                floor_kinds.append(np.zeros(len(grid), dtype=np.bool_))
+        for zone, owner_id in owned_open_space:
+            grid = _floor_grid(zone, owner_id, config)
+            if grid is not None:
+                floor_groups.append(grid)
+                floor_kinds.append(np.ones(len(grid), dtype=np.bool_))
 
     provenance: dict[str, object] = {
         "source": model.path.name,
@@ -779,6 +1096,8 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         "windows_assessed": assessed,
         "windows_skipped": skipped,
         "spaces_total": len(spaces),
+        "elements_above_cut": cut_above,
+        "floor_samples": len(SamplePoints.concatenate(floor_groups)) if floor_groups else 0,
         "living_rooms_matched": len(living_rooms),
         "openings_per_apartment": _openings_per_apartment(assignments, living_rooms),
         "balconies_matched": len(balcony_groups),
@@ -797,10 +1116,37 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         occluders=occluders,
         window_samples=SamplePoints.concatenate(window_groups),
         open_space_samples=SamplePoints.concatenate(balcony_groups),
+        floor_samples=SamplePoints.concatenate(floor_groups) if floor_groups else None,
+        floor_is_open_space=(np.concatenate(floor_kinds) if floor_kinds else None),
+        glazed_occluders=(
+            model.occluder_mesh(transparent=config.livable_opening_classes)
+            if config.floor_patch_spacing_m
+            else None
+        ),
         assignments=assignments,
         config=config,
         provenance=provenance,
     )
+
+
+def _cut_above(model: IfcModel, height_m: float | None) -> tuple[IfcModel, int]:
+    """Remove every element that lies entirely above ``height_m``.
+
+    Done to the model rather than to the occluder set, because a parked
+    hotlink master brings its Zones with it: on the reference project four of
+    the fifteen Zones matching the apartment filter were master copies at
+    157 m, and counting them as apartments is the same mistake as letting them
+    cast a shadow. Cutting once, before anything is selected, keeps the two
+    from drifting apart.
+    """
+    if height_m is None:
+        return model, 0
+    kept = tuple(
+        element
+        for element in model.elements
+        if not len(element.mesh.vertices) or float(element.mesh.vertices[:, 2].min()) <= height_m
+    )
+    return replace(model, elements=kept), len(model.elements) - len(kept)
 
 
 def _clip_to_radius(model: IfcModel, radius_m: float) -> TriangleMesh:

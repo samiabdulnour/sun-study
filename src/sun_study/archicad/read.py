@@ -42,6 +42,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import ifcopenshell.guid
+
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError, CommandFailedError
 from sun_study.core.orientation import SiteOrientation
 from sun_study.ingest.ifc import IfcModel
@@ -53,9 +55,11 @@ __all__ = [
     "GeoreferencingMismatchError",
     "LibraryObject",
     "ProjectInfo",
+    "clear_selection",
     "cross_check_georeferencing",
     "disambiguated",
     "elements_by_ifc_ids",
+    "expanded_ifc_guid",
     "export_ifc",
     "gdl_parameters",
     "layer_names",
@@ -370,6 +374,31 @@ def orientation_from(model: IfcModel, timezone: str) -> SiteOrientation:
     return model.orientation(timezone)
 
 
+def clear_selection(connection: ArchicadConnection) -> int:
+    """Deselect everything, and say how much was selected. **Before any export.**
+
+    A selection is not decoration: with one in place, the export writes an
+    ``IfcSite`` and an ``IfcBuilding`` and nothing else -- 5.8 kB where the
+    project gives 86 MB -- because the office translator exports the selection
+    when there is one. Nothing says so. The run then fails much later and
+    somewhere else, as "apartment zone layers matched nothing", which sends
+    the reader to check a layer name that was right all along.
+
+    This tool always wants the whole model, and it creates the trap itself:
+    ``CreateHatches`` leaves its last fill selected, so drawing the result of
+    one run silently empties the export of the next. Clearing is safe -- a
+    selection is transient interface state, not project data -- and the count
+    comes back so the run can say it happened rather than reaching behind the
+    user's back.
+    """
+    response = connection.run_tapir("GetSelectedElements", {})
+    selected = response.get("elements") if isinstance(response, dict) else None
+    if not isinstance(selected, list) or not selected:
+        return 0
+    connection.run_tapir("ChangeSelectionOfElements", {"removeElementsFromSelection": selected})
+    return len(selected)
+
+
 def export_ifc(connection: ArchicadConnection, destination: str | Path) -> Path:
     """Save the open project to an IFC file and return the path.
 
@@ -378,6 +407,11 @@ def export_ifc(connection: ArchicadConnection, destination: str | Path) -> Path:
     and silently overriding them would produce a model that does not match
     what the same button produces by hand. ``docs/archicad.md`` lists the
     translator settings the analysis needs.
+
+    The one thing it does override is the *selection*, for the reason
+    ``clear_selection`` gives: with one in place the translator exports it
+    alone, and a 2D fill selected by the previous run exports as nothing at
+    all.
     """
     path = Path(destination).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,6 +537,32 @@ def layer_names(connection: ArchicadConnection) -> dict[int, str]:
     }
 
 
+def expanded_ifc_guid(ifc_id: str) -> str | None:
+    """The plain GUID an IFC GlobalId compresses, or None if it is not one.
+
+    An ``IfcRoot.GlobalId`` is a 128-bit GUID packed into 22 base64 characters,
+    and that is what an export writes: ``0UHJKXnLzA2OlQcIwF4FFe``. Archicad
+    holds the same identity in its own form, hyphenated and upper case --
+    ``1E453521-C55F-4A09-8BDA-992E8F10F3E8`` -- and on AC26 that is the form
+    ``GetElementsByIFCIds`` matches against.
+
+    The two are the same number, so offering only the compressed one finds
+    nothing. On the reference project that put all fifteen apartments in the
+    unmatched list, which reads as an export that has drifted away from the
+    project rather than as two spellings of one identifier.
+    """
+    if len(ifc_id) != 22:
+        return None
+    try:
+        expanded = ifcopenshell.guid.expand(ifc_id)
+    except Exception:  # a malformed identifier is simply not one
+        return None
+    if len(expanded) != 32:
+        return None
+    parts = (expanded[:8], expanded[8:12], expanded[12:16], expanded[16:20], expanded[20:])
+    return "-".join(parts).upper()
+
+
 def elements_by_ifc_ids(connection: ArchicadConnection, ifc_ids: list[str]) -> dict[str, list[str]]:
     """IFC GlobalId -> the Archicad element GUIDs carrying it.
 
@@ -510,11 +570,23 @@ def elements_by_ifc_ids(connection: ArchicadConnection, ifc_ids: list[str]) -> d
     *external* one belonging to merged IFC content placed more than once, and
     it can be empty when the element no longer exists. Callers decide what to
     do with each case; this function does not pretend either away.
+
+    Each identifier is offered in both spellings -- as given, and expanded to
+    the plain GUID -- in one request, because which one a build matches on is
+    not something the caller can be expected to know. See
+    ``expanded_ifc_guid``.
     """
     if not ifc_ids:
         return {}
 
-    response = connection.run_tapir("GetElementsByIFCIds", {"ifcIds": list(ifc_ids)})
+    asked: dict[str, str] = {}
+    for ifc_id in ifc_ids:
+        asked.setdefault(ifc_id, ifc_id)
+        expanded = expanded_ifc_guid(ifc_id)
+        if expanded is not None:
+            asked.setdefault(expanded, ifc_id)
+
+    response = connection.run_tapir("GetElementsByIFCIds", {"ifcIds": list(asked)})
     rows = response.get("elementsByIFCIds") if isinstance(response, dict) else None
     if not isinstance(rows, list):
         raise ArchicadError(f"GetElementsByIFCIds returned no mapping: {response!r}")
@@ -523,7 +595,14 @@ def elements_by_ifc_ids(connection: ArchicadConnection, ifc_ids: list[str]) -> d
     for row in rows:
         if not isinstance(row, dict) or "ifcId" not in row:
             continue
-        mapping[str(row["ifcId"])] = _element_guids(row, "GetElementsByIFCIds")
+        wanted = asked.get(str(row["ifcId"]))
+        if wanted is None:
+            continue
+        found = _element_guids(row, "GetElementsByIFCIds")
+        # A spelling that resolves beats one that does not; two that both
+        # resolve are the same element by construction.
+        if found or not mapping[wanted]:
+            mapping[wanted] = found
     return mapping
 
 

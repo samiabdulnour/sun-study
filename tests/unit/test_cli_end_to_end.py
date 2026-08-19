@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from sun_study.cli import app
 from sun_study.disclaimer import STATUS
+from sun_study.ingest.scene import SceneConfig
 from sun_study.pipeline import PipelineResult, run_assessment
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -98,10 +99,67 @@ def test_the_area_selects_the_published_threshold(result: PipelineResult) -> Non
     )
 
 
+def test_the_run_keeps_when_the_sun_arrived_not_only_how_long(result: PipelineResult) -> None:
+    """The per-instant series is the drawing series' only source.
+
+    It used to be computed inside ``_durations`` and dropped on the floor, so
+    a study could say an apartment gets 106 minutes and nothing at all about
+    which 106.
+    """
+    series = result.instants
+    assert series is not None
+    assert len(series.times) == result.sun_position_count == 37
+    assert series.times[0].strftime("%H:%M") == "09:00"
+    assert series.times[-1].strftime("%H:%M") == "15:00"
+
+    assert series.living_share.shape == (len(series.apartment_ids), 37)
+    assert ((series.living_share >= 0.0) & (series.living_share <= 1.0)).all(), (
+        "a share is a fraction of an element's area, so it cannot leave [0, 1]"
+    )
+    assert set(series.apartment_ids) == {a.apartment_id for a in result.assessment.apartments}
+
+    # The shaded ground-floor apartment is dark at some instant and lit at
+    # another; a series that never changes would be a constant redrawn 37 times.
+    by_name = {a.apartment_name: a.apartment_id for a in result.assessment.apartments}
+    row = series.apartment_ids.index(by_name["Apartment L00-A"])
+    assert series.living_share[row].min() < series.living_share[row].max()
+
+
+def test_the_sun_patch_moves_across_the_floor_through_the_day() -> None:
+    """The patch is the deliverable's actual subject.
+
+    A patch that never moved would mean the instant index was being ignored,
+    which is exactly the bug a still picture of a moving thing hides best.
+    """
+    result = run_assessment(
+        SAMPLE,
+        timezone="Australia/Sydney",
+        scene_config=SceneConfig(timezone="Australia/Sydney", floor_patch_spacing_m=0.25),
+    )
+    series = result.instants
+    assert series is not None
+    assert series.floor_sunlit is not None
+
+    morning = series.patches_at(0)
+    afternoon = series.patches_at(len(series.times) - 1)
+    assert morning and afternoon
+    assert morning != afternoon, "the sun does not stand still between 9 and 3"
+
+    assert series.floor_positions is not None
+    lit_area = sum(r.area_m2 for rectangles in morning.values() for r in rectangles)
+    floor_area = len(series.floor_positions) * 0.25**2
+    assert 0 < lit_area < floor_area, "a patch cannot exceed the floor it lies on"
+
+
+def test_no_patch_is_computed_when_none_was_asked_for(result: PipelineResult) -> None:
+    """The default run must not pay for a drawing it was not asked to make."""
+    assert result.instants is not None
+    assert result.instants.floor_sunlit is None
+    assert result.instants.patches_at(0) == {}
+
+
 def test_a_mismatched_timezone_is_rejected() -> None:
     """Two different zones in one run would be silently wrong."""
-    from sun_study.ingest.scene import SceneConfig
-
     with pytest.raises(ValueError, match="two different zones"):
         run_assessment(
             SAMPLE,
@@ -221,6 +279,51 @@ def test_a_wrong_living_room_name_is_visible_not_silent() -> None:
     assert "DOES NOT COMPLY" in invocation.output, (
         "an empty assessment must not report as compliant"
     )
+
+
+def test_the_zone_name_filter_reaches_the_scene() -> None:
+    """``--apartment-zone-name`` narrows the denominator.
+
+    The option existed on both commands and was dropped between them and the
+    config, so a run that named one zone silently assessed all four. Nothing
+    in the output said so -- a filter that does not filter reads exactly like
+    a project with more apartments than you thought.
+    """
+    invocation = runner.invoke(
+        app,
+        [
+            "run",
+            str(SAMPLE),
+            "--timezone",
+            "Australia/Sydney",
+            "--apartment-zone-name",
+            "Apartment L00-A",
+        ],
+    )
+    assert invocation.exit_code == 0, invocation.output
+    assert "named ['Apartment L00-A']" in invocation.output
+    assert "0/1 apartments" in invocation.output, "the other three must be out of the count"
+
+
+def test_filtering_the_apartments_does_not_change_their_numbers(result: PipelineResult) -> None:
+    """Narrowing the denominator must not move the numerator.
+
+    Windows and balconies used to be resolved against the *surviving* spaces,
+    so filtering to one apartment let it inherit its neighbours' glazing: the
+    fixture's L00-A read 106 minutes in a full run and 202 in a filtered one,
+    which is the difference between failing 4A-1 and passing it.
+    """
+    alone = run_assessment(
+        SAMPLE,
+        timezone="Australia/Sydney",
+        scene_config=SceneConfig(
+            timezone="Australia/Sydney", apartment_zone_names=("Apartment L00-A",)
+        ),
+    )
+    (only,) = alone.assessment.apartments
+    full = next(a for a in result.assessment.apartments if a.apartment_name == only.apartment_name)
+    assert only.living_room_minutes == pytest.approx(full.living_room_minutes)
+    assert only.open_space_minutes == pytest.approx(full.open_space_minutes)
 
 
 # ---------------------------------------------------------------------------

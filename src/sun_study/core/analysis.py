@@ -53,6 +53,7 @@ __all__ = [
     "band_by_area",
     "cumulative_minutes",
     "instant_weights",
+    "lit_share_per_instant",
     "longest_continuous_minutes",
     "sunlit_matrix",
 ]
@@ -197,6 +198,40 @@ class SunlightResult:
         return dict(zip(self.parent_ids, self.cumulative_minutes.tolist(), strict=True))
 
 
+def lit_share_per_instant(points: SamplePoints, sunlit: BoolArray) -> FloatArray:
+    """Area-weighted sunlit share of each parent at each instant.
+
+    Shape ``(n_parents, n_instants)``, rows in ``points.unique_parents`` order,
+    every value between 0 and 1. This is what a per-instant drawing colours by:
+    the aggregate minutes say whether an apartment complies, and say nothing
+    about *when*, which is the whole subject of a nine-to-three series.
+
+    Weighted by area rather than by sample count because the grids are not
+    uniform between elements -- a 6 m slider and a 0.8 m highlight window in
+    the same room carry very different weight, and counting samples would let
+    the small one outvote the large one.
+    """
+    parents = points.unique_parents
+    if not parents or sunlit.size == 0:
+        return np.zeros(
+            (len(parents), sunlit.shape[1] if sunlit.ndim == 2 else 0), dtype=np.float64
+        )
+
+    shares = np.zeros((len(parents), sunlit.shape[1]), dtype=np.float64)
+    for row, parent in enumerate(parents):
+        mask = points.mask_for(parent)
+        areas = points.areas[mask]
+        total = float(areas.sum())
+        if total <= 0.0:
+            continue
+        shares[row] = (areas @ sunlit[mask].astype(np.float64)) / total
+    # A share is a fraction of an element's area by construction, but the
+    # division of a sum by itself lands a hair over 1.0 for a fully lit
+    # element, and a caller comparing against a threshold should not have to
+    # know that.
+    return np.clip(shares, 0.0, 1.0)
+
+
 def summarise_by_parent(
     points: SamplePoints,
     sunlit: BoolArray,
@@ -219,14 +254,19 @@ def summarise_by_parent(
     per_sample_continuous = longest_continuous_minutes(sunlit, timestep_minutes)
 
     parents = points.unique_parents
-    reduce = np.mean if reducer == "mean" else np.min
+
+    # Wrapped rather than bound to `np.mean`/`np.min` directly: the two are
+    # overloaded, and the type of a variable holding either one is not
+    # something a type checker can call.
+    def reduce(values: FloatArray) -> float:
+        return float(np.mean(values) if reducer == "mean" else np.min(values))
 
     cumulative = np.array(
-        [float(reduce(per_sample_cumulative[points.mask_for(pid)])) for pid in parents],
+        [reduce(per_sample_cumulative[points.mask_for(pid)]) for pid in parents],
         dtype=np.float64,
     )
     continuous = np.array(
-        [float(reduce(per_sample_continuous[points.mask_for(pid)])) for pid in parents],
+        [reduce(per_sample_continuous[points.mask_for(pid)]) for pid in parents],
         dtype=np.float64,
     )
 

@@ -734,3 +734,351 @@ Two consequences worth stating plainly. An apartment with no label in it cannot 
 assessed against 4A-1 at all — the run names those rather than assuming the whole unit is
 a living room. And labels with a blank code are dropped rather than counted as unnamed
 rooms; 30 of 329 were blank, and a room with no name cannot be classified as anything.
+
+---
+
+### D30 — Parked hotlink masters are cut by height, not by layer
+
+`--exclude-above <metres>` drops every element whose geometry lies **entirely** above a
+stated height, spaces included.
+
+The earlier advice, recorded above and in `archicad.md`, was to exclude the hotlink
+layers from the export. On the reference project that is not possible: the masters carry
+the *same* layers as the real building. `01 | Wall.External` is the tower's external wall
+and the master's external wall, and no layer combination separates them.
+
+What does separate them is height. The reference project's real building occupies z 57 m
+to 85 m; its masters sit at 157–163 m (`L1`, `L2-L3`), 166–179 m (`CORE A`, `CORE B` and
+their variants) and 262–281 m (`3B - T01`, `4B - T01`, `3B - Penthouse` and the rest).
+Cutting at 100 m removes 1,500 elements and, with them, **four Zones that had been
+counted as apartments** — the master copies of the unit type, which matched the apartment
+filter as exactly as the real ones did and brought their own marked glazing with them.
+
+Cut once, at the model, before anything is selected. Doing it to the occluder set alone
+would leave those four Zones in the denominator: a run would then report 14 apartments
+where the building has 10, and the four extras would carry sunlight figures measured
+90 m above the site.
+
+**Entirely above, not partly.** A roof that crosses the plane is kept. The threshold is a
+project coordinate, which is exactly what the existing overhead warning prints, so the
+number can be read straight off a run that did not use the flag.
+
+Height, not storey name, because a storey filter would need the office's own storey
+naming to be stable across projects and it is not — `L1` here is a master, `LEVEL 01` is
+real, and the next project will use neither.
+
+---
+
+### D31 — Filtering the apartments must not move their numbers
+
+Selecting which Zones are apartments is a *denominator* decision. It changed the
+numerator, and silently.
+
+Windows resolve to the space they serve by nearest bounding box, and that search ran over
+the surviving spaces only. Filter an apartment out and its glazing goes looking for a new
+home: on the fixture, restricting a run to `Apartment L00-A` doubled its window count and
+took its living room from **106 minutes to 202** — a fail turned into a pass by naming one
+zone. Balconies did the same through the level-matching owner search.
+
+Resolving against every room instead is the obvious repair and it is worse. A marked
+living-room slider sits in the wall *between* the unit Zone and its own balcony Zone, near
+enough to equidistant that the balcony wins as often as not, and the glazing is then
+dropped as somebody else's: 3 of 40 marked openings on the reference project.
+
+So a window keeps the apartment it resolved to unless a room outside the run is **clearly**
+nearer — `UNASSESSED_OWNER_MARGIN_M`, 0.5 m — or unless an `IfcRelSpaceBoundary` names
+that outside room, which is the export stating the answer outright and beats any distance.
+Open space is decided the other way round, over every room including the excluded ones,
+because what settles a balcony is vertical (the apartment stands on top of it) and no
+distance margin can separate a balcony from the ceiling it is flush against. One dropped
+that way is reported as `another-room` rather than merged into the communal count.
+
+---
+
+### D32 — The per-instant series is kept, because "when" is not recoverable from "how long"
+
+`sunlit_matrix` has always produced an `(n_points, n_instants)` boolean, and
+`_durations` has always collapsed it to two floats per apartment and dropped it.
+That is everything the assessment needs and nothing a drawing needs: a study
+sheet showing 09:00, 09:15, 09:30 cannot be reconstructed from "106 minutes".
+
+`core.analysis.lit_share_per_instant` reduces the matrix to
+`(n_parents, n_instants)` — the **area-weighted** share of each element's
+glazing or open space in sun at each instant — and `PipelineResult.instants`
+carries it out with the clock times beside it. Cost is one float per apartment
+per instant; a 200-apartment job at 37 instants is 60 kB.
+
+**Area-weighted, not sample-counted**, for the same reason durations are: a 6 m
+slider and a 0.8 m highlight window in one room are not one vote each, and
+counting samples flatters a room whose real glazing is in shadow.
+
+**It agrees with the compliance number by construction** and there is a test
+that says so: with equal sample areas, the share summed over instants against
+the same weights *is* the cumulative duration. A drawing that disagreed with
+the schedule printed beside it would be the worst failure this tool could have,
+so the two are tied to one matrix rather than computed twice.
+
+The share is clipped to `[0, 1]`. It is a fraction by construction, but a sum
+divided by itself lands a hair above 1.0 for a fully lit element and no caller
+should have to know that.
+
+---
+
+### D33 — D28 was right about the mechanism and wrong about the limit
+
+D28 states: *"There is no `SetActiveDatabase` in the add-on."* There is no
+command by that name, but `ChangeWindow` does the same job —
+`{"databaseId": ..., "windowType": ...}` calls
+`ACAPI_Database_ChangeCurrentDatabase`, which is precisely what element creation
+follows. Measured live: a fill created with a worksheet active lands **in the
+worksheet** and is absent from the floor plan.
+
+So the literal reading of the office workflow — draw the study into a worksheet
+— *is* reachable, and D28's conclusion has to rest on its second argument
+rather than its first. That argument still holds and is the stronger one: a
+Drawing placed from a View stays **linked**, so re-running the study updates the
+sheet, while geometry drawn into a worksheet is a snapshot. Both are now
+offered; the linked route stays the default.
+
+Two limits decide how a worksheet target must be exposed, and both are
+measured rather than assumed:
+
+- **The worksheet has to exist already.** One created in the same session
+  cannot be activated — `-2130313110`, before and after `RebuildView`, whether
+  the id comes from `CreateWorksheets` or from the navigator. So the tool names
+  a worksheet and asks for it to exist, rather than making one and drawing into
+  it.
+- **A worksheet has no storeys.** `floorInd` is meaningless there, and six
+  storeys of fills drawn into one worksheet land on top of each other. A
+  worksheet target is therefore per storey, or it is one storey only.
+
+See `archicad.md` for the measurements.
+
+---
+
+### D34 — The patch is drawn on the floor, and the compliance number is not read off it
+
+`--patch-grid` grids the floor of every assessed apartment and its open space,
+casts against an occluder set with the **glazing removed**, and draws the lit
+cells. That is a second question about the same building, not a refinement of
+the first, and the two are kept apart on purpose:
+
+| | Assessment | Patch |
+|---|---|---|
+| Surface | the glazing plane | the floor |
+| Occluders | everything, glazing included | glazing removed |
+| Grid | 200 mm | 250 mm |
+| Answers | did this apartment get two hours | where was the sun at 09:15 |
+
+**Nothing about compliance changed.** The ADG figure still comes off the
+glazing, still by the route the golden file and the pvlib cross-check cover.
+The patch is a drawing, and a drawing that quietly became the compliance
+number would be the worst of both -- a coarser grid, a different surface, and a
+threshold nobody agreed to.
+
+**The glazing has to come out of the occluder set** or the answer is trivially
+"no sun indoors, ever": a window exported from Archicad is a solid, so the pane
+shades the room behind it. The opening in the wall is a real hole in the wall
+mesh, so removing the glazing leaves the sun a way in and leaves every wall,
+sill, reveal and balcony above still blocking it. Measured on the fixture:
+2244 lit floor cells with the panes solid, 2409 with them removed.
+
+**Rectangles, not a contour.** Marching squares, alpha shapes and polygon
+unions all want a dependency this project has ruled out, all produce polygons
+with holes, and `CreateHatches` takes a single contour and no holes. The grid
+is already a set of squares: merging lit cells into runs and merging identical
+runs across rows tiles the patch exactly, with no dependency and nothing lost.
+The stepped edge that results is not an approximation of the patch -- it is the
+sampling resolution, drawn honestly, and the office's own reference drawings
+have the same edge for the same reason.
+
+**Sampled at 50 mm, not at the 1 m open-space plane.** A patch is a picture of
+sun on the floor, and under a 20 degree winter sun a metre of height is 2.7 m
+of displacement -- the patch would be in the wrong room.
+
+---
+
+### D35 — The series is one row per level, and the level comes from the geometry
+
+A Worksheet has no storeys. Six levels of apartments drawn at their own
+coordinates therefore land on top of each other, and the tile becomes a
+composite of the whole tower: a plan of nothing.
+
+It is also wrong *numerically*, which is what settled it. `merge_lit_cells`
+snaps to a plan lattice, so cells from six levels at the same x and y merge
+into one rectangle and the lit area is counted once instead of six times. The
+composite reported 134 m² where the levels sum to 364 m².
+
+So the sheet is levels down the side and time across the top, which is what a
+study sheet has always been.
+
+**The level is taken from the floor's own elevation, not from the storey the
+export names.** On the reference project every `IfcSpace` comes through with
+`storey` unset -- the first attempt drew all ten apartments as one row and
+looked plausible. The geometry always knows what level it is on. Where a storey
+name *is* present it is used as the label, and the elevation is the fallback.
+
+---
+
+### D36 — The study drawing goes on the floor plan, and the patch is fitted onto it
+
+`--plan-instant` draws, per apartment and per instant: the sun patch, the
+outline of the assessed area, and a text block. That is the reference
+deliverable's own language, read off its drawings. The whole-day banded
+diagram (`--draw`) stays, because it answers a different question -- did this
+flat pass -- but it is no longer the only picture on offer.
+
+**On the floor plan, not in a worksheet**, because the plan linework is
+already there and the patch has to be read against the rooms it falls in. The
+worksheet series ([D35](#d35)) is the opposite trade: the whole day at once,
+deliberately abstract, with no plan under it. One layer per instant keeps the
+moments separable.
+
+**The patch has to be fitted onto the project frame.** It is computed in the
+export's world coordinates and those are not Archicad's project coordinates:
+an export made with the Survey Point option is already north-aligned, so the
+project is rotated relative to it. `core.geometry.fit_plan_transform` fits a
+rigid transform -- rotation and translation, never scale, never reflection --
+over one pair per apartment, and the residual is a **refusal** above 0.5 m
+rather than a warning, because a patch drawn through a bad transform lands on
+the wrong flat and looks entirely plausible.
+
+Two measurements shaped that:
+
+* **Pair on the dwelling, not on its floor cells.** The cells include the
+  balcony, which sits on one side of the flat and drags the centre by a
+  different amount for every apartment: 2.96 m of residual, and the drawing
+  refused for a reason that had nothing to do with the model.
+* **Compare box centres, not means.** A mean is weighted by how the points
+  happen to be distributed, and an outline's vertices and a grid's cells are
+  not distributed alike.
+
+After both, the reference project fits to **195 mm** across ten apartments --
+under one grid cell.
+
+---
+
+### D37 — A floor grid is clipped to its room; a window grid is not
+
+`planar_face_grid` grids the *bounding rectangle* of the face it picks. For a
+window that is the face. For a room it is not: an L-shaped flat gets a grid
+over the rectangle it fits inside, and the sun patch drawn from it reaches
+into rooms the apartment does not contain.
+
+Measured on the reference project by reading the drawn fills back out of
+Archicad and testing them against the Zone outlines: **37% of the patch area
+sat outside any apartment**. With `clip_to_face=True` on the floor grids, the
+same check gives 129.7 m² inside and 1.9 m² out -- and that remainder is edge
+cells displaced by the 195 mm transform residual, which is less than one cell.
+
+The clip is a barycentric test against the face's own triangles, exact for a
+triangulated surface and needing nothing but numpy. It is **off by default**:
+a window needs no clipping, and this is not free.
+
+It also corrects the reported areas. An unclipped grid overstates both the
+floor and the lit part of it, and those figures are what the annotation prints
+against each flat.
+
+---
+
+### D38 — A worksheet left in front empties the next export, and only a person can clear it
+
+Recorded because this tool creates the situation and cannot undo it.
+
+`draw_patch_series` activates a worksheet, and on AC26 nothing switches the
+window back: `ChangeWindow` with a floor plan's `databaseId`, with a
+`storyIndex`, or with neither, all return `{"success": true}` and leave the
+worksheet on screen. `windowType: "Section"` fails outright and `"3D"` is not a
+valid value at all.
+
+What makes it dangerous is that everything *else* keeps working. Element reads
+answer normally — 1,415 walls, 142 zones — because those follow the current
+**database**, which did move. Only the IFC export follows the **window**, and
+with a worksheet in front it writes 5.8 kB: an `IfcSite`, an `IfcBuilding`, no
+storeys and no elements. The next run then fails three steps later, in the
+scene filter, as `apartment zone layers matched nothing` — pointing at a layer
+name that was right all along.
+
+An earlier version of this file called that cosmetic, on the strength of one
+export that came out whole. That was a single measurement against a mechanism
+nobody had established, and it was wrong. The behaviour above is repeatable.
+
+So the series is drawn **last** in a run, the run says plainly that a floor
+plan must be opened before the next one, and `_connect` puts the *database*
+back even though it cannot move the window.
+
+---
+
+### D39 — Sheet geometry: four units, and a save that makes a layout readable
+
+Placing a Drawing correctly took four separate corrections, each of which
+looked like the last one had worked. Recorded together because they only make
+sense together.
+
+**The scale is on the view; the Drawing is placed at 100%.** `CreateDrawings`'
+`scale` field is a *magnification*, not a scale denominator. Passing 200 for
+"1:200" put the drawing on at 20000%. The view carries the scale
+(`drawingScale: 200`) and the Drawing goes on at `1.0`.
+
+**Positions are in metres; the page is described in millimetres.**
+`GetLayoutSettings` reports an A1 as `841 x 594`, and a Drawing's position is
+in metres. Computing a grid from the page size and passing it straight through
+put a drawing meant for x = 200 mm at x = 200 m — a quarter of a kilometre off
+a sheet 0.841 m wide. Those two bugs hid each other: the magnification made
+the drawing enormous, the units put it far away, and each made the other look
+plausible.
+
+**The angle comes from the Drawing tool's default**, not from the view. Every
+drawing arrived at 279.9° — the project's own north — with the view's
+`rotation` at 0. There is no angle field on `CreateDrawings`; it is fixed
+afterwards with `RotateElements`, which takes no angle either, only a centre
+and the two ends of an arc.
+
+**Saving is what makes a layout readable.** A layout created in the current
+session answers `GetDetailsOfElements` with a per-element error, which is what
+made the first attempt at measure-and-move impossible — and what preceded
+Archicad exiting. After `SaveProject` the same read answers normally. So the
+order is: create, **save**, measure, straighten, measure again, move. Twice,
+because rotating changes the bounding box and the tiling needs the new one.
+
+`SaveProject` also means a long run can commit its work in stages instead of
+holding hours of drawing in an unsaved file.
+
+---
+
+### D40 — The current database is not the current window, and reads follow the database
+
+A run kept reporting zero apartments on a project holding 142 zones. The
+window said `FloorPlan`; the *database* was a Layout, left there by the
+previous step's `ChangeWindow`, and `GetElementsByType` follows the database.
+
+So `ensure_model_database` does not ask what the window is. It asks whether a
+read can see any walls, and switches when it cannot. The window type is
+advisory; what a read returns is the fact.
+
+The two are genuinely independent, and which one an operation follows has to
+be established rather than assumed:
+
+| | follows |
+|---|---|
+| Element creation (`CreateHatches`, `CreateTexts`) | the current **database** |
+| Element reads (`GetElementsByType`) | the current **database** |
+| Element deletion | the current **database**, but silently refuses on a hidden layer |
+| The IFC export | the current **window** |
+
+---
+
+### D41 — A patch is drawn as one outline where that is exact, and as tiles where it is not
+
+`trace_lit_regions` walks the boundary of the lit cells and returns one
+polygon per connected patch, which is what a reader expects a sun patch to be
+and what an editor can work with: on the reference project it took a banded
+plan from 2,354 fills to 946.
+
+It is used only where it is **exact**. `CreateHatches` takes a single contour
+and no holes, so a patch with a hole in it can be drawn as one shape only by
+filling the hole — claiming sunlight on floor that never saw any. Those fall
+back to the tiled rectangles, which cover the same area exactly and only need
+more of them. A drawing is a claim about sunlight, and a tidier drawing is not
+worth a false one.
+

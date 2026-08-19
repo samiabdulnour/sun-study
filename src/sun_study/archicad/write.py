@@ -47,6 +47,7 @@ from sun_study.rules.assessment import BuildingAssessment
 
 __all__ = [
     "APARTMENT_PROPERTIES",
+    "NOT_ASSESSED_HOURS",
     "PROPERTY_GROUP_NAME",
     "AccessDiagnosis",
     "ApartmentMatch",
@@ -55,6 +56,7 @@ __all__ = [
     "WriteReport",
     "all_properties",
     "default_property_value",
+    "delete_properties",
     "diagnose_write_access",
     "ensure_property_group",
     "enum_values",
@@ -339,6 +341,24 @@ def existing_properties(connection: ArchicadConnection) -> dict[str, str]:
     }
 
 
+#: What an hours column reads when nothing was ever written to it.
+#:
+#: Not zero. The original default was 0.0 on the reasoning that a default is
+#: "never read -- every property is overwritten with a measured value", and
+#: that reasoning is false: a Zone belonging to a hotlinked module refuses
+#: every write, so the default is exactly what survives. On the reference
+#: project 11 of 15 apartments refused, and their schedule rows read
+#: ``0.000`` -- indistinguishable from a flat that was measured and found to
+#: get no sun at all, which is the most damaging number this tool could
+#: publish.
+#:
+#: A negative duration is impossible, so it cannot be mistaken for a reading,
+#: and it sorts to the bottom of the column where it is noticed. Archicad has
+#: no undefined state to use instead: a definition with no ``defaultValue`` is
+#: rejected outright with ``APIERR_BADVALUE``.
+NOT_ASSESSED_HOURS = -1.0
+
+
 def default_property_value(data_type: str) -> dict[str, Any]:
     """A property definition's starting value, which Archicad insists on.
 
@@ -352,16 +372,15 @@ def default_property_value(data_type: str) -> dict[str, Any]:
     availability and ``isEditable`` failed every time, because the missing
     default was the one thing all of them shared.
 
-    An empty string and a zero are the neutral starting points. They are never
-    read -- every property is overwritten with a measured value or left
-    deliberately undefined -- so the choice only has to be valid, not
-    meaningful.
+    So the default is chosen to be *unmistakable* rather than neutral. See
+    ``NOT_ASSESSED_HOURS``: a number that cannot be a measurement, and an empty
+    string, which is already distinguishable from every value written here.
     """
     blank: dict[str, Any] = {"type": data_type, "status": "normal", "value": ""}
     if data_type in {"number", "length", "area", "volume", "angle"}:
-        blank["value"] = 0.0
+        blank["value"] = NOT_ASSESSED_HOURS
     elif data_type == "integer":
-        blank["value"] = 0
+        blank["value"] = int(NOT_ASSESSED_HOURS)
     elif data_type == "boolean":
         blank["value"] = False
     return {"basicDefaultValue": blank}
@@ -451,6 +470,27 @@ def ensure_property_group(connection: ArchicadConnection) -> str:
             f"not list it, so property definitions have nowhere to go."
         )
     return resolved
+
+
+def delete_properties(connection: ArchicadConnection) -> tuple[str, ...]:
+    """Delete this tool's property definitions. Returns the names removed.
+
+    The only way to change a default that is already in a project: Archicad
+    has no update-in-place for it that Tapir exposes, and a definition created
+    with the wrong default keeps it forever otherwise. Deleting takes the
+    written values with it, so this is always followed by re-creating and
+    re-writing, and it is never done without being asked.
+
+    Only properties in this tool's own group are touched.
+    """
+    existing = existing_properties(connection)
+    if not existing:
+        return ()
+    connection.run_tapir(
+        "DeletePropertyDefinitions",
+        {"propertyIds": [{"propertyId": {"guid": guid}} for guid in existing.values()]},
+    )
+    return tuple(sorted(existing))
 
 
 def init_properties(

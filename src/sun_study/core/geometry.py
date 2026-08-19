@@ -24,7 +24,15 @@ import numpy.typing as npt
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]
 
-__all__ = ["TriangleMesh", "box", "horizontal_rectangle", "rectangle", "rotation_about_z"]
+__all__ = [
+    "PlanTransform",
+    "TriangleMesh",
+    "box",
+    "fit_plan_transform",
+    "horizontal_rectangle",
+    "rectangle",
+    "rotation_about_z",
+]
 
 
 def rotation_about_z(degrees: float) -> FloatArray:
@@ -152,3 +160,66 @@ def box(min_corner: npt.ArrayLike, max_corner: npt.ArrayLike) -> TriangleMesh:
         dtype=np.int64,
     )  # fmt: skip
     return TriangleMesh(vertices, faces)
+
+
+@dataclass(frozen=True)
+class PlanTransform:
+    """A rotation and a shift taking one plan frame onto another.
+
+    The frames in question are the IFC export's world coordinates and
+    Archicad's project coordinates. They are not the same and need not be: an
+    export made with the Survey Point option is already north-aligned, so it
+    is the *project* that is rotated relative to it. Anything computed from
+    the export -- a sun patch, say -- therefore lands in the wrong place and
+    at the wrong angle if it is drawn into the project unchanged.
+    """
+
+    rotation: FloatArray
+    """2x2, applied before the shift."""
+    offset: FloatArray
+    """Metres, in the target frame."""
+    rmse_m: float
+    """How well the fitted pairs actually agree. The number that decides
+    whether the transform may be used at all."""
+
+    def apply(self, points: FloatArray) -> FloatArray:
+        """Map ``(n, 2)`` plan points into the target frame."""
+        flat = np.asarray(points, dtype=np.float64)[:, :2]
+        return np.asarray(flat @ self.rotation.T + self.offset, dtype=np.float64)
+
+
+def fit_plan_transform(source: FloatArray, target: FloatArray) -> PlanTransform:
+    """Fit the rotation and shift that best takes ``source`` onto ``target``.
+
+    Kabsch in two dimensions, over matched pairs -- in practice one pair per
+    apartment, its centroid as the export sees it against its centroid as
+    Archicad does. Rigid on purpose: rotation and translation only, no scale
+    and no reflection. Both frames are metres, so a fitted scale would not be
+    a discovery about the model but a symptom of a mismatched pairing, and
+    letting it absorb the error would hide exactly the failure ``rmse_m``
+    exists to expose.
+
+    Two pairs are the minimum and three are the fewest that can disagree. With
+    two, ``rmse_m`` is zero by construction and says nothing -- the caller has
+    to treat a thin fit as unverified rather than as perfect.
+    """
+    a = np.asarray(source, dtype=np.float64)[:, :2]
+    b = np.asarray(target, dtype=np.float64)[:, :2]
+    if len(a) != len(b):
+        raise ValueError(f"{len(a)} source points against {len(b)} target points")
+    if len(a) < 2:
+        raise ValueError(f"a plan transform needs at least two pairs, got {len(a)}")
+
+    centre_a, centre_b = a.mean(axis=0), b.mean(axis=0)
+    covariance = (a - centre_a).T @ (b - centre_b)
+    u, _, vt = np.linalg.svd(covariance)
+    # The determinant guard is what keeps this a rotation. Without it a noisy
+    # or mis-paired fit can come back as a reflection, which draws a mirrored
+    # plan that looks almost right.
+    correction = np.diag([1.0, float(np.sign(np.linalg.det(vt.T @ u.T)))])
+    rotation = vt.T @ correction @ u.T
+    offset = centre_b - rotation @ centre_a
+
+    residuals = b - (a @ rotation.T + offset)
+    rmse = float(np.sqrt(np.mean(np.sum(residuals**2, axis=1)))) if len(a) else 0.0
+    return PlanTransform(rotation=rotation, offset=offset, rmse_m=rmse)
