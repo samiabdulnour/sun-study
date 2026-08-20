@@ -379,6 +379,20 @@ def draw_patch_series(
                 )
 
     _create(connection, "CreateHatches", "hatchesData", fills)
+    # KNOWN GAP. The fills carry ``layerIndex`` and land on the tool's layer;
+    # these captions cannot, because ``CreateTexts`` takes no layer, so they
+    # land on the Text tool's default -- ``05 | Dims/Notes.DA`` on the
+    # reference project. That is D60, and the plan legend and the penetration
+    # labels were both fixed by moving the text afterwards with
+    # ``draw.move_to_layer``. This one is not, so a run can report captions
+    # drawn that nobody can see, if that layer is hidden in the worksheet.
+    #
+    # Not fixed here because the move needs ``borrowed``, and ``borrowed``
+    # reads layer state, which D63's guard confines to the model database --
+    # correctly for every other caller, and wrongly for this one, where the
+    # elements live in the worksheet and the worksheet's own answer is the
+    # right one. Loosening the guard needs a live worksheet to check against
+    # and the reference project has none.
     _create(connection, "CreateTexts", "textsData", captions)
 
     return SeriesReport(

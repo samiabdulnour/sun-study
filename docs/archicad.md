@@ -226,6 +226,45 @@ So fills *can* be drawn into a worksheet. Three cautions, all measured:
   `ChangeWindow`'s own `{"success": true}`, and remember the state is global and
   outlives the command.
 
+### Layer visibility is per-database, and a write outside the model is scratch
+
+The other half of the active-database story, measured on the reference project
+in this order. A layer is not one fact the project holds.
+
+| Step | `05 \| Dims/Notes.DA` reads |
+|---|---|
+| On a floor plan | hidden |
+| After `ChangeWindow` to a layout | **visible** — the layout's combination |
+| Write it hidden, still on the layout | hidden — the write took |
+| Switch to the floor plan and back to the layout | **visible again** |
+| Write it *visible* on the layout, then switch to the floor plan | hidden |
+
+So each database answers with its own combination, reapplied on every switch.
+A write made outside the model lasts until the next switch and never reaches
+the model at all.
+
+Two consequences worth carrying into any new code:
+
+- **A snapshot taken in one database and restored later restores nothing.** It
+  writes that database's opinion. `export_state` would have done exactly this
+  had a `ChangeWindow` ever landed inside its `with` block.
+- **A layer state read after visiting a layout is the layout's.** A check run
+  after touring six layouts reported a layer the run had failed to put back.
+  Nothing had drifted; the measurement was taken in the wrong place.
+
+Archicad will not say which database is current — `GetCurrentDatabase`,
+`GetCurrentWindow` and `GetDatabases` are all unregistered on Tapir 1.5.7, and
+`GetCurrentWindowType` answers for the *window*, which moves separately. The
+tool therefore remembers: every `ChangeWindow` goes through `run_tapir`, which
+notes where it went, and `ArchicadConnection.database` is that note. It is
+`None` when the tool has not moved anything, and it goes stale if a person
+clicks into a layout mid-run. See [D63 and D64](decisions.md).
+
+**`CreateLayers` with `overwriteExisting` writes the whole layer.** Every field
+left out is set to its default, so a restore naming only `isHidden` and
+`isLocked` silently turns `isWireframe` off and moves the layer to intersection
+group 1. Send `isWireframe` and `intersectionGroupNr` back as they were found.
+
 ### A fill cannot carry a property, and a label can only carry text
 
 Asked directly, twice, on a fill created for the purpose:
