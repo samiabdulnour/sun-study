@@ -3798,6 +3798,54 @@ def test_the_walls_that_prove_a_floor_plan_are_recorded_as_proof() -> None:
     assert connection.database is not None and connection.database.is_model
 
 
+def test_a_layout_window_over_a_readable_model_is_realigned_but_not_reported() -> None:
+    """The window and the database move separately. With a layout window in
+    front of a floor-plan database the walls read fine, so the switch is worth
+    making to bring the two back together -- but telling somebody the project
+    had no Zones and no walls would be a lie, and it is the sentence that
+    sends them off to check a layer name."""
+    from sun_study.archicad.series import ensure_model_database
+
+    connection, transport = connect(
+        {
+            "GetCurrentWindowType": {"currentWindowType": "Layout"},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "W1"}}]},
+            "GetNavigatorItemTree": {
+                "navigatorItemTree": {
+                    "navigatorItemId": {"guid": "R"},
+                    "name": "Project Map",
+                    "children": [
+                        {
+                            "navigatorItem": {
+                                "navigatorItemId": {"guid": "N0"},
+                                "name": "Ground",
+                                "type": "StoryItem",
+                                "prefix": "0",
+                            }
+                        }
+                    ],
+                }
+            },
+            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "S0"}}]},
+            "ChangeWindow": {"success": True},
+        }
+    )
+    assert ensure_model_database(connection) is None, "nothing to warn about"
+    assert "ChangeWindow" in transport.commands(), "still realigned"
+
+
+def test_the_note_spares_the_two_reads_when_the_tool_moved_there_itself() -> None:
+    """Cheap enough to use as a precondition, which is what lets a layer
+    combination insist on the model before reading it."""
+    from sun_study.archicad.series import ensure_model_database
+
+    connection, transport = connect({})
+    connection.note_model_database()
+
+    assert ensure_model_database(connection) is None
+    assert transport.commands() == [], "no round trip when the answer is known"
+
+
 def test_a_layout_left_current_is_moved_off_and_the_move_is_recorded() -> None:
     """The other half: when it does move, the note comes from ChangeWindow."""
     from sun_study.archicad.series import ensure_model_database

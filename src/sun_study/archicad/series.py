@@ -444,7 +444,8 @@ def ensure_model_database(connection: ArchicadConnection) -> str | None:
     # what is actually visible to a read instead.
     walls = connection.run_tapir("GetElementsByType", {"elementType": "Wall"})
     found = walls.get("elements") if isinstance(walls, dict) else None
-    if where == "FloorPlan" and isinstance(found, list) and found:
+    readable = isinstance(found, list) and bool(found)
+    if where == "FloorPlan" and readable:
         # Nothing to move, but the walls just proved where we are. Say so, or
         # the connection goes on reporting that it does not know -- and the
         # layer guard, which trusts that answer, stays switched off.
@@ -461,7 +462,14 @@ def ensure_model_database(connection: ArchicadConnection) -> str | None:
 
     lowest = min(storeys, key=lambda item: item.storey_index or 0)
     activate(connection, database_of(connection, lowest.identifier), "FloorPlan")
-    return str(where)
+
+    # Only *report* a move that mattered. Walls read fine when a layout is the
+    # visible window but a floor plan is still the current database, and the
+    # two move separately -- so the switch above is worth making either way,
+    # to bring them back together, while telling somebody the project had no
+    # Zones and no walls would be untrue. The walls are the test, exactly as
+    # the comment above says; the window never was.
+    return None if readable else str(where)
 
 
 def restore_after(connection: ArchicadConnection, storey_database_id: str) -> bool:
