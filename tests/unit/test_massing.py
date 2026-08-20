@@ -473,8 +473,10 @@ def test_the_drawing_and_the_measurement_see_the_same_elements() -> None:
     assert reduced.elements_above_cut == scene.provenance["elements_above_cut"]
     assert len(reduced.solids) == len(reduced.subject) + len(reduced.context)
     # Nothing that survived the cut lies wholly above it.
+    cut = config.exclude_above_m
+    assert cut is not None, "this test is about the cut, so it has to have one"
     for element in reduced.solids:
-        assert float(element.mesh.vertices[:, 2].min()) <= config.exclude_above_m
+        assert float(element.mesh.vertices[:, 2].min()) <= cut
 
 
 def test_the_reduction_does_not_cut_when_no_height_is_given() -> None:

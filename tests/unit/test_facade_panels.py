@@ -16,7 +16,9 @@ from sun_study.core.facade import vertical_face_panels
 from sun_study.core.geometry import TriangleMesh
 
 
-def box(dx: float, dy: float, dz: float, origin: tuple[float, float, float] = (0, 0, 0)):
+def box(
+    dx: float, dy: float, dz: float, origin: tuple[float, float, float] = (0, 0, 0)
+) -> TriangleMesh:
     """A closed axis-aligned box, wound outward."""
     x, y, z = origin
     vertices = np.array(

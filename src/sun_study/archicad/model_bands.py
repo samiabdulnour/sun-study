@@ -45,8 +45,7 @@ make a floor plan current first.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,6 +53,7 @@ import numpy as np
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import BandStyle, LayerState, ensure_layer
+from sun_study.archicad.layers import borrowed
 from sun_study.archicad.penetration import MAX_FIT_RESIDUAL_M, box_centre
 from sun_study.archicad.read import elements_by_ifc_ids, zones
 from sun_study.archicad.series import ensure_model_database
@@ -351,7 +351,7 @@ def clear_model_bands(connection: ArchicadConnection, layer: LayerState) -> int:
     hidden layer answers ``success`` and removes nothing, and this layer is
     hidden in every layer combination the project had before the tool existed.
     """
-    with _visible(connection, [layer.identifier]):
+    with borrowed(connection, identifiers=[layer.identifier]):
         mine = _walls_on_layer(connection, layer.index)
         if not mine:
             return 0
@@ -523,10 +523,7 @@ def _move_to_layer(
     if not sources:
         return ()
 
-    by_index = _layers_by_index(connection)
-    borrowed = [by_index[index] for index in sorted(sources) if index in by_index]
-
-    with _visible(connection, [state.identifier for state in borrowed]) as restored:
+    with borrowed(connection, sorted(sources)) as restored:
         for start in range(0, len(elements), _BATCH):
             connection.run_tapir(
                 "SetDetailsOfElements",
@@ -551,7 +548,7 @@ def _move_to_layer(
                 f"layer {layer.index}. They are on a locked layer, and are now "
                 f"loose in the model -- delete them by layer before running again."
             )
-    return tuple(state.name for state in restored)
+    return restored
 
 
 def _details(
@@ -587,119 +584,3 @@ def _walls_on_layer(connection: ArchicadConnection, index: int) -> list[dict[str
         for element, row in zip(elements, rows, strict=True)
         if int(row.get("layerIndex", -1)) == index
     ]
-
-
-@dataclass(frozen=True)
-class _Layer:
-    """A layer as the attribute list holds it, name included.
-
-    ``LayerState`` deliberately carries only what drawing needs. Restoring a
-    borrowed layer needs its name as well, because a layer is written back by
-    name -- there is no ``SetLayers`` in this add-on, and ``CreateLayers`` with
-    ``overwriteExisting`` matches on the name.
-    """
-
-    index: int
-    identifier: str
-    name: str
-    hidden: bool
-    locked: bool
-
-
-def _layers_by_index(connection: ArchicadConnection) -> dict[int, _Layer]:
-    """Every layer, keyed by the index an element reports."""
-    response = connection.run_tapir("GetAttributesByType", {"attributeType": "Layer"})
-    attributes = response.get("attributes") if isinstance(response, dict) else None
-    if not isinstance(attributes, list):
-        raise ArchicadError(f"GetAttributesByType returned no layer list: {response!r}")
-
-    rows = {
-        str(row["attributeId"]["guid"]): row
-        for row in attributes
-        if isinstance(row, dict) and isinstance(row.get("attributeId"), dict)
-    }
-    states = _layer_states(connection, list(rows))
-    return {
-        int(rows[identifier]["index"]): state
-        for identifier, state in states.items()
-        if "index" in rows[identifier]
-    }
-
-
-def _layer_states(
-    connection: ArchicadConnection, identifiers: Sequence[str]
-) -> dict[str, _Layer]:
-    """Hidden and locked flags for the named layers, by identifier."""
-    if not identifiers:
-        return {}
-    response = connection.run_tapir(
-        "GetLayers",
-        {"attributeIds": [{"attributeId": {"guid": guid}} for guid in identifiers]},
-    )
-    layers = response.get("layers") if isinstance(response, dict) else None
-    if not isinstance(layers, list):
-        raise ArchicadError(f"GetLayers returned no list: {response!r}")
-
-    states: dict[str, _Layer] = {}
-    for row in layers:
-        if not isinstance(row, dict) or "error" in row:
-            continue
-        attribute = row.get("layerAttribute") if "layerAttribute" in row else row
-        if not isinstance(attribute, dict) or "attributeId" not in attribute:
-            continue
-        guid = str(attribute["attributeId"]["guid"])
-        states[guid] = _Layer(
-            index=int(attribute.get("index", -1)),
-            identifier=guid,
-            name=str(attribute.get("name", "")),
-            hidden=bool(attribute.get("isHidden", False)),
-            locked=bool(attribute.get("isLocked", False)),
-        )
-    return states
-
-
-@contextmanager
-def _visible(
-    connection: ArchicadConnection, identifiers: Sequence[str]
-) -> Iterator[tuple[_Layer, ...]]:
-    """Show and unlock the given layers for the block, then put them back.
-
-    This is the difference between a run that works and one that reports
-    success while doing nothing. ``DeleteElements`` and
-    ``SetDetailsOfElements`` both answer ``{"success": true}`` for an element
-    on a hidden layer and change nothing -- measured, twice, on the reference
-    project. Restoring matters just as much: the layers borrowed here belong
-    to the building, not to this tool, and leaving one switched on silently
-    changes every drawing the office has.
-    """
-    before = _layer_states(connection, list(dict.fromkeys(identifiers)))
-    changed = tuple(state for state in before.values() if state.hidden or state.locked)
-    if changed:
-        _write_layers(connection, changed, hidden=False, locked=False)
-    try:
-        yield changed
-    finally:
-        for state in changed:
-            _write_layers(connection, [state], hidden=state.hidden, locked=state.locked)
-
-
-def _write_layers(
-    connection: ArchicadConnection, layers: Sequence[_Layer], *, hidden: bool, locked: bool
-) -> None:
-    """Set visibility on existing layers, by name.
-
-    ``CreateLayers`` with ``overwriteExisting`` is the only way in: the add-on
-    has no ``SetLayers``, which is why this looks like creation and is not.
-    """
-    if not layers:
-        return
-    connection.run_tapir(
-        "CreateLayers",
-        {
-            "layerDataArray": [
-                {"name": state.name, "isHidden": hidden, "isLocked": locked}
-                for state in layers
-            ],
-            "overwriteExisting": True,
-        },
-    )

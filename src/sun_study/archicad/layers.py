@@ -72,6 +72,7 @@ __all__ = [
     "EXPORT_COMBINATION",
     "LayerPlan",
     "LayerState",
+    "borrowed",
     "combination_states",
     "ensure_combination",
     "export_state",
@@ -398,7 +399,10 @@ def _write(connection: ArchicadConnection, layers: Sequence[LayerState]) -> None
 
 @contextmanager
 def borrowed(
-    connection: ArchicadConnection, indices: Sequence[int]
+    connection: ArchicadConnection,
+    indices: Sequence[int] = (),
+    *,
+    identifiers: Sequence[str] = (),
 ) -> Iterator[tuple[str, ...]]:
     """Force these layers visible and unlocked for the duration, then restore.
 
@@ -406,18 +410,28 @@ def borrowed(
     Text lands on the Text tool's default layer, and on the reference project
     that layer is hidden -- so the move onto the study's own layer answered
     success and did nothing, for all eight labels, exactly as D43 describes.
+    A Wall is the same story: it cannot be told its layer at creation either.
 
-    Borrowing by layer *index*, because that is what an element reports about
-    itself; the write is by name, because that is what ``CreateLayers`` takes.
+    Two ways to name a layer because there are two ways to have one. An
+    element reports the *index* it sits on, and knows nothing else about it; a
+    layer this tool made is held as a ``LayerState`` and reports its
+    *identifier*. The write is by name in both cases, because that is what
+    ``CreateLayers`` takes.
+
+    Restoring is one write, not one per layer: the same call that borrows them
+    puts them all back, so a failure cannot leave half of somebody's model
+    switched on.
     """
     wanted = {index for index in indices if index >= 0}
-    if not wanted:
+    named = set(identifiers)
+    if not wanted and not named:
         yield ()
         return
 
     shut = [
         state for state in read_layers(connection)
-        if state.index in wanted and (state.hidden or state.locked)
+        if (state.index in wanted or state.identifier in named)
+        and (state.hidden or state.locked)
     ]
     if shut:
         _write(
