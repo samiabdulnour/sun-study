@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import http.server
+import itertools
 import json
 import math
 import threading
@@ -3389,7 +3390,7 @@ def test_legend_rows_clear_each_other() -> None:
 
     _, texts = _legend(DEFAULT_BANDS, (0.0, 0.0), 7)
     ys = sorted(text["coordinate"]["y"] for text in texts)
-    gaps = [b - a for a, b in zip(ys, ys[1:], strict=False)]
+    gaps = [b - a for a, b in itertools.pairwise(ys)]
     assert gaps, "more than one band, so there are gaps to check"
     assert min(gaps) > TEXT_MODEL_HEIGHT_M, (
         "consecutive labels must not overlap at the height they are drawn at"

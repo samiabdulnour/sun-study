@@ -1499,3 +1499,46 @@ refused as invalid -- and then answers ``Attribute not found`` for an id
 name like layouts and views. And the tool records its own resolved state as a
 real combination, ``SS Sun Study Export``, which changes nothing on its own
 but gives the choice a name in Layer Settings that a person can inspect.
+
+### D60 — A Text has no layer, so it lands on the office's annotation layer
+
+``CreateTexts`` accepts a coordinate, a string, a ``height``, a ``pen``, a
+``justification``, an ``angle`` and a ``floorIndex``. Probed one field at a
+time: there is no ``layerIndex``, no ``penIndex``, no ``charHeight``, no
+``styleName``. So a Text is created on whatever layer the Text tool defaults
+to, which on the reference project is ``05 | Dims/Notes.DA`` -- one of the
+office's own annotation layers for the drawing set.
+
+That is wrong twice. The study's key is filed in somebody else's layer, and it
+is outside what the next run clears, so switching the study's layer off leaves
+the legend sitting on the plan with nothing to explain it.
+
+The fix is the one the facade skin's walls already use: create, then move with
+``SetDetailsOfElements``, then **read the layer back**, because that write
+answers success and does nothing when either layer is hidden (D43).
+
+Two related findings from the same probing. ``GetDetailsOfElements`` refuses a
+Text outright -- ``Not yet supported element type`` -- so a text's content and
+height cannot be read at all; its ``layerIndex`` and ``floorIndex`` are
+readable because they sit outside ``details``. And ``Get3DBoundingBoxes``
+*does* answer for a Text, which is the only way from here to find out where
+one actually is. That is what located five stray probe texts at the model
+origin -- which then would not delete until their layer was switched on, D31
+again.
+
+### D61 — Text height is inherited unless it is set, and the legend was spaced for a guess
+
+The legend's rows were 1.5 m apart in model space, for a 1.0 m swatch. The
+labels beside them were 1.27 m tall, because a Text created without a
+``height`` takes the Text tool's default -- an office's default, set for its
+own drawings, with no reason to suit a key drawn beside a plan. Consecutive
+rows therefore overlapped and the legend read as one smear of text.
+
+It is worse than a fixed error, because a text's model-space size scales with
+the view: the same legend at 1:300 is half again as tall while the 1.5 m
+spacing does not move.
+
+So the height is stated rather than inherited, and the row spacing is derived
+from it instead of guessed alongside it. Measured: at the stated height a
+label's whole bounding box, ascender and descender included, is 0.43 m, and
+rows now step by 1.5 times the taller of swatch and label.
