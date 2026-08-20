@@ -170,6 +170,13 @@ def remove_previous(connection: ArchicadConnection, prefix: str = VIEW_PREFIX) -
     names -- the previous run's, kept alive by its own drawings, beside the
     new ones. The count comes from reading the tree again rather than from the
     length of the request, for the same reason.
+
+    What is counted matters as much as what is deleted. The prefix alone also
+    catches the drawings placed on those layouts and this tool's own run
+    folders, and neither is a thing to delete -- see ``_NOT_DELETABLE``. With
+    them in, a run that removed five layouts said thirty-five, and every run
+    after the first warned about views it could not remove that were folders
+    it was never going to.
     """
     gone = 0
     for map_id in ("LayoutBook", "PublicViewMap"):
@@ -188,13 +195,26 @@ def remove_previous(connection: ArchicadConnection, prefix: str = VIEW_PREFIX) -
     return gone, left
 
 
-def _named(connection: ArchicadConnection, map_id: str, prefix: str) -> list[str]:
-    """Navigator item ids in one map whose name carries the prefix.
+#: Navigator kinds that carry the tool's prefix but are not what
+#: ``remove_previous`` is for. Excluded by kind rather than selected by one:
+#: a view created in the View Map keeps the *kind* of the thing it was copied
+#: from -- a storey view reports as ``StoryItem``, not ``ViewItem`` -- so
+#: filtering *for* a kind silently finds nothing.
+#:
+#: ``DrawingItem`` is a drawing placed on a layout. It shows in the Layout
+#: Book under the layout that holds it and goes when that layout goes, so
+#: asking for it by id deletes nothing and counting it says thirty-five views
+#: and layouts were removed where five layouts were.
+#:
+#: ``FolderItem`` is this tool's own run folder, and a folder cannot be
+#: deleted through the API at all -- which is why each run makes a new one.
+#: Counting it as left behind meant every run after the first reported views
+#: it could not remove, and blamed a placed Drawing for a folder.
+_NOT_DELETABLE = frozenset({"DrawingItem", "FolderItem"})
 
-    Matched on the name alone. A view created in the View Map keeps the *kind*
-    of the thing it was copied from -- a storey view reports as ``StoryItem``,
-    not ``ViewItem`` -- so filtering by kind here silently finds nothing.
-    """
+
+def _named(connection: ArchicadConnection, map_id: str, prefix: str) -> list[str]:
+    """Ids in one map of the items a run makes and can delete, by name."""
     try:
         response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": map_id})
     except ArchicadError:
@@ -202,7 +222,11 @@ def _named(connection: ArchicadConnection, map_id: str, prefix: str) -> list[str
     root = response.get("navigatorItemTree") if isinstance(response, dict) else None
     if not isinstance(root, dict):
         return []
-    return [item.identifier for item in _walk(root) if item.name.startswith(f"{prefix} ")]
+    return [
+        item.identifier
+        for item in _walk(root)
+        if item.name.startswith(f"{prefix} ") and item.kind not in _NOT_DELETABLE
+    ]
 
 
 def next_view_folder(connection: ArchicadConnection, stem: str = f"{VIEW_PREFIX} Sun Study") -> str:

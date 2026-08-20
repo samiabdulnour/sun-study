@@ -3271,6 +3271,125 @@ def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
     connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
 
 
+# -- clearing out the last run --------------------------------------------
+# Destructive, and it reports what it did. Both halves were wrong: it counted
+# drawings that go with their layout, and it counted its own folders as
+# things it had failed to delete.
+
+
+def _navigator(map_id: str, *items: tuple[str, str]) -> dict[str, Any]:
+    """A navigator tree of ``(kind, name)`` children, ids from the name."""
+    return {
+        "navigatorItemTree": {
+            "navigatorItemId": {"guid": f"{map_id}-root"},
+            "name": map_id,
+            "children": [
+                {
+                    "navigatorItem": {
+                        "navigatorItemId": {"guid": name},
+                        "name": name,
+                        "type": kind,
+                    }
+                }
+                for kind, name in items
+            ],
+        }
+    }
+
+
+def test_the_drawings_that_go_with_a_layout_are_not_counted_as_removed() -> None:
+    """A DrawingItem shows in the Layout Book under the layout holding it. It
+    goes when the layout goes, so asking for it by id deletes nothing -- and
+    counting it said thirty-five views and layouts where five layouts were."""
+    from sun_study.archicad.views import remove_previous
+
+    connection, transport = connect(
+        {
+            "GetNavigatorItemTree": Sequential(
+                _navigator(
+                    "LayoutBook",
+                    ("LayoutItem", "SS Sun Study 09:00"),
+                    ("DrawingItem", "SS LEVEL 01 09:00"),
+                    ("DrawingItem", "SS LEVEL 02 09:00"),
+                ),
+                _navigator("LayoutBook"),
+                _navigator("PublicViewMap"),
+                _navigator("LayoutBook"),
+                _navigator("PublicViewMap"),
+            ),
+            "DeleteNavigatorItems": {},
+        }
+    )
+    gone, left = remove_previous(connection)
+
+    asked = transport.parameters_for("DeleteNavigatorItems")["navigatorItemIds"]
+    assert [entry["navigatorItemId"]["guid"] for entry in asked] == ["SS Sun Study 09:00"]
+    assert (gone, left) == (1, 0)
+
+
+def test_the_tools_own_run_folder_is_not_a_view_it_failed_to_delete() -> None:
+    """A folder cannot be deleted through the API, which is why each run makes
+    a new one. Counting it as left behind made every run after the first warn
+    that a placed Drawing was holding a view -- about a folder."""
+    from sun_study.archicad.views import remove_previous
+
+    connection, _ = connect(
+        {
+            "GetNavigatorItemTree": Sequential(
+                _navigator("LayoutBook"),
+                _navigator(
+                    "PublicViewMap",
+                    ("FolderItem", "SS Sun Study fix 01"),
+                    ("StoryItem", "SS LEVEL 01 09:00"),
+                ),
+                _navigator("PublicViewMap", ("FolderItem", "SS Sun Study fix 01")),
+                _navigator("LayoutBook"),
+                _navigator("PublicViewMap", ("FolderItem", "SS Sun Study fix 01")),
+            ),
+            "DeleteNavigatorItems": {},
+        }
+    )
+    gone, left = remove_previous(connection)
+
+    assert (gone, left) == (1, 0), "the storey view went; the folder was never a target"
+
+
+def test_a_view_a_drawing_still_points_at_is_reported_as_left_behind() -> None:
+    """The real condition the warning is for. DeleteNavigatorItems reports
+    success and the view stays, so the count comes from reading the tree
+    again rather than from the length of the request."""
+    from sun_study.archicad.views import remove_previous
+
+    stuck = _navigator("PublicViewMap", ("StoryItem", "SS LEVEL 01 09:00"))
+    connection, _ = connect(
+        {
+            "GetNavigatorItemTree": Sequential(
+                _navigator("LayoutBook"), stuck, stuck, _navigator("LayoutBook"), stuck
+            ),
+            "DeleteNavigatorItems": {},
+        }
+    )
+    assert remove_previous(connection) == (0, 1)
+
+
+def test_something_the_tool_did_not_make_is_never_touched() -> None:
+    """The prefix is the whole guarantee: it is somebody's project."""
+    from sun_study.archicad.views import remove_previous
+
+    connection, transport = connect(
+        {
+            "GetNavigatorItemTree": Sequential(
+                _navigator("LayoutBook", ("LayoutItem", "A1 Site Plan")),
+                _navigator("PublicViewMap", ("StoryItem", "LEVEL 01")),
+                _navigator("LayoutBook", ("LayoutItem", "A1 Site Plan")),
+                _navigator("PublicViewMap", ("StoryItem", "LEVEL 01")),
+            ),
+        }
+    )
+    assert remove_previous(connection) == (0, 0)
+    assert "DeleteNavigatorItems" not in transport.commands()
+
+
 # -- the results layer ----------------------------------------------------
 # Also untested until now. It is what decides whether a run's output can be
 # seen: a hidden results layer makes a successful run look exactly like one
