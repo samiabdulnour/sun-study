@@ -17,6 +17,14 @@ outputs/
 # Deliberate exceptions: fictional fixtures, committed on purpose.
 !tests/fixtures/**/*.ifc
 
+# Reference material read while building, from real projects: a consultant's
+# study pages, and the diagnostic dump archicad-report writes -- which names
+# the project's file path, its layers and its zone names in full. Kept locally
+# because the work needs them; never committed, because a public repository is
+# the one place they must not be.
+examples/
+sun-study-info.txt
+
 # --- Python ---
 __pycache__/
 *.py[cod]
