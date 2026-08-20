@@ -3271,6 +3271,116 @@ def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
     connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
 
 
+# -- the results layer ----------------------------------------------------
+# Also untested until now. It is what decides whether a run's output can be
+# seen: a hidden results layer makes a successful run look exactly like one
+# that did nothing.
+
+
+def _one_layer(*, hidden: bool, locked: bool = False, **rest: Any) -> dict[str, Any]:
+    attribute = {
+        "name": "Sun Study.Results",
+        "isHidden": hidden,
+        "isLocked": locked,
+        **rest,
+    }
+    return {
+        "GetAttributesByType": {
+            "attributes": [
+                {"attributeId": {"guid": "g"}, "index": 12, "name": "Sun Study.Results"}
+            ]
+        },
+        "GetLayers": {"layers": [{"layerAttribute": attribute}]},
+        "CreateLayers": {},
+    }
+
+
+def test_a_results_layer_that_is_already_visible_is_left_entirely_alone() -> None:
+    from sun_study.archicad.draw import ensure_layer
+
+    connection, transport = connect(_one_layer(hidden=False))
+    layer = ensure_layer(connection, "Sun Study.Results")
+
+    assert (layer.index, layer.hidden, layer.invisible) == (12, False, False)
+    assert "CreateLayers" not in transport.commands(), "nothing to do, so nothing written"
+
+
+def test_a_hidden_results_layer_is_switched_on_because_nobody_would_see_the_run() -> None:
+    """Measured on the reference project: a fresh results layer came back
+    hidden, and the run drew a thousand fills nobody could see."""
+    from sun_study.archicad.draw import ensure_layer
+
+    connection, transport = connect(
+        {
+            **_one_layer(hidden=True),
+            "GetLayers": Sequential(
+                {"layers": [{"layerAttribute": {"name": "Sun Study.Results", "isHidden": True}}]},
+                {"layers": [{"layerAttribute": {"name": "Sun Study.Results", "isHidden": False}}]},
+            ),
+        }
+    )
+    layer = ensure_layer(connection, "Sun Study.Results")
+
+    assert layer.hidden is False
+    written_layer = transport.parameters_for("CreateLayers")
+    assert written_layer["overwriteExisting"] is True
+    assert written_layer["layerDataArray"][0]["isHidden"] is False
+
+
+def test_switching_the_layer_on_does_not_flatten_the_rest_of_it() -> None:
+    """overwriteExisting writes the whole layer, so a field left out is a
+    field reset. Naming only visibility and lock turned wireframe off and
+    moved the layer to intersection group 1 -- on a layer somebody may have
+    pointed --layer-name at deliberately."""
+    from sun_study.archicad.draw import ensure_layer
+
+    connection, transport = connect(
+        _one_layer(hidden=True, isWireframe=True, intersectionGroupNr=5)
+    )
+    ensure_layer(connection, "Sun Study.Results")
+
+    sent = transport.parameters_for("CreateLayers")["layerDataArray"][0]
+    assert sent["isWireframe"] is True
+    assert sent["intersectionGroupNr"] == 5
+
+
+def test_a_layer_that_is_not_there_is_created_rather_than_demanded() -> None:
+    from sun_study.archicad.draw import ensure_layer
+
+    connection, transport = connect(
+        {
+            "GetAttributesByType": Sequential(
+                {"attributes": []},
+                {
+                    "attributes": [
+                        {"attributeId": {"guid": "g"}, "index": 12, "name": "Sun Study.Results"}
+                    ]
+                },
+            ),
+            "GetLayers": {"layers": [{"layerAttribute": {"name": "Sun Study.Results"}}]},
+            "CreateLayers": {},
+        }
+    )
+    assert ensure_layer(connection, "Sun Study.Results").index == 12
+    assert transport.parameters_for("CreateLayers")["overwriteExisting"] is False
+
+
+def test_a_layer_created_but_not_listed_stops_the_run_with_the_reason() -> None:
+    """Without an index there is nowhere to put a fill, and carrying on would
+    draw the study onto whatever layer happened to be current."""
+    from sun_study.archicad.draw import ensure_layer
+
+    connection, _ = connect(
+        {
+            "GetAttributesByType": {"attributes": []},
+            "GetLayers": {"layers": []},
+            "CreateLayers": {},
+        }
+    )
+    with pytest.raises(ArchicadError, match="does not list it"):
+        ensure_layer(connection, "Sun Study.Results")
+
+
 # -- the combination every sheet is drawn through -------------------------
 # Untested until now, which is how the second sheet came to be built from the
 # first sheet's layout. It decides what a drawing shows, and it is the thing

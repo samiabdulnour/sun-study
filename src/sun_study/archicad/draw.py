@@ -34,7 +34,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.layers import borrowed
+from sun_study.archicad.layers import LayerState, borrowed
 from sun_study.archicad.read import ArchicadZone, disambiguated
 from sun_study.rules.assessment import BuildingAssessment
 
@@ -409,19 +409,6 @@ def band_for(minutes: float, bands: Sequence[BandStyle]) -> BandStyle:
     return bands[-1]
 
 
-@dataclass(frozen=True)
-class LayerState:
-    """A results layer, and whether anything drawn on it will be seen."""
-
-    index: int
-    identifier: str
-    hidden: bool = False
-    locked: bool = False
-
-    @property
-    def invisible(self) -> bool:
-        return self.hidden or self.locked
-
 
 def ensure_layer(connection: ArchicadConnection, name: str) -> LayerState:
     """Find or create the results layer, and report whether it is visible.
@@ -438,7 +425,8 @@ def ensure_layer(connection: ArchicadConnection, name: str) -> LayerState:
     the project already had. Measured on the reference project -- a fresh
     results layer came back ``isHidden=True`` immediately after being created
     with ``isHidden: False``, and the run drew a thousand fills nobody could
-    see. Everything else about the layer is left as it is.
+    see. Everything else about the layer is read first and written back
+    unchanged, because ``overwriteExisting`` writes the whole layer.
     """
     existing = _find_layer(connection, name)
     if existing is not None and not (existing.hidden or existing.locked):
@@ -447,7 +435,20 @@ def ensure_layer(connection: ArchicadConnection, name: str) -> LayerState:
         connection.run_tapir(
             "CreateLayers",
             {
-                "layerDataArray": [{"name": name, "isHidden": False, "isLocked": False}],
+                "layerDataArray": [
+                    {
+                        "name": name,
+                        "isHidden": False,
+                        "isLocked": False,
+                        # The rest of the layer, sent back as it was found.
+                        # ``overwriteExisting`` writes the whole layer, so a
+                        # field left out is a field reset to its default --
+                        # which is how "everything else about the layer is
+                        # left as it is" stopped being true.
+                        "isWireframe": existing.wireframe,
+                        "intersectionGroupNr": existing.intersection_group,
+                    }
+                ],
                 "overwriteExisting": True,
             },
         )
@@ -517,36 +518,50 @@ def _find_layer(connection: ArchicadConnection, name: str) -> LayerState | None:
         identifier = (attribute.get("attributeId") or {}).get("guid")
         if not isinstance(index, (int, float)) or not identifier:
             continue
-        return _layer_visibility(connection, int(index), str(identifier))
+        return _layer_visibility(
+            connection, int(index), str(identifier), str(attribute.get('name', name))
+        )
     return None
 
 
-def _layer_visibility(connection: ArchicadConnection, index: int, identifier: str) -> LayerState:
-    """Whether the layer is hidden or locked, defaulting to visible.
+def _layer_visibility(
+    connection: ArchicadConnection, index: int, identifier: str, name: str
+) -> LayerState:
+    """The layer's whole state, defaulting to a visible one.
 
     A build that will not answer must not make the run stop: not knowing the
     visibility is a worse reason to fail than drawing onto a hidden layer.
+
+    Read here rather than through ``read_layers`` on purpose. This is the one
+    layer question that is *meant* to be answered by the current database: the
+    series is drawn into a worksheet, and what matters is whether the layer is
+    visible there, where the fills are about to land. Everywhere else the
+    project's own answer is the only correct one, and D63's guard sees to it.
     """
+    blank = LayerState(identifier=identifier, name=name, index=index)
     try:
         response = connection.run_tapir(
             "GetLayers", {"attributeIds": [{"attributeId": {"guid": identifier}}]}
         )
     except ArchicadError:
-        return LayerState(index, identifier)
+        return blank
 
     layers = response.get("layers") if isinstance(response, dict) else None
     first = layers[0] if isinstance(layers, list) and layers else None
     if not isinstance(first, dict) or "error" in first:
-        return LayerState(index, identifier)
+        return blank
 
     attribute = first.get("layerAttribute") if "layerAttribute" in first else first
     if not isinstance(attribute, dict):
-        return LayerState(index, identifier)
+        return blank
     return LayerState(
-        index,
-        identifier,
+        identifier=identifier,
+        name=str(attribute.get("name", name)),
         hidden=bool(attribute.get("isHidden", False)),
         locked=bool(attribute.get("isLocked", False)),
+        index=index,
+        wireframe=bool(attribute.get("isWireframe", False)),
+        intersection_group=int(attribute.get("intersectionGroupNr", 1)),
     )
 
 

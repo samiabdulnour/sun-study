@@ -107,6 +107,16 @@ class LayerState:
     intersection_group: int = 1
     """Which group the layer's elements clean up against. Same reason."""
 
+    @property
+    def invisible(self) -> bool:
+        """Nothing drawn here will be seen, or can be edited.
+
+        The two cases are worth one name because the consequence is the same:
+        a create, a delete or a move against such a layer answers success and
+        does nothing (D43).
+        """
+        return self.hidden or self.locked
+
 
 @dataclass(frozen=True)
 class LayerPlan:
