@@ -337,7 +337,23 @@ def test_filtering_the_apartments_does_not_change_their_numbers(result: Pipeline
 CLOSED_PORT = ["--port", "1"]
 
 
+@pytest.fixture
+def no_archicad_anywhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin "nothing is listening" against the machine, not only against a port.
+
+    A dead port is not enough on its own: ``_connect`` falls through to the one
+    Archicad that is running, so on a machine with the reference project open
+    these tests reached it -- and ``init-properties`` wrote nine property
+    definitions into that live project. A test must never touch the model
+    somebody has on screen, so the scan is stubbed empty.
+    """
+    import sun_study.cli as cli
+
+    monkeypatch.setattr(cli, "find_instances", lambda *a, **k: ())
+
+
 @pytest.mark.parametrize("command", ["archicad-info", "init-properties"])
+@pytest.mark.usefixtures("no_archicad_anywhere")
 def test_archicad_commands_fail_helpfully_with_nothing_listening(command: str) -> None:
     invocation = runner.invoke(app, [command, *CLOSED_PORT])
     assert invocation.exit_code == 2, invocation.output
@@ -345,6 +361,7 @@ def test_archicad_commands_fail_helpfully_with_nothing_listening(command: str) -
     assert "JSON" in invocation.output, "the message must name the setting to check"
 
 
+@pytest.mark.usefixtures("no_archicad_anywhere")
 def test_archicad_run_fails_helpfully_with_nothing_listening() -> None:
     invocation = runner.invoke(
         app, ["archicad-run", "--timezone", "Australia/Sydney", *CLOSED_PORT]
