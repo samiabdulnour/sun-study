@@ -3161,6 +3161,24 @@ def _layer_attributes(*names: str) -> dict[str, Any]:
     }
 
 
+def written(
+    name: str, *, hidden: bool, locked: bool, wireframe: bool = False, group: int = 1
+) -> dict[str, Any]:
+    """One layer as ``_write`` sends it.
+
+    Every field is named because ``CreateLayers`` writes the whole layer: one
+    left out is one reset to its default, so a restore that mentions only
+    visibility and lock flattens how the layer renders in 3D.
+    """
+    return {
+        "name": name,
+        "isHidden": hidden,
+        "isLocked": locked,
+        "isWireframe": wireframe,
+        "intersectionGroupNr": group,
+    }
+
+
 def _layer_states(*states: tuple[str, bool, bool]) -> dict[str, Any]:
     return {
         "layers": [
@@ -3204,10 +3222,10 @@ def test_the_export_switches_on_what_the_study_needs_and_puts_it_back() -> None:
     applied, restored = transport.all_parameters_for("CreateLayers")
     assert applied["overwriteExisting"] is True
     assert applied["layerDataArray"] == [
-        {"name": "Context", "isHidden": False, "isLocked": False}
+        written("Context", hidden=False, locked=False)
     ], "only the layer that was off, and only switched on"
     assert restored["layerDataArray"] == [
-        {"name": "Context", "isHidden": True, "isLocked": True}
+        written("Context", hidden=True, locked=True)
     ], "put back exactly as it was, lock included"
     assert plan.shown == ("Context",)
     assert plan.changed == 1
@@ -3223,7 +3241,7 @@ def test_the_layers_are_put_back_even_when_the_export_fails() -> None:
 
     _, restored = transport.all_parameters_for("CreateLayers")
     assert restored["layerDataArray"] == [
-        {"name": "Context", "isHidden": True, "isLocked": True}
+        written("Context", hidden=True, locked=True)
     ]
 
 
@@ -3237,7 +3255,7 @@ def test_a_named_layer_is_switched_off_for_the_export() -> None:
         pass
 
     applied, _ = transport.all_parameters_for("CreateLayers")
-    assert {"name": "Joinery", "isHidden": True, "isLocked": False} in applied["layerDataArray"]
+    assert written("Joinery", hidden=True, locked=False) in applied["layerDataArray"]
     assert plan.hidden == ("Joinery",)
 
 
@@ -3251,6 +3269,135 @@ def test_a_named_layer_is_switched_off_for_the_export() -> None:
 
 def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
     connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
+
+
+# -- the combination every sheet is drawn through -------------------------
+# Untested until now, which is how the second sheet came to be built from the
+# first sheet's layout. It decides what a drawing shows, and it is the thing
+# that has to be right when somebody says "these layers should not be there".
+
+
+def _combination_world(**overrides: Any) -> dict[str, Any]:
+    responses: dict[str, Any] = {
+        "GetAttributesByType": {
+            "attributes": [
+                {"attributeId": {"guid": "a"}, "index": 1, "name": "Walls"},
+                {"attributeId": {"guid": "b"}, "index": 2, "name": "05 | Grids.Main Floor Plan"},
+                {"attributeId": {"guid": "c"}, "index": 3, "name": "Sun Study 09:00"},
+            ]
+        },
+        "GetLayers": {
+            "layers": [
+                {"layerAttribute": {"name": "Walls", "isHidden": False, "isLocked": True,
+                                    "isWireframe": True, "intersectionGroupNr": 7}},
+                {"layerAttribute": {"name": "05 | Grids.Main Floor Plan", "isHidden": False,
+                                    "isLocked": False}},
+                {"layerAttribute": {"name": "Sun Study 09:00", "isHidden": True,
+                                    "isLocked": False}},
+            ]
+        },
+        "CreateLayerCombinations": {"attributeIds": [{"attributeId": {"guid": "C1"}}]},
+    }
+    responses.update(overrides)
+    return responses
+
+
+def _combination_written(transport: FakeTransport) -> dict[str, dict[str, Any]]:
+    sent = transport.parameters_for("CreateLayerCombinations")
+    (combination,) = sent["layerCombinationDataArray"]
+    by_guid = {row["attributeId"]["guid"]: row for row in combination["layers"]}
+    return by_guid
+
+
+def test_the_study_layer_is_shown_and_the_named_clutter_is_hidden() -> None:
+    """What the run asks for: its own layer on, the office's grids and notes
+    off, and everything else exactly as the plan already had it."""
+    from sun_study.archicad.views import ensure_layer_combination
+
+    connection, transport = connect(_combination_world())
+    connection.note_model_database()
+
+    name = ensure_layer_combination(
+        connection,
+        "SS Sun Study 09:00",
+        show=["Sun Study 09:00"],
+        hide=["05 | Grids.Main Floor Plan"],
+    )
+
+    assert name == "SS Sun Study 09:00"
+    written_layers = _combination_written(transport)
+    assert written_layers["c"]["isHidden"] is False, "the study's own layer is the point"
+    assert written_layers["b"]["isHidden"] is True, "named clutter is forced off"
+    assert written_layers["a"]["isHidden"] is False, "everything else is left as it stands"
+
+
+def test_a_layer_that_is_shown_is_never_left_locked() -> None:
+    """Somebody will want to move a label, and a locked layer refuses."""
+    from sun_study.archicad.views import ensure_layer_combination
+
+    connection, transport = connect(_combination_world())
+    connection.note_model_database()
+    ensure_layer_combination(connection, "SS X", show=["Walls"], hide=[])
+
+    assert _combination_written(transport)["a"]["isLocked"] is False
+
+
+def test_the_parts_of_a_layer_the_study_has_no_opinion_on_are_carried_through() -> None:
+    """A combination names every field of every layer. Dropping the two the
+    tool does not care about would write them back as defaults -- turning
+    wireframe off and moving the layer to intersection group 1 -- on every
+    layer of somebody's project, every run."""
+    from sun_study.archicad.views import ensure_layer_combination
+
+    connection, transport = connect(_combination_world())
+    connection.note_model_database()
+    ensure_layer_combination(connection, "SS X", show=[], hide=[])
+
+    walls = _combination_written(transport)["a"]
+    assert walls["isWireframe"] is True
+    assert walls["intersectionGroupNr"] == 7
+
+
+def test_a_combination_is_built_from_the_model_even_from_inside_a_layout() -> None:
+    """The bug this pass found. layout_from_views leaves a layout current, so
+    from the second sheet onward "the layers as they stand" was the previous
+    sheet's layout answering with its own combination -- and each sheet
+    inherited what the one before it happened to show."""
+    from sun_study.archicad.views import ensure_layer_combination
+
+    connection, transport = connect(
+        _combination_world(
+            GetCurrentWindowType={"currentWindowType": "Layout"},
+            GetElementsByType={"elements": []},
+            GetNavigatorItemTree={
+                "navigatorItemTree": {
+                    "navigatorItemId": {"guid": "R"},
+                    "name": "Project Map",
+                    "children": [
+                        {
+                            "navigatorItem": {
+                                "navigatorItemId": {"guid": "N0"},
+                                "name": "Ground",
+                                "type": "StoryItem",
+                                "prefix": "0",
+                            }
+                        }
+                    ],
+                }
+            },
+            GetDatabaseIdFromNavigatorItemId={"databases": [{"databaseId": {"guid": "S0"}}]},
+            ChangeWindow={"success": True},
+        )
+    )
+    _go_to(connection, "L1", "Layout")
+
+    ensure_layer_combination(connection, "SS X", show=[], hide=[])
+
+    moves = transport.all_parameters_for("ChangeWindow")
+    assert moves[-1] == {"databaseId": {"guid": "S0"}, "windowType": "FloorPlan"}, (
+        "a floor plan is put back before the layers are read"
+    )
+    assert connection.database is not None and connection.database.is_model
 
 
 def test_a_refused_switch_stops_the_read_instead_of_answering_about_another_sheet() -> None:
@@ -3456,8 +3603,8 @@ def test_the_projects_own_combination_is_copied_rather_than_activated() -> None:
         "the project's own combination is used, not a second copy of it"
     )
     applied, _ = transport.all_parameters_for("CreateLayers")
-    assert {"name": "Joinery", "isHidden": True, "isLocked": False} in applied["layerDataArray"]
-    assert {"name": "Context", "isHidden": False, "isLocked": False} in applied["layerDataArray"]
+    assert written("Joinery", hidden=True, locked=False) in applied["layerDataArray"]
+    assert written("Context", hidden=False, locked=False) in applied["layerDataArray"]
 
 
 def test_a_combination_the_project_does_not_have_stops_the_run() -> None:
@@ -3507,7 +3654,7 @@ def test_the_study_layers_are_forced_on_over_the_base_combination() -> None:
         pass
 
     applied, _ = transport.all_parameters_for("CreateLayers")
-    assert {"name": "Context", "isHidden": False, "isLocked": False} in applied["layerDataArray"], (
+    assert written("Context", hidden=False, locked=False) in applied["layerDataArray"], (
         "the base hides it and the study needs it, so the study wins"
     )
     assert plan.shown == ("Context",)
@@ -3561,10 +3708,10 @@ def test_legend_labels_are_moved_onto_the_studys_own_layer() -> None:
     assert all(entry["details"]["layerIndex"] == 7 for entry in moved)
     borrowed, restored = transport.all_parameters_for("CreateLayers")
     assert borrowed["layerDataArray"] == [
-        {"name": "05 | Dims/Notes.DA", "isHidden": False, "isLocked": False}
+        written("05 | Dims/Notes.DA", hidden=False, locked=False)
     ], "the layer they landed on is switched on so the move can take"
     assert restored["layerDataArray"] == [
-        {"name": "05 | Dims/Notes.DA", "isHidden": True, "isLocked": False}
+        written("05 | Dims/Notes.DA", hidden=True, locked=False)
     ], "and switched straight back: it is the office's layer, not ours"
 
 

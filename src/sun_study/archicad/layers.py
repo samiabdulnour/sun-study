@@ -98,6 +98,15 @@ class LayerState:
     index: int = -1
     """The attribute index, which is how an *element* names its layer."""
 
+    wireframe: bool = False
+    """Drawn as wireframe in 3D. Not this tool's business -- but it is written
+    back, because ``CreateLayers`` writes a whole layer and a field left out
+    is a field reset to its default. Restoring a borrowed layer without this
+    silently changes how somebody's model renders."""
+
+    intersection_group: int = 1
+    """Which group the layer's elements clean up against. Same reason."""
+
 
 @dataclass(frozen=True)
 class LayerPlan:
@@ -217,6 +226,8 @@ def read_layers(connection: ArchicadConnection) -> list[LayerState]:
                 hidden=bool(attribute.get("isHidden", False)),
                 locked=bool(attribute.get("isLocked", False)),
                 index=index,
+                wireframe=bool(attribute.get("isWireframe", False)),
+                intersection_group=int(attribute.get("intersectionGroupNr", 1)),
             )
         )
     return found
@@ -380,7 +391,9 @@ def _write(connection: ArchicadConnection, layers: Sequence[LayerState]) -> None
 
     ``CreateLayers`` with ``overwriteExisting`` is the only way in -- there is
     no ``SetLayers`` -- which is why writing a layer's state looks like
-    creating one and is not.
+    creating one and is not. And because it *is* a create, it writes the whole
+    layer: every field this does not send is set to its default, so a restore
+    that names only visibility and lock quietly flattens the rest.
     """
     if not layers:
         return
@@ -389,7 +402,15 @@ def _write(connection: ArchicadConnection, layers: Sequence[LayerState]) -> None
         "CreateLayers",
         {
             "layerDataArray": [
-                {"name": state.name, "isHidden": state.hidden, "isLocked": state.locked}
+                {
+                    "name": state.name,
+                    "isHidden": state.hidden,
+                    "isLocked": state.locked,
+                    # Written back rather than left out: CreateLayers writes
+                    # the whole layer, so an omitted field is a field reset.
+                    "isWireframe": state.wireframe,
+                    "intersectionGroupNr": state.intersection_group,
+                }
                 for state in layers
             ],
             "overwriteExisting": True,

@@ -1611,3 +1611,39 @@ fifth call site.
 The limit is stated rather than hidden: a person who clicks into a layout
 mid-run makes the note stale, and a connection that has not moved anything
 says ``None`` and is left alone.
+
+### D64 — A layer combination is a statement about the model, so read the model
+
+D63 said layer state belongs to a database. This is where that was already
+costing something, unnoticed.
+
+``ensure_layer_combination`` builds each sheet's combination from "the layers
+as they stand", which is the right idea: everything a reader expects on a plan
+stays as it is, and only the named layers are forced. But *as they stand where*
+was never asked. The sheets are made in a loop, and ``layout_from_views``
+leaves a layout current -- so from the second sheet onward the layers "as they
+stand" were the previous sheet's layout answering with its own combination.
+Each sheet inherited what the sheet before it happened to show.
+
+The named layers were never affected: ``--hide-layer`` forces those either way,
+which is why the complaint that fixed the grids and dimension layers appeared
+to work. Everything the run does *not* name is what drifted, and that is most
+of a project.
+
+So the model is made current before the layers are read. That is cheap now:
+``ensure_model_database`` answers from the note the connection takes on every
+``ChangeWindow`` and only pays for the two reads when the tool has not moved
+the database itself -- a fresh process inheriting whatever the last run left,
+which is the case those reads exist for.
+
+Two things came out of consolidating the read onto ``read_layers``, which is
+what made the bug visible at all. There were four copies of "GetAttributesByType
+then GetLayers" in this package. And ``LayerState`` carried only visibility and
+lock, while a combination names ``isWireframe`` and ``intersectionGroupNr`` too
+-- and ``CreateLayers`` writes the *whole* layer, so a field left out is a field
+reset to its default. Restoring a borrowed layer had been quietly turning
+wireframe off and moving the layer to intersection group 1. ``LayerState`` now
+carries the whole layer, and a restore puts back what was there.
+
+``ensure_layer_combination`` had no tests at all before this. It decides what
+every drawing shows.

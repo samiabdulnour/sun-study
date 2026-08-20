@@ -30,7 +30,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.layers import read_layers
 from sun_study.archicad.layout import NavigatorItem, _walk
+from sun_study.archicad.series import ensure_model_database
 
 __all__ = [
     "VIEW_PREFIX",
@@ -61,38 +63,28 @@ class StoreyView:
 def _all_layers(connection: ArchicadConnection) -> list[dict[str, Any]]:
     """Every layer with its identifier, name and current state.
 
-    Two calls for the same reason ``draw._find_layer`` needs two:
-    ``GetAttributesByType`` enumerates but carries no state, and ``GetLayers``
-    carries state but cannot enumerate.
+    A combination is a statement about the *model*, so the model has to be
+    the database current when its layers are read. Iterating over six sheets
+    used to build the second combination from the first sheet's layout --
+    ``layout_from_views`` leaves one current, and a layout answers with its
+    own combination (D63) -- so each sheet inherited what the sheet before it
+    happened to show.
     """
-    response = connection.run_tapir("GetAttributesByType", {"attributeType": "Layer"})
-    attributes = response.get("attributes") if isinstance(response, dict) else None
-    if not isinstance(attributes, list):
-        raise ArchicadError(f"GetAttributesByType returned no layer list: {response!r}")
-
-    known = [
-        {"attributeId": entry.get("attributeId"), "name": str(entry.get("name", ""))}
-        for entry in attributes
-        if isinstance(entry, dict) and (entry.get("attributeId") or {}).get("guid")
-    ]
-    if not known:
+    ensure_model_database(connection)
+    found = read_layers(connection)
+    if not found:
         raise ArchicadError("The project reports no layers at all.")
-
-    states = connection.run_tapir(
-        "GetLayers",
-        {"attributeIds": [{"attributeId": layer["attributeId"]} for layer in known]},
-    )
-    rows = states.get("layers") if isinstance(states, dict) else None
-    if not isinstance(rows, list) or len(rows) != len(known):
-        raise ArchicadError("GetLayers did not answer for every layer; cannot build a combination.")
-
-    for layer, row in zip(known, rows, strict=True):
-        detail = row.get("layerAttribute", row) if isinstance(row, dict) else {}
-        layer["isHidden"] = bool(detail.get("isHidden", False))
-        layer["isLocked"] = bool(detail.get("isLocked", False))
-        layer["isWireframe"] = bool(detail.get("isWireframe", False))
-        layer["intersectionGroupNr"] = int(detail.get("intersectionGroupNr", 1))
-    return known
+    return [
+        {
+            "attributeId": {"guid": state.identifier},
+            "name": state.name,
+            "isHidden": state.hidden,
+            "isLocked": state.locked,
+            "isWireframe": state.wireframe,
+            "intersectionGroupNr": state.intersection_group,
+        }
+        for state in found
+    ]
 
 
 def tool_layers(connection: ArchicadConnection, prefix: str) -> list[str]:

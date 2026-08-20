@@ -408,7 +408,18 @@ def ensure_model_database(connection: ArchicadConnection) -> str | None:
     activates the worksheet and AC26 will not switch back
     (see ``restore_after``), so the *next* run inherits it. The window on
     screen stays where it is either way; only the database moves.
+
+    Cheap to call repeatedly, which is what makes it usable as a precondition
+    rather than something remembered at a few chosen points. When the tool
+    moved the database itself and moved it to a floor plan, that is already
+    the answer and no round trip is needed. The slow path is for a connection
+    that has not moved anything -- a fresh process inheriting whatever the
+    last run left -- which is exactly the case the two reads exist for.
     """
+    here = connection.database
+    if here is not None and here.is_model:
+        return None
+
     current = connection.run_tapir("GetCurrentWindowType", {})
     where = current.get("currentWindowType") if isinstance(current, dict) else None
 
