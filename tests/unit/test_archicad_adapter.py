@@ -3271,6 +3271,53 @@ def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
     connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
 
 
+# -- the selection that empties an export ---------------------------------
+
+
+def test_nothing_selected_is_not_reported_as_something_cleared() -> None:
+    from sun_study.archicad.read import clear_selection
+
+    connection, transport = connect({"GetSelectedElements": {"elements": []}})
+    assert clear_selection(connection) == 0
+    assert "ChangeSelectionOfElements" not in transport.commands()
+
+
+def test_a_selection_is_cleared_and_counted_so_the_run_can_say_so() -> None:
+    """The tool sets this trap itself: CreateHatches leaves its last fill
+    selected, so drawing one run's result empties the next run's export."""
+    from sun_study.archicad.read import clear_selection
+
+    picked = [{"elementId": {"guid": "E1"}}, {"elementId": {"guid": "E2"}}]
+    connection, transport = connect(
+        {
+            "GetSelectedElements": Sequential({"elements": picked}, {"elements": []}),
+            "ChangeSelectionOfElements": {},
+        }
+    )
+    assert clear_selection(connection) == 2
+    assert transport.parameters_for("ChangeSelectionOfElements") == {
+        "removeElementsFromSelection": picked
+    }
+
+
+def test_a_selection_that_will_not_clear_stops_the_run_where_it_is() -> None:
+    """Everything about this failure is silent: the command reports success,
+    the export writes 5.8 kB against 86 MB, and the run fails three steps
+    later as "apartment zone layers matched nothing" -- sending the reader to
+    check a layer name that was right. Better to stop at the cause."""
+    from sun_study.archicad.read import clear_selection
+
+    picked = [{"elementId": {"guid": "E1"}}]
+    connection, _ = connect(
+        {
+            "GetSelectedElements": {"elements": picked},
+            "ChangeSelectionOfElements": {},
+        }
+    )
+    with pytest.raises(ArchicadError, match="still selected"):
+        clear_selection(connection)
+
+
 # -- clearing out the last run --------------------------------------------
 # Destructive, and it reports what it did. Both halves were wrong: it counted
 # drawings that go with their layout, and it counted its own folders as

@@ -396,6 +396,22 @@ def clear_selection(connection: ArchicadConnection) -> int:
     if not isinstance(selected, list) or not selected:
         return 0
     connection.run_tapir("ChangeSelectionOfElements", {"removeElementsFromSelection": selected})
+
+    # Read back, because believing this one is the whole trap. Everything
+    # about a selection is silent: the command reports success, the export
+    # writes 5.8 kB, and the run fails three steps later blaming a layer. If
+    # the selection is still there the export is already worthless, so this
+    # stops here rather than producing a study of an empty building.
+    after = connection.run_tapir("GetSelectedElements", {})
+    still = after.get("elements") if isinstance(after, dict) else None
+    if isinstance(still, list) and still:
+        raise ArchicadError(
+            f"Asked Archicad to deselect {len(selected)} element(s) and "
+            f"{len(still)} are still selected. The translator exports the "
+            f"selection when there is one, so the export would be an IfcSite "
+            f"and an IfcBuilding and nothing else. Click an empty part of the "
+            f"plan to deselect, and run again."
+        )
     return len(selected)
 
 
