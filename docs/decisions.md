@@ -1426,3 +1426,26 @@ because the failure also happens when the sheet pass raises. The rule this
 follows is the one ``ensure_model_database`` was written for: the current
 database is a shared piece of the session, and anything that moves it owns
 putting it back.
+
+### D58 — A Drawing's angle field is writable, reports back, and does not turn the drawing
+
+``straighten_and_tile`` was written with ``RotateElements``, which needs a
+centre and two points on an arc to imply an angle. That was replaced with
+``SetDetailsOfElements`` and a ``DrawingSettings`` ``angle`` of zero, because
+the schema offers the field and one number is plainly better than an arc.
+
+The field takes the write. It reads back as zero. The drawing does not move.
+
+Six drawings on the reference project were reported straightened, twice, and
+the sheet came out visibly crooked with Archicad's own dialog insisting the
+angle was 0.00 degrees. What settles it is the ``clipPolygon``, the frame's
+own corners: every one of them stood at 9.90 degrees off axis -- 279.9 modulo
+a quarter turn, the Drawing tool's default angle, which is this project's
+north. The office's own drawings on the same project measure 0.00.
+
+So the angle is read from the corners and never from the field, and the turn
+is ``RotateElements`` again, arc and all. This is the third member of a family
+now -- ``layerIndex`` on a hidden layer (D43), ``drawingScale`` on a Drawing
+(D55), and ``angle`` -- where the add-on accepts a write, stores it, returns
+it, and changes nothing. Reading a value back is not evidence that it did
+anything; reading the *geometry* back is.

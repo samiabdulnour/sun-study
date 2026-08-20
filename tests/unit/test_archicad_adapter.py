@@ -2644,6 +2644,83 @@ def _drawing(width: float, height: float, *, ratio: float = 1.0, angle: float = 
     }
 
 
+def _tilted(width: float, height: float, radians: float) -> dict[str, Any]:
+    """A drawing whose frame stands at ``radians`` while its angle field lies."""
+    corners = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
+    cos, sin = math.cos(radians), math.sin(radians)
+    turned = [(x * cos - y * sin, x * sin + y * cos) for x, y in corners]
+    return {
+        "details": {
+            "angle": 0.0,
+            "ratio": 1.0,
+            "bounds": {
+                "xMin": min(x for x, _ in turned),
+                "yMin": min(y for _, y in turned),
+                "xMax": max(x for x, _ in turned),
+                "yMax": max(y for _, y in turned),
+            },
+            "clipPolygon": [{"x": x, "y": y} for x, y in turned] + [
+                {"x": turned[0][0], "y": turned[0][1]}
+            ],
+        }
+    }
+
+
+def test_a_drawing_is_measured_by_its_corners_not_by_its_angle_field() -> None:
+    """The field says what was last written to it, not where the drawing is.
+
+    A run set ``angle`` to zero through ``SetDetailsOfElements``, read zero
+    back, and reported six drawings straightened. Every frame on the sheet was
+    still at 279.9 degrees -- the Drawing tool's default, which is this
+    project's north -- and the sheet came out visibly crooked with the
+    settings dialog insisting on 0.00 degrees.
+    """
+    from sun_study.archicad.sheets import straighten_and_tile
+
+    off_axis = math.radians(9.9)
+    connection, transport = connect(
+        {
+            "ChangeWindow": {},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
+            "GetDetailsOfElements": Sequential(
+                {"detailsOfElements": [_tilted(0.19, 0.29, off_axis)]},
+                {"detailsOfElements": [_tilted(0.19, 0.29, 0.0)]},
+            ),
+            "RotateElements": {},
+            "MoveElements": {},
+        }
+    )
+    report = straighten_and_tile(connection, "lay", LayoutSheet(841.0, 594.0))
+
+    assert report.straightened == 1, "the corners say it is crooked even though the field does not"
+    assert "SetDetailsOfElements" not in transport.commands(), (
+        "writing the angle field is what looked like it worked and did not"
+    )
+    turn = transport.parameters_for("RotateElements")["elementsWithRotations"][0]["rotation"]
+    swept = math.atan2(
+        turn["endPoint"]["y"] - turn["origin"]["y"], turn["endPoint"]["x"] - turn["origin"]["x"]
+    )
+    assert swept == pytest.approx(-off_axis, abs=1e-6), "turned back by what it was off by"
+
+
+def test_a_frame_square_to_the_page_is_left_alone() -> None:
+    """A quarter turn is upright too, so the angle is read modulo one."""
+    from sun_study.archicad.sheets import straighten_and_tile
+
+    connection, transport = connect(
+        {
+            "ChangeWindow": {},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
+            "GetDetailsOfElements": {"detailsOfElements": [_tilted(0.19, 0.29, math.pi / 2)]},
+            "MoveElements": {},
+        }
+    )
+    report = straighten_and_tile(connection, "lay", LayoutSheet(841.0, 594.0))
+
+    assert report.straightened == 0
+    assert "RotateElements" not in transport.commands()
+
+
 def test_a_drawing_too_big_for_its_sheet_is_shrunk_before_it_is_tiled() -> None:
     """A view of the coloured model arrived 1,429 x 1,256 mm on an A1.
 

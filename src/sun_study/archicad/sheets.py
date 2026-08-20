@@ -23,7 +23,8 @@ bounding box, and the second measurement is the one the tiling needs.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+import math
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,6 +74,55 @@ class DrawingPlacement:
         return ((self.x_min + self.x_max) / 2.0, (self.y_min + self.y_max) / 2.0)
 
 
+def _frame_angle(details: Mapping[str, Any]) -> float:
+    """How far the Drawing's frame is off upright, in radians, within +-45 deg.
+
+    Taken from the ``clipPolygon`` -- the frame's own corners -- and **not**
+    from the ``angle`` field beside it, which is the whole point. ``angle`` is
+    writable and answers with whatever was last written to it: a run that set
+    it to zero read zero back and reported six drawings straightened, while
+    every frame on the sheet still stood at 279.9 degrees. The corners are the
+    only account of where the drawing actually is.
+
+    Reduced modulo a quarter turn, because a rectangle at 90 degrees is
+    upright, and then signed so that rotating by its negative is the shorter
+    way round.
+    """
+    polygon = details.get("clipPolygon")
+    if not isinstance(polygon, list) or len(polygon) < 3:
+        return float(details.get("angle", 0.0) or 0.0)
+    try:
+        first, second = polygon[0], polygon[1]
+        edge = math.atan2(
+            float(second["y"]) - float(first["y"]), float(second["x"]) - float(first["x"])
+        )
+    except (KeyError, TypeError, ValueError):
+        return float(details.get("angle", 0.0) or 0.0)
+    quarter = math.pi / 2.0
+    off = edge % quarter
+    return off - quarter if off > quarter / 2.0 else off
+
+
+def _turn_by(angle_rad: float, origin: tuple[float, float]) -> dict[str, Any]:
+    """A rotation of ``angle_rad`` about ``origin``, as two points on its arc.
+
+    ``RotateElements`` takes no angle. It takes a centre and the two ends of an
+    arc, and derives the angle from them -- so the caller has to build the arc.
+    A unit radius keeps the numbers well away from the precision at which two
+    points would read as the same one.
+
+    Worth the arithmetic: this is what actually turns a Drawing. Writing
+    ``angle`` through ``SetDetailsOfElements`` is shorter, reports success and
+    reads back, and leaves the drawing exactly where it was.
+    """
+    x, y = origin
+    return {
+        "origin": {"x": x, "y": y},
+        "beginPoint": {"x": x + 1.0, "y": y},
+        "endPoint": {"x": x + math.cos(angle_rad), "y": y + math.sin(angle_rad)},
+    }
+
+
 def measure_drawings(
     connection: ArchicadConnection, layout_database_id: str
 ) -> list[DrawingPlacement]:
@@ -106,7 +156,7 @@ def measure_drawings(
             placements.append(
                 DrawingPlacement(
                     element=element,
-                    angle_rad=float(details.get("angle", 0.0)),
+                    angle_rad=_frame_angle(details),
                     x_min=float(bounds["xMin"]),
                     y_min=float(bounds["yMin"]),
                     x_max=float(bounds["xMax"]),
@@ -187,19 +237,19 @@ def straighten_and_tile(
     crooked = [p for p in placements if abs(p.angle_rad) > tolerance_rad]
     if crooked:
         connection.run_tapir(
-            "SetDetailsOfElements",
+            "RotateElements",
             {
-                "elementsWithDetails": [
+                "elementsWithRotations": [
                     {
                         "elementId": placement.element["elementId"],
-                        "details": {"typeSpecificDetails": {"angle": 0.0}},
+                        "rotation": _turn_by(-placement.angle_rad, placement.centre),
                     }
                     for placement in crooked
                 ]
             },
         )
-        # Straightening moves the bounding box, and the tiling needs the new
-        # one. Also the only proof it happened: the response says nothing.
+        # Rotating moves the bounding box, and the tiling needs the new one.
+        # Also the only proof it happened: the response says nothing.
         placements = measure_drawings(connection, layout_database_id)
         still = [p for p in placements if abs(p.angle_rad) > tolerance_rad]
         if still:
