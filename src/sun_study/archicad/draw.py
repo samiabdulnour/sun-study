@@ -615,25 +615,47 @@ def _fill_for(zone: ArchicadZone, band: BandStyle, layer_index: int) -> dict[str
     return data
 
 
+#: Text height for everything the tool writes, in Archicad's own units for the
+#: field. Set rather than inherited: a Text created without one takes the Text
+#: tool's default, which on the reference project drew a legend label 1.27 m
+#: tall in model space -- taller than the 1.5 m the rows were spaced at, so
+#: every label sat on the one below it. An office's default is set for its own
+#: drawings and has no reason to suit a legend beside a plan.
+TEXT_HEIGHT = 1.0
+
+#: What one line of ``TEXT_HEIGHT`` text occupies in model metres, measured:
+#: 0.424 m for the whole bounding box, ascender and descender included. Used
+#: to space rows, so the spacing follows the text rather than being guessed
+#: alongside it.
+TEXT_MODEL_HEIGHT_M = 0.43
+
+
 def _legend(
     bands: Sequence[BandStyle],
     origin: tuple[float, float],
     layer_index: int,
     *,
     swatch_m: float = 1.0,
-    spacing_m: float = 1.5,
+    spacing_m: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Swatches and labels for the key, top band first.
 
     Drawn in model space beside the plan, in metres, so it scales with the
     drawing rather than floating at a fixed paper size.
+
+    The row spacing has to clear both the swatch and the label, and the label
+    is the taller of the two at any scale where the text is not tiny. Spacing
+    it at 1.5 m for a 1.0 m swatch looked generous and was not: the labels
+    were 1.27 m tall, so consecutive rows overlapped and the key read as one
+    smear of text. It is now the taller of the two plus half a line.
     """
     fills: list[dict[str, Any]] = []
     texts: list[dict[str, Any]] = []
     x, top = origin
+    step = spacing_m if spacing_m is not None else max(swatch_m, TEXT_MODEL_HEIGHT_M) * 1.5
 
     for row, band in enumerate(reversed(bands)):
-        y = top - row * spacing_m
+        y = top - row * step
         fills.append(
             {
                 "coordinates": [
@@ -653,9 +675,16 @@ def _legend(
         )
         texts.append(
             {
-                "coordinate": {"x": x + swatch_m * 1.4, "y": y, "z": 0.0},
+                # Centred on the swatch rather than sitting on its baseline, so
+                # a label reads against the colour it names.
+                "coordinate": {
+                    "x": x + swatch_m * 1.4,
+                    "y": y + (swatch_m - TEXT_MODEL_HEIGHT_M) / 2.0,
+                    "z": 0.0,
+                },
                 "text": band.label,
                 "justification": "Left",
+                "height": TEXT_HEIGHT,
             }
         )
     return fills, texts
@@ -725,13 +754,25 @@ def draw_assessment(
                 },
                 "text": title,
                 "justification": "Left",
+                "height": TEXT_HEIGHT,
             }
         )
 
     if fills or legend_fills:
         _create(connection, "CreateHatches", "hatchesData", fills + legend_fills)
     if legend_texts:
-        _create(connection, "CreateTexts", "textsData", legend_texts)
+        # CreateTexts takes no layer, so the labels land on the Text tool's
+        # default -- an office annotation layer -- and have to be moved onto
+        # the study's own. Otherwise the legend is not part of what the next
+        # run clears, and switching the study off leaves it behind.
+        made = _create(connection, "CreateTexts", "textsData", legend_texts)
+        moved = move_to_layer(connection, made, layer_index)
+        if moved != len(made):
+            raise ArchicadError(
+                f"{len(made) - moved} of {len(made)} legend labels would not move onto "
+                f"layer {layer_name!r}. They are still on the Text tool's default layer, "
+                f"which is where a Text is created; that layer or this one is locked."
+            )
 
     return DrawReport(
         fills_drawn=len(fills),
@@ -762,12 +803,14 @@ def _legend_origin(zones: Sequence[ArchicadZone]) -> tuple[float, float]:
 
 def _create(
     connection: ArchicadConnection, command: str, key: str, data: list[dict[str, Any]]
-) -> None:
+) -> list[dict[str, Any]]:
     """Run a create command and fail on any per-element error.
 
     These commands report failures inside a successful response, one slot per
     input. A half-drawn diagram that reports success is worse than no diagram:
     the missing apartments look like apartments that were not assessed.
+
+    Returns what was made, because a Text has to be moved after it is made.
     """
     response = connection.run_tapir(command, {key: data})
     elements = response.get("elements") if isinstance(response, dict) else None
@@ -784,3 +827,39 @@ def _create(
             f"{command} failed for {len(problems)} of {len(data)} elements:\n  "
             + "\n  ".join(sorted(set(problems))[:5])
         )
+    return [item for item in elements if isinstance(item, dict) and "elementId" in item]
+
+
+def move_to_layer(
+    connection: ArchicadConnection, elements: Sequence[dict[str, Any]], layer_index: int
+) -> int:
+    """Put created elements on the tool's own layer. Returns how many moved.
+
+    ``CreateTexts`` takes no layer -- it takes a coordinate, a string, a
+    height, a pen, a justification and an angle, and nothing else -- so a
+    Text lands on whatever layer the Text tool defaults to. On the reference
+    project that is ``05 | Dims/Notes.DA``, one of the office's own annotation
+    layers, which means the study's legend arrives mixed in with the drawing
+    set's dimensions and disappears from a run's own clean-up.
+
+    Moving afterwards is the same route the facade skin's walls take, and it
+    carries the same trap: ``SetDetailsOfElements`` answers success and
+    changes nothing when the element sits on a hidden layer (D43). The result
+    is therefore read back rather than believed.
+    """
+    if not elements:
+        return 0
+    connection.run_tapir(
+        "SetDetailsOfElements",
+        {
+            "elementsWithDetails": [
+                {"elementId": element["elementId"], "details": {"layerIndex": layer_index}}
+                for element in elements
+            ]
+        },
+    )
+    check = connection.run_tapir("GetDetailsOfElements", {"elements": list(elements)})
+    rows = check.get("detailsOfElements") if isinstance(check, dict) else None
+    if not isinstance(rows, list):
+        return 0
+    return sum(1 for row in rows if isinstance(row, dict) and row.get("layerIndex") == layer_index)

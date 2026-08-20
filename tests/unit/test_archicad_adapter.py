@@ -1521,6 +1521,10 @@ def _draw_responses(*, layer_index: int = 7, **overrides: Any) -> dict[str, Any]
         "CreateLayers": {"attributeIds": [{"attributeId": {"guid": "l"}}]},
         "CreateHatches": {"elements": [{"elementId": {"guid": "h"}}] * 99},
         "CreateTexts": {"elements": [{"elementId": {"guid": "t"}}] * 99},
+        # A Text takes no layer, so it is created on the Text tool's default
+        # and moved afterwards. The move is read back, never believed.
+        "SetDetailsOfElements": {"executionResults": [{"success": True}]},
+        "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": layer_index}] * 99},
     }
     responses.update(overrides)
     return responses
@@ -1565,7 +1569,12 @@ def test_the_previous_run_is_deleted_before_drawing() -> None:
     connection, transport = connect(
         _draw_responses(
             GetElementsByType={"elements": stale},
-            GetDetailsOfElements={"detailsOfElements": [{"layerIndex": 7}, {"layerIndex": 99}]},
+            # The clear asks once per element type -- Hatch, Text, PolyLine --
+            # and then the legend labels' move asks a fourth time.
+            GetDetailsOfElements=Sequential(
+                *[{"detailsOfElements": [{"layerIndex": 7}, {"layerIndex": 99}]}] * 3,
+                {"detailsOfElements": [{"layerIndex": 7}] * 99},
+            ),
             DeleteElements={"success": True},
         )
     )
@@ -1594,7 +1603,10 @@ def test_something_else_on_the_layer_is_not_touched() -> None:
     connection, transport = connect(
         _draw_responses(
             GetElementsByType={"elements": [{"elementId": {"guid": "keep"}}]},
-            GetDetailsOfElements={"detailsOfElements": [{"layerIndex": 99}]},
+            GetDetailsOfElements=Sequential(
+                *[{"detailsOfElements": [{"layerIndex": 99}]}] * 3,
+                {"detailsOfElements": [{"layerIndex": 7}] * 99},
+            ),
         )
     )
     draw_assessment(
@@ -3331,3 +3343,54 @@ def test_the_study_layers_are_forced_on_over_the_base_combination() -> None:
         "the base hides it and the study needs it, so the study wins"
     )
     assert plan.shown == ("Context",)
+
+
+def test_legend_labels_are_moved_onto_the_studys_own_layer() -> None:
+    """CreateTexts takes no layer -- coordinate, string, height, pen,
+    justification, angle, and nothing else.
+
+    So a label lands on whatever the Text tool defaults to, which on the
+    reference project is '05 | Dims/Notes.DA', one of the office's annotation
+    layers for the drawing set. Two things go wrong: the study's key is mixed
+    into somebody else's layer, and it is outside what the next run clears, so
+    switching the study off leaves the legend on the plan.
+    """
+    connection, transport = connect(_draw_responses(layer_index=7))
+    draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+
+    moved = transport.parameters_for("SetDetailsOfElements")["elementsWithDetails"]
+    assert moved, "the labels have to be moved; they cannot be created in place"
+    assert all(entry["details"]["layerIndex"] == 7 for entry in moved)
+
+
+def test_a_legend_label_carries_its_own_height() -> None:
+    """Inherited, the Text tool's default drew a label 1.27 m tall in model
+    space -- taller than the 1.5 m the rows were spaced at, so every label sat
+    on the one below it and the key read as a smear."""
+    connection, transport = connect(_draw_responses())
+    draw_assessment(
+        connection,
+        _assessment(_apartment("apt-1")),
+        [_zone("z1")],
+        zone_by_apartment={"apt-1": "z1"},
+    )
+
+    texts = transport.parameters_for("CreateTexts")["textsData"]
+    assert texts and all("height" in text for text in texts)
+
+
+def test_legend_rows_clear_each_other() -> None:
+    from sun_study.archicad.draw import DEFAULT_BANDS, TEXT_MODEL_HEIGHT_M, _legend
+
+    _, texts = _legend(DEFAULT_BANDS, (0.0, 0.0), 7)
+    ys = sorted(text["coordinate"]["y"] for text in texts)
+    gaps = [b - a for a, b in zip(ys, ys[1:], strict=False)]
+    assert gaps, "more than one band, so there are gaps to check"
+    assert min(gaps) > TEXT_MODEL_HEIGHT_M, (
+        "consecutive labels must not overlap at the height they are drawn at"
+    )

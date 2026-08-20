@@ -56,6 +56,8 @@ def connect(**overrides: Any) -> tuple[ArchicadConnection, FakeTransport]:
         "CreateHatches": {"elements": [{"elementId": {"guid": "h"}}] * 99},
         "CreatePolylines": {"elements": [{"elementId": {"guid": "p"}}] * 99},
         "CreateTexts": {"elements": [{"elementId": {"guid": "t"}}] * 99},
+        "SetDetailsOfElements": {"executionResults": [{"success": True}]},
+        "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 7}] * 99},
     }
     responses.update(overrides)
     transport = FakeTransport(responses)

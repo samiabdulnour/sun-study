@@ -50,6 +50,7 @@ from sun_study.archicad.draw import (
     LayerState,
     clear_layer,
     ensure_layer,
+    move_to_layer,
 )
 from sun_study.archicad.read import ArchicadZone
 from sun_study.core.geometry import PlanTransform, fit_plan_transform
@@ -305,7 +306,7 @@ def draw_penetration(
 
         _create(connection, "CreateHatches", "hatchesData", fills)
         _create(connection, "CreatePolylines", "polylinesData", lines)
-        _create(connection, "CreateTexts", "textsData", texts)
+        _texts_on(connection, texts, layer)
 
     return PenetrationReport(
         instants=tuple(instant.label for instant in instants),
@@ -404,7 +405,7 @@ def draw_cell_groups(
     texts.extend(legend_texts)
 
     _create(connection, "CreateHatches", "hatchesData", fills)
-    _create(connection, "CreateTexts", "textsData", texts)
+    _texts_on(connection, texts, layer)
 
     return PenetrationReport(
         instants=(title or layer_name,),
@@ -613,10 +614,15 @@ def _label(
 
 def _create(
     connection: ArchicadConnection, command: str, key: str, data: list[dict[str, Any]]
-) -> None:
-    """Run a create command in batches, failing on any per-element error."""
+) -> list[dict[str, Any]]:
+    """Run a create command in batches, failing on any per-element error.
+
+    Returns what was made, because a Text has to be moved onto its layer
+    afterwards -- ``CreateTexts`` accepts no layer at all.
+    """
+    made: list[dict[str, Any]] = []
     if not data:
-        return
+        return made
     for start in range(0, len(data), 500):
         response = connection.run_tapir(command, {key: data[start : start + 500]})
         elements = response.get("elements") if isinstance(response, dict) else None
@@ -629,3 +635,19 @@ def _create(
                     f"{command} failed for one item: "
                     f"{error.get('message', 'no message')} (code {error.get('code')})"
                 )
+        made.extend(entry for entry in elements if isinstance(entry, dict) and "elementId" in entry)
+    return made
+
+
+def _texts_on(
+    connection: ArchicadConnection, data: list[dict[str, Any]], layer: LayerState
+) -> None:
+    """Create texts and put them on the study's layer, not the Text tool's.
+
+    Without the move the labels land on whatever the Text tool defaults to --
+    ``05 | Dims/Notes.DA`` on the reference project, an office annotation layer
+    for the drawing set. That is wrong twice over: the study's annotation is
+    mixed into somebody else's layer, and it is outside what the next run
+    clears, so switching the study's layer off leaves the labels on the plan.
+    """
+    move_to_layer(connection, _create(connection, "CreateTexts", "textsData", data), layer.index)
