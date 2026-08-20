@@ -35,6 +35,7 @@ from sun_study.archicad.connection import (
     ArchicadConnection,
     ArchicadError,
     CommandFailedError,
+    Database,
     HttpTransport,
     Instance,
     TapirUnavailableError,
@@ -3238,6 +3239,152 @@ def test_a_named_layer_is_switched_off_for_the_export() -> None:
     applied, _ = transport.all_parameters_for("CreateLayers")
     assert {"name": "Joinery", "isHidden": True, "isLocked": False} in applied["layerDataArray"]
     assert plan.hidden == ("Joinery",)
+
+
+# -- layer state belongs to a database, not to the project ----------------
+# Measured on the reference project, in this order: on a floor plan
+# "05 | Dims/Notes.DA" reads hidden; switch to a layout and it reads visible;
+# write it hidden there and it takes; switch away and back and it is visible
+# again. The layout's combination is reapplied every time, so a write made in
+# one is discarded and a snapshot taken in one is a layout's opinion. D63.
+
+
+def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
+    connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
+
+
+def test_a_connection_that_has_not_moved_makes_no_claim_about_where_it_is() -> None:
+    """None, not a guess. A fresh connection has not navigated anything, and
+    refusing on that basis would break every caller on an untouched project."""
+    connection, _ = connect({})
+    assert connection.database is None
+
+
+def test_the_database_is_remembered_from_the_command_that_moved_it() -> None:
+    """There is no GetCurrentDatabase to ask -- unregistered on Tapir 1.5.7 --
+    and GetCurrentWindowType answers for the window, which moves separately."""
+    connection, _ = connect({"ChangeWindow": {"success": True}})
+
+    _go_to(connection, "L1", "Layout")
+    assert connection.database == Database(guid="L1", window_type="Layout")
+    assert not connection.database.is_model
+
+    _go_to(connection, "S0", "FloorPlan")
+    assert connection.database.is_model, "a floor plan is where the building is"
+
+
+def test_a_refused_move_leaves_the_note_where_it_was() -> None:
+    """ChangeWindow reports success as data. A worksheet made this session
+    cannot be activated, and the database stays where it was when it says so."""
+    connection, _ = connect({"ChangeWindow": Sequential({"success": True}, {"success": False})})
+
+    _go_to(connection, "S0", "FloorPlan")
+    _go_to(connection, "W1", "Worksheet")
+    assert connection.database == Database(guid="S0", window_type="FloorPlan")
+
+
+def test_reading_layers_on_a_layout_is_refused_rather_than_answered_wrongly() -> None:
+    """The answer exists -- it is just the layout's, not the project's, and
+    reporting it as the project's is what cost an afternoon: a check run after
+    a tour of six layouts said a layer had not been put back when it had."""
+    from sun_study.archicad.layers import read_layers
+
+    connection, transport = connect({"ChangeWindow": {"success": True}, **_layer_world()})
+    _go_to(connection, "L1", "Layout")
+
+    with pytest.raises(ArchicadError) as raised:
+        read_layers(connection)
+
+    assert "Layout is the current database" in str(raised.value)
+    assert "GetAttributesByType" not in transport.commands(), "refused before asking"
+
+
+def test_writing_layers_on_a_layout_is_refused_because_it_would_be_discarded() -> None:
+    """The write does take effect in the layout. It is gone on the next
+    switch, when the combination is reapplied, and it never reaches the
+    model -- so a restore made there restores nothing."""
+    from sun_study.archicad.layers import LayerState, _write
+
+    connection, transport = connect({"ChangeWindow": {"success": True}, "CreateLayers": {}})
+    _go_to(connection, "L1", "Layout")
+
+    with pytest.raises(ArchicadError) as raised:
+        _write(connection, [LayerState("G1", "Context", hidden=True)])
+
+    assert "discarded" in str(raised.value)
+    assert "CreateLayers" not in transport.commands()
+
+
+def test_the_export_state_refuses_on_a_layout_rather_than_snapshotting_one() -> None:
+    """The one that matters. export_state promises the export does not depend
+    on what was on screen; entered on a layout it would snapshot the layout's
+    combination as the project's state and write that back afterwards."""
+    from sun_study.archicad.layers import export_state
+
+    connection, _ = connect({"ChangeWindow": {"success": True}, **_layer_world()})
+    _go_to(connection, "L1", "Layout")
+
+    with pytest.raises(ArchicadError), export_state(connection):
+        pass
+
+
+def test_going_back_to_a_floor_plan_makes_layer_work_possible_again() -> None:
+    """The guard is about where the tool is, not a mode it latches into."""
+    from sun_study.archicad.layers import read_layers
+
+    connection, _ = connect({"ChangeWindow": {"success": True}, **_layer_world()})
+    _go_to(connection, "L1", "Layout")
+    _go_to(connection, "S0", "FloorPlan")
+
+    assert [state.name for state in read_layers(connection)] == ["Walls", "Context", "Joinery"]
+
+
+def test_the_walls_that_prove_a_floor_plan_are_recorded_as_proof() -> None:
+    """ensure_model_database usually finds nothing to move. Returning early
+    without saying so left the connection claiming not to know where it was,
+    which switches the guard off for the whole run."""
+    from sun_study.archicad.series import ensure_model_database
+
+    connection, _ = connect(
+        {
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "W1"}}]},
+        }
+    )
+    assert ensure_model_database(connection) is None
+    assert connection.database is not None and connection.database.is_model
+
+
+def test_a_layout_left_current_is_moved_off_and_the_move_is_recorded() -> None:
+    """The other half: when it does move, the note comes from ChangeWindow."""
+    from sun_study.archicad.series import ensure_model_database
+
+    connection, _ = connect(
+        {
+            "GetCurrentWindowType": {"currentWindowType": "Layout"},
+            "GetElementsByType": {"elements": []},
+            "GetNavigatorItemTree": {
+                "navigatorItemTree": {
+                    "navigatorItemId": {"guid": "R"},
+                    "name": "Project Map",
+                    "children": [
+                        {
+                            "navigatorItem": {
+                                "navigatorItemId": {"guid": "N0"},
+                                "name": "Ground",
+                                "type": "StoryItem",
+                                "prefix": "0",
+                            }
+                        }
+                    ],
+                }
+            },
+            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "S0"}}]},
+            "ChangeWindow": {"success": True},
+        }
+    )
+    assert ensure_model_database(connection) == "Layout"
+    assert connection.database == Database(guid="S0", window_type="FloorPlan")
 
 
 def test_a_layer_both_hidden_and_locked_is_counted_once() -> None:

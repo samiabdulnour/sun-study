@@ -29,6 +29,27 @@ Everything is snapshotted first and put back afterwards, in a ``finally``.
 The point is that the export does not depend on what was on screen, and the
 corollary is that the session must not depend on the export either.
 
+Layer state belongs to a database, not to the project
+-----------------------------------------------------
+Measured, and it is the thing to know before touching anything here. A layer's
+visibility is not one fact the project holds; it is whatever the **current
+database** says, and each database has its own answer:
+
+* On a floor plan, ``05 | Dims/Notes.DA`` reads hidden. Switch to a layout and
+  the same layer reads visible, because the layout's combination shows it.
+* A write made while a layout is current does take effect *there* -- and is
+  discarded on the next switch, when the combination is reapplied. It never
+  reaches the model.
+* So a snapshot taken in a layout and restored later does not restore
+  anything. It writes a layout's opinion over the model's state.
+
+Two consequences, both encoded below. Reading or writing layer state is only
+meaningful with a floor plan current, so ``read_layers`` and ``_write`` refuse
+anywhere else rather than answering wrongly. And a layer state *reported* to a
+person is only true of the database it was read in -- a check run after a tour
+of the layouts reports drift that is not there, which is exactly how an
+afternoon went (D63).
+
 Reuse, never recreate
 ---------------------
 ``CreateLayerCombinations`` makes one. ``DeleteAttributes`` will not remove
@@ -122,8 +143,31 @@ class LayerPlan:
         return "\n".join(lines)
 
 
+def _must_be_on_the_model(connection: ArchicadConnection, doing: str) -> None:
+    """Refuse layer work anywhere but a floor plan. See the module docstring.
+
+    ``None`` is allowed through: it means the tool has not moved the database
+    and has no claim to make about where it is. Refusing then would break
+    every caller that talks to a project nobody has navigated, which is the
+    ordinary case for a fresh connection.
+    """
+    where = getattr(connection, "database", None)
+    if where is None or where.is_model:
+        return
+    raise ArchicadError(
+        f"Cannot {doing}: a {where.window_type} is the current database, and layer "
+        f"visibility there is that database's own -- a layout's combination, "
+        f"reapplied on every switch. Reading it would report the layout's answer "
+        f"as the project's, and writing it would be discarded. Put a floor plan "
+        f"back first with ensure_model_database()."
+    )
+
+
 def read_layers(connection: ArchicadConnection) -> list[LayerState]:
     """Every layer in the project, with its current visibility.
+
+    Only ever asked of a floor plan -- a layout answers for itself, and the
+    answer is not the project's. See the module docstring.
 
     Two calls, because neither answers alone: ``GetAttributesByType``
     enumerates but reports only id, index and name -- its ``isHidden`` is
@@ -131,6 +175,7 @@ def read_layers(connection: ArchicadConnection) -> list[LayerState]:
     where plenty is -- and ``GetLayers`` carries ``isHidden`` and ``isLocked``
     but requires the ids, so it cannot be used to search.
     """
+    _must_be_on_the_model(connection, "read the project's layers")
     response = connection.run_tapir("GetAttributesByType", {"attributeType": "Layer"})
     attributes = response.get("attributes") if isinstance(response, dict) else None
     if not isinstance(attributes, list):
@@ -338,6 +383,7 @@ def _write(connection: ArchicadConnection, layers: Sequence[LayerState]) -> None
     """
     if not layers:
         return
+    _must_be_on_the_model(connection, "set the project's layers")
     connection.run_tapir(
         "CreateLayers",
         {

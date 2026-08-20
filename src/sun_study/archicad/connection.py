@@ -269,12 +269,44 @@ def where_archicad_actually_is(
     )
 
 
+@dataclass(frozen=True)
+class Database:
+    """Which database this tool last made current, and of what kind.
+
+    Archicad will not say. ``GetCurrentWindowType`` answers for the *window*
+    on screen, which is a different thing: ``ChangeWindow`` moves the current
+    database while the visible window stays put, so a run can be looking at a
+    floor plan with a layout current underneath it. There is no
+    ``GetCurrentDatabase`` -- it is unregistered on Tapir 1.5.7, along with
+    ``GetCurrentWindow`` and ``GetDatabases``.
+
+    So the tool remembers instead of asking. That is sound because the tool is
+    the only thing moving the database during a run, and it is honest about
+    its limit: a person who clicks into a layout mid-run makes this stale, and
+    ``None`` means nobody has moved it yet and the answer is unknown.
+    """
+
+    guid: str
+    window_type: str
+
+    @property
+    def is_model(self) -> bool:
+        """True for a floor plan -- the only database the *building* is in.
+
+        A layout holds drawings, a worksheet holds whatever was drawn into it,
+        and neither holds a wall. This is what separates a database a study
+        can read from one it cannot.
+        """
+        return self.window_type == "FloorPlan"
+
+
 class ArchicadConnection:
     """A connection to Archicad, with Tapir's commands reachable through it."""
 
     def __init__(self, transport: Transport | None = None) -> None:
         self._transport = transport if transport is not None else HttpTransport()
         self._tapir_version: str | None = None
+        self._database: Database | None = None
 
     # -- raw protocol ----------------------------------------------------
     def run_official(self, command: str, parameters: dict[str, Any] | None = None) -> Any:
@@ -320,7 +352,42 @@ class ArchicadConnection:
                 f"Tapir command {command} failed: {error.get('message', 'no message')} "
                 f"(code {error.get('code', 'none')})"
             )
+        if command == "ChangeWindow":
+            self._note_change_window(parameters or {}, inner)
         return inner
+
+    # -- where the tool is -----------------------------------------------
+    def _note_change_window(self, parameters: dict[str, Any], answer: Any) -> None:
+        """Remember what ``ChangeWindow`` just made current.
+
+        Here rather than at the call sites because there are four of them and
+        a fifth would forget. Every database move in this package goes through
+        ``run_tapir``, so this is the one place that cannot be bypassed.
+
+        A refused move leaves the database where it was, so the note is only
+        taken when the command actually reports success.
+        """
+        if isinstance(answer, dict) and answer.get("success") is False:
+            return
+        guid = (parameters.get("databaseId") or {}).get("guid")
+        window = parameters.get("windowType")
+        if guid and window:
+            self._database = Database(guid=str(guid), window_type=str(window))
+
+    @property
+    def database(self) -> Database | None:
+        """What this tool last made current, or ``None`` if it has not."""
+        return self._database
+
+    def note_model_database(self, guid: str = "") -> None:
+        """Record that a floor plan is current without having moved anything.
+
+        For the caller that has *proved* it -- ``ensure_model_database`` reads
+        the walls, and a database with walls in it is a floor plan. Without
+        this the common path, where nothing needed moving, would leave the
+        connection saying it does not know where it is.
+        """
+        self._database = Database(guid=guid, window_type="FloorPlan")
 
     # -- handshake -------------------------------------------------------
     @property

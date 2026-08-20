@@ -1567,3 +1567,47 @@ on the office's annotation layer, and the run's clean-up only ever touches its
 own layer, so they are not swept up by a later run. Two hundred of them on the
 reference project, findable only by ``Get3DBoundingBoxes`` because a Text will
 not report its own contents.
+
+### D63 — Layer visibility belongs to a database, not to the project
+
+D62 left one thing unexplained: after a run the reference project's
+``05 | Dims/Notes.DA`` read visible, though the borrow that unhid it restored
+correctly in isolation. The conclusion recorded at the time -- that switching
+views drifts the layer state and the drift needs undoing -- was wrong, and
+wrong in a way that would have produced a fix for a problem nobody had.
+
+Measured, in this order, on the reference project:
+
+1. On a floor plan, the layer reads hidden.
+2. Switch to a layout: the same layer reads **visible**. The layout's
+   combination is what is being reported.
+3. Write it hidden while the layout is current: the write takes effect there.
+4. Switch to a floor plan and back to the layout: **visible again**. The
+   combination is reapplied on every switch and the write is gone.
+5. Write it *visible* while the layout is current, then switch to the floor
+   plan: the floor plan reads **hidden**. The write never reached the model.
+
+So layer visibility is not one fact the project holds. It is whatever the
+current database says, each database has its own answer, and a write outside
+the model is scratch that the next switch discards.
+
+Nothing had drifted. The check that reported drift was itself run after a tour
+of six layouts -- ``measure_drawings`` switches into each one -- so it read a
+layout's combination and reported it as the project's. The measurement was the
+bug.
+
+Two things follow. Layer work is refused anywhere but a floor plan, rather
+than answering wrongly: a snapshot taken in a layout and restored later does
+not restore anything, it writes a layout's opinion over the model, which is
+what ``export_state`` would have done had a database switch ever landed inside
+its ``with``. And the tool has to *remember* where it is, because Archicad
+will not say -- ``GetCurrentDatabase``, ``GetCurrentWindow`` and
+``GetDatabases`` are all unregistered on Tapir 1.5.7, and
+``GetCurrentWindowType`` answers for the window on screen, which moves
+separately from the database. Every ``ChangeWindow`` in this package goes
+through ``run_tapir``, so the note is taken there and cannot be bypassed by a
+fifth call site.
+
+The limit is stated rather than hidden: a person who clicks into a layout
+mid-run makes the note stale, and a connection that has not moved anything
+says ``None`` and is left alone.

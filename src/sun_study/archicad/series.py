@@ -440,6 +440,10 @@ def ensure_model_database(connection: ArchicadConnection) -> str | None:
     walls = connection.run_tapir("GetElementsByType", {"elementType": "Wall"})
     found = walls.get("elements") if isinstance(walls, dict) else None
     if where == "FloorPlan" and isinstance(found, list) and found:
+        # Nothing to move, but the walls just proved where we are. Say so, or
+        # the connection goes on reporting that it does not know -- and the
+        # layer guard, which trusts that answer, stays switched off.
+        connection.note_model_database()
         return None
 
     response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "ProjectMap"})
