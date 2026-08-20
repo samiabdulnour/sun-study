@@ -2418,7 +2418,19 @@ def _layout_book_tree() -> dict[str, Any]:
 
 def _layout_responses(**overrides: Any) -> dict[str, Any]:
     responses: dict[str, Any] = {
+        # The Project Map for the storeys, then the Layout Book twice: once to
+        # choose the master, once to look for a layout of this name to reuse.
         "GetNavigatorItemTree": Sequential(_navigator_tree(), _layout_book_tree()),
+        "SetViewSettings": {},
+        "GetViewSettings": {
+            "viewSettings": [
+                # 53 x 37 m of building, which at 1:200 is 265 x 185 mm of paper.
+                {"zoom": {"xMin": 0.0, "yMin": 0.0, "xMax": 53.0, "yMax": 37.0}},
+                {"zoom": {"xMin": 0.0, "yMin": 0.0, "xMax": 53.0, "yMax": 37.0}},
+            ]
+        },
+        "ChangeWindow": {},
+        "GetElementsByType": {"elements": []},
         "CloneProjectMapItemToViewMap": {
             "navigatorItems": [
                 {"navigatorItemId": {"guid": "v8"}},
@@ -2480,12 +2492,41 @@ def test_one_linked_drawing_per_storey_lands_on_the_layout() -> None:
         "storeys are placed in order, not in the order they were asked for"
     )
     assert all(d["layoutDatabaseId"] == {"guid": "lay"} for d in drawings)
-    assert all(d["scale"] == 100.0 for d in drawings)
-    assert all(10.0 <= d["position"]["x"] <= 831.0 for d in drawings), "on the page"
-    assert all(10.0 <= d["position"]["y"] <= 584.0 for d in drawings), "on the page"
     assert report.storeys == (8, 9)
     assert report.drawings_placed == 2
     assert report.complete
+
+
+def test_a_storey_plan_is_placed_at_full_magnification_in_metres() -> None:
+    """The two faults that put a storey sheet 140 metres off the paper.
+
+    ``CreateDrawings`` takes a *magnification* in its ``scale`` field, so the
+    scale denominator sent there asked for 20000% and produced drawings 187 m
+    across. Its ``position`` is in metres while the page is described in
+    millimetres, so a centre meant for 140 mm was read as 140 m. Both were
+    fixed for the times-of-day sheets and left in place for this one, which is
+    why the same run produced one sheet that was right and one that was not.
+    """
+    connection, transport = connect(_layout_responses())
+    layout_results(connection, [8, 9], layout_name="Sun Study", scale=100.0)
+
+    drawings = transport.parameters_for("CreateDrawings")["drawingsData"]
+    assert all(d["scale"] == 1.0 for d in drawings), (
+        "the field is a magnification; the scale belongs to the view"
+    )
+    assert all(0.010 <= d["position"]["x"] <= 0.831 for d in drawings), "on the page, in metres"
+    assert all(0.010 <= d["position"]["y"] <= 0.584 for d in drawings), "on the page, in metres"
+
+
+def test_the_storeys_are_pinned_to_the_scale_the_run_reports() -> None:
+    """Otherwise the drawing inherits whatever scale the storey was saved at,
+    and "placed 2 drawings at 1:200" describes something that did not happen."""
+    connection, transport = connect(_layout_responses())
+    layout_results(connection, [8, 9], layout_name="Sun Study", scale=200.0)
+
+    pinned = transport.parameters_for("SetViewSettings")["navigatorItemIdsWithViewSettings"]
+    assert [entry["navigatorItemId"]["guid"] for entry in pinned] == ["v8", "v9"]
+    assert all(entry["viewSettings"]["drawingScale"] == 200 for entry in pinned)
 
 
 def test_a_layout_is_built_on_a_master_that_names_the_scale() -> None:
@@ -2508,6 +2549,41 @@ def test_a_layout_is_built_on_a_master_that_names_the_scale() -> None:
     assert "on master 'A1 - VERTICAL 1:200'" in report.describe()
 
 
+def test_a_reused_layout_says_it_kept_its_own_master() -> None:
+    """Otherwise --master-layout looks like it worked and did nothing.
+
+    A layout is reused by name, because making a second of the same name
+    leaves the Layout Book carrying two of everything. Nothing in the add-on
+    can change an existing layout's master, so a run that says "on master X"
+    over a sheet that is on master Y is the tool lying about its own output.
+    """
+    from sun_study.archicad.layout import layout_from_views
+
+    book = _layout_book_tree()
+    book["navigatorItemTree"]["children"].append(
+        {
+            "navigatorItem": {
+                "type": "LayoutItem",
+                "name": "Sun Study",
+                "navigatorItemId": {"guid": "old"},
+                "prefix": "",
+            }
+        }
+    )
+    connection, transport = connect(
+        _layout_responses(
+            GetNavigatorItemTree=book,
+            GetDatabaseIdFromNavigatorItemId={"databases": [{"databaseId": {"guid": "old"}}]},
+        )
+    )
+    report = layout_from_views(connection, [("v8", "one")], layout_name="Sun Study")
+
+    assert "CreateLayout" not in transport.commands(), "a second sheet of one name is worse"
+    assert report.reused
+    assert "kept the master it was made on" in report.describe()
+    assert "delete the layout to rebuild it" in report.describe()
+
+
 def test_drawings_are_tiled_inside_the_sheet_not_run_off_it() -> None:
     """Six storeys at a fixed 420 mm spacing is 2.5 m of paper.
 
@@ -2520,6 +2596,123 @@ def test_drawings_are_tiled_inside_the_sheet_not_run_off_it() -> None:
     assert len(positions) == 6
     assert all(10.0 <= x <= 841.0 and 10.0 <= y <= 594.0 for x, y in positions)
     assert len({y for _, y in positions}) > 1, "six drawings do not fit on one row"
+
+
+def _drawing(width: float, height: float, *, ratio: float = 1.0, angle: float = 0.0) -> dict[str, Any]:
+    return {
+        "details": {
+            "angle": angle,
+            "ratio": ratio,
+            "bounds": {"xMin": 0.0, "yMin": 0.0, "xMax": width, "yMax": height},
+        }
+    }
+
+
+def test_a_drawing_too_big_for_its_sheet_is_shrunk_before_it_is_tiled() -> None:
+    """A view of the coloured model arrived 1,429 x 1,256 mm on an A1.
+
+    Nothing can be done about that by moving it, and the Drawing's *scale* is
+    not settable -- ``SetDetailsOfElements`` takes a ``drawingScale``, answers
+    success and leaves it alone. Its magnification is settable, so that is
+    what gives, and the run has to say so: a drawing at 47% is no longer at
+    the scale the sheet claims for it.
+    """
+    from sun_study.archicad.sheets import straighten_and_tile
+
+    connection, transport = connect(
+        {
+            "ChangeWindow": {},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
+            "GetDetailsOfElements": Sequential(
+                {"detailsOfElements": [_drawing(1.4292, 1.2557)]},
+                {"detailsOfElements": [_drawing(0.670, 0.589, ratio=0.469)]},
+            ),
+            "SetDetailsOfElements": {"executionResults": [{"success": True}]},
+            "MoveElements": {},
+        }
+    )
+    report = straighten_and_tile(connection, "lay", LayoutSheet(841.0, 594.0))
+
+    sent = transport.parameters_for("SetDetailsOfElements")["elementsWithDetails"]
+    assert sent[0]["details"]["typeSpecificDetails"]["ratio"] == pytest.approx(0.469, abs=0.005)
+    assert report.shrunk_to == pytest.approx(0.469, abs=0.005)
+    assert "no longer at the scale" in report.describe(), "a quiet shrink is a lie on the sheet"
+
+
+def test_a_drawing_already_shrunk_is_not_shrunk_again() -> None:
+    """A Drawing's bounds do not follow its magnification.
+
+    Setting a 3D view's drawing to 46.9% stores 46.9% and it reads back, while
+    the bounds go on reporting the size it had before -- until Archicad
+    regenerates the drawing, which happens when somebody opens the layout. So
+    a pass that worked the full size out as "bounds over magnification" read
+    3,050 mm off a drawing 1,429 mm wide, shrank it again to 22.1%, and would
+    have halved it on every run after that.
+    """
+    from sun_study.archicad.sheets import straighten_and_tile
+
+    connection, transport = connect(
+        {
+            "ChangeWindow": {},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
+            # Stale bounds: still the full-size ones, at a magnification that
+            # says this drawing has already been fitted.
+            "GetDetailsOfElements": {"detailsOfElements": [_drawing(1.4292, 1.2557, ratio=0.469)]},
+            "MoveElements": {},
+        }
+    )
+    report = straighten_and_tile(connection, "lay", LayoutSheet(841.0, 594.0))
+
+    assert "SetDetailsOfElements" not in transport.commands(), "already fitted; leave it"
+    assert report.shrunk_to == 1.0, "nothing was changed, so nothing is reported"
+
+
+def test_a_drawing_left_at_a_scale_denominator_is_repaired_in_one_write() -> None:
+    """The old fault: the scale denominator went into the magnification field,
+    so eighteen storey plans stood at 200x and 187 metres across.
+
+    Its full size is its bounds over its magnification -- 937 mm here -- because
+    Archicad drew the two together. Resetting it to 100% and measuring again
+    would look more careful and be worse: the bounds do not follow the change,
+    so the second read returns the same 187 metres and the drawing ends up at
+    0.1% of a nonsense. Measured on the reference project, which is what this
+    number is.
+    """
+    from sun_study.archicad.sheets import straighten_and_tile
+
+    connection, transport = connect(
+        {
+            "ChangeWindow": {},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
+            "GetDetailsOfElements": {"detailsOfElements": [_drawing(187.37, 249.88, ratio=200.0)]},
+            "SetDetailsOfElements": {"executionResults": [{"success": True}]},
+            "MoveElements": {},
+        }
+    )
+    report = straighten_and_tile(connection, "lay", LayoutSheet(841.0, 594.0))
+
+    written = transport.parameters_for("SetDetailsOfElements")["elementsWithDetails"]
+    assert written[0]["details"]["typeSpecificDetails"]["ratio"] == pytest.approx(0.471, abs=0.005)
+    assert report.shrunk_to == pytest.approx(0.471, abs=0.005)
+
+
+def test_drawings_that_fit_are_moved_and_not_resized() -> None:
+    from sun_study.archicad.sheets import straighten_and_tile
+
+    connection, transport = connect(
+        {
+            "ChangeWindow": {},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
+            "GetDetailsOfElements": {"detailsOfElements": [_drawing(0.189, 0.295)]},
+            "MoveElements": {},
+        }
+    )
+    report = straighten_and_tile(connection, "lay", LayoutSheet(841.0, 594.0))
+
+    assert report.shrunk_to == 1.0
+    assert "SetDetailsOfElements" not in transport.commands()
+    assert report.moved == 1
+    assert report.describe() == "straightened 0, tiled 1"
 
 
 def test_a_sheet_that_will_not_describe_itself_falls_back_and_says_so() -> None:
@@ -2556,6 +2749,40 @@ def test_a_master_is_matched_past_spacing_and_case() -> None:
     assert choose_master(masters, None, 50.0).name == "A3 - HORIZONTAL", (
         "no master names 1:50, so the first in the book is used"
     )
+
+
+def test_a_master_is_found_by_the_words_in_its_name() -> None:
+    """Nobody reproduces an office's punctuation from memory.
+
+    The reference project keeps ``DA A1 - VERTICAL - No Scale`` next to ``DA
+    A1 - VERTICAL COVER/NO SCALE`` in a book of seventy-one, and what a person
+    types is "A1 no scale". Exact-match-or-nothing answered that by printing
+    all seventy-one and stopping.
+    """
+    from sun_study.archicad.layout import NavigatorItem
+
+    masters = (
+        NavigatorItem("m1", "A4", "MasterLayoutItem", ""),
+        NavigatorItem("m2", "DA A1 - VERTICAL 1:200", "MasterLayoutItem", ""),
+        NavigatorItem("m3", "DA A1 - VERTICAL - No Scale", "MasterLayoutItem", ""),
+        NavigatorItem("m4", "DA A1 - VERTICAL COVER/NO SCALE", "MasterLayoutItem", ""),
+    )
+    assert choose_master(masters, "DA A1 no scale", 200.0).name == "DA A1 - VERTICAL - No Scale", (
+        "the candidate carrying the fewest words nobody asked for"
+    )
+    assert choose_master(masters, "cover no scale", 200.0).name == "DA A1 - VERTICAL COVER/NO SCALE"
+
+
+def test_two_masters_equally_close_are_a_question_not_a_guess() -> None:
+    """Either choice would put the study on a title block for something else."""
+    from sun_study.archicad.layout import NavigatorItem
+
+    masters = (
+        NavigatorItem("m1", "A1 PLANS No Scale", "MasterLayoutItem", ""),
+        NavigatorItem("m2", "A1 COVER No Scale", "MasterLayoutItem", ""),
+    )
+    with pytest.raises(ArchicadError, match="fits 2 master layouts equally well"):
+        choose_master(masters, "A1 no scale", 200.0)
 
 
 def test_only_the_storeys_that_carry_fills_are_cloned() -> None:

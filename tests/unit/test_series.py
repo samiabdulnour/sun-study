@@ -317,6 +317,54 @@ def test_no_drawings_is_no_positions() -> None:
     assert sheet_positions(LayoutSheet(841.0, 594.0), 0, (0.1, 0.1)) == []
 
 
+def test_a_tall_column_of_drawings_is_not_run_off_the_top_of_the_page() -> None:
+    """The failure this replaces, measured on the reference project's sheet.
+
+    The number of columns was chosen from the page *width* alone, so six band
+    diagrams 197 mm tall were laid out one per row: 1,254 mm of drawing on a
+    594 mm page, with four of the six off the paper and the sheet reading as
+    though the study had produced almost nothing.
+    """
+    from sun_study.archicad.layout import LayoutSheet, tile_positions
+
+    sheet = LayoutSheet(width_mm=841.0, height_mm=594.0)
+    tiling = tile_positions(sheet, 6, (0.1262, 0.1969))
+
+    assert tiling.fits, "six of that size fit an A1 without shrinking"
+    assert tiling.rows > 1 and tiling.columns > 1, "neither a single column nor a single row"
+    top = max(y for _, y in tiling.positions) + 0.1969 / 2
+    bottom = min(y for _, y in tiling.positions) - 0.1969 / 2
+    right = max(x for x, _ in tiling.positions) + 0.1262 / 2
+    assert 0.0 <= bottom and top <= 0.594, "every drawing between the top and bottom edges"
+    assert right <= 0.841, "and inside the right-hand edge"
+
+
+def test_a_drawing_too_big_for_the_page_is_measured_for_shrinking() -> None:
+    """A drawing from a 3D view came out 1,429 mm wide on an 841 mm page.
+
+    No arrangement of one drawing makes that fit, so the answer cannot be a
+    position -- it has to be a factor to shrink by, which the caller applies
+    through the Drawing's magnification.
+    """
+    from sun_study.archicad.layout import LayoutSheet, tile_positions
+
+    tiling = tile_positions(LayoutSheet(841.0, 594.0), 1, (1.4292, 1.2557))
+
+    assert not tiling.fits
+    assert tiling.fit == pytest.approx(0.469, abs=0.005)
+    (x, y) = tiling.positions[0]
+    assert 0.0 <= x - 1.4292 * tiling.fit / 2 and x + 1.4292 * tiling.fit / 2 <= 0.841
+    assert 0.0 <= y - 1.2557 * tiling.fit / 2 and y + 1.2557 * tiling.fit / 2 <= 0.594
+
+
+def test_a_drawing_that_fits_is_never_blown_up_to_fill_the_paper() -> None:
+    """Scaling up would put a diagram on the sheet at no scale at all, for the
+    sake of using the margin."""
+    from sun_study.archicad.layout import LayoutSheet, tile_positions
+
+    assert tile_positions(LayoutSheet(841.0, 594.0), 1, (0.05, 0.05)).fit == 1.0
+
+
 def test_elements_left_behind_by_a_refused_delete_are_reported() -> None:
     """Archicad answers ``success`` and deletes nothing when the elements are
     on a hidden layer, which is the ordinary case for a layer this tool made.

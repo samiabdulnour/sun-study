@@ -36,11 +36,21 @@ master is looked up rather than left out, in the Layout Book, where masters
 come back as ``MasterLayoutItem``.
 
 Which master is a judgement call and the run always says which one it made.
-An office keeps dozens -- the reference project has 67 -- and they are not
+An office keeps dozens -- the reference project has 71 -- and they are not
 interchangeable: a title block sized for A3 lands a 1:200 plan off the sheet.
 Preference goes to one whose name states the scale being drawn at, which is
 how practices name them ("A1 - VERTICAL 1:200"), then to the first in the
-book. ``--master-layout`` settles it by hand.
+book. ``--master-layout`` settles it by hand, and settles it by the *words* in
+the name rather than the name exactly, because "A1 no scale" is what a person
+types for ``DA A1 - VERTICAL - No Scale``.
+
+A master decides a sheet and cannot be changed after
+----------------------------------------------------
+Layouts are reused by name, and nothing in the add-on changes an existing
+layout's master: there is no ``SetMasterLayout``, and ``SetLayoutSettings``
+carries no master field. So ``--master-layout`` reaches a sheet the run makes
+and never one it finds, and the report says which happened rather than
+reporting a master that was chosen and not used.
 
 What this deliberately does not do
 ----------------------------------
@@ -54,8 +64,9 @@ says which layouts it made so there is something to clean up *by*.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
@@ -68,6 +79,7 @@ __all__ = [
     "LayoutReport",
     "LayoutSheet",
     "NavigatorItem",
+    "Tiling",
     "choose_master",
     "layout_from_views",
     "layout_results",
@@ -76,6 +88,7 @@ __all__ = [
     "project_map",
     "sheet_positions",
     "storey_items",
+    "tile_positions",
     "view_extents",
 ]
 
@@ -193,6 +206,15 @@ class LayoutReport:
     sheet_assumed: bool = False
     """Whether that page is what Archicad said, or what this fell back to."""
 
+    reused: bool = False
+    """Whether the layout already existed, rather than being made by this run.
+
+    Worth saying out loud, because it is the difference between what was asked
+    for and what is on the paper. A layout is reused by name -- making a second
+    of the same name is worse -- and nothing in the add-on can change an
+    existing layout's master, so ``--master-layout`` has no effect on one.
+    """
+
     @property
     def complete(self) -> bool:
         return not self.missing_storeys
@@ -201,8 +223,18 @@ class LayoutReport:
         lines = [
             f"placed {self.drawings_placed} drawings at 1:{self.scale:g} on layout "
             f"{self.layout_name!r}"
-            + (f", on master {self.master_name!r}" if self.master_name else "")
+            + (
+                f", on master {self.master_name!r}"
+                if self.master_name and not self.reused
+                else ""
+            )
         ]
+        if self.reused:
+            lines.append(
+                f"  the layout already existed and was reused, so it kept the master "
+                f"it was made on -- not {self.master_name!r}. Nothing here can change "
+                f"an existing layout's master; delete the layout to rebuild it."
+            )
         if self.storeys:
             shown = ", ".join(str(storey) for storey in self.storeys)
             lines.append(f"  storey index {shown}, one drawing each")
@@ -282,14 +314,7 @@ def choose_master(
             "without --sheet."
         )
     if wanted:
-        tidy = " ".join(wanted.split()).casefold()
-        for master in masters:
-            if " ".join(master.name.split()).casefold() == tidy:
-                return master
-        available = "\n    ".join(master.name for master in masters)
-        raise ArchicadError(
-            f"No master layout is called {wanted!r}. The project has:\n    {available}"
-        )
+        return _master_named(masters, wanted)
     marker = f"1:{scale:g}"
     for master in masters:
         if marker in master.name:
@@ -298,6 +323,58 @@ def choose_master(
     # real project it was "A4" -- a quarter of the page six storey plans need.
     # The run prints what it used; ``--master-layout`` settles it.
     return masters[0]
+
+
+def _words(name: str) -> set[str]:
+    """A master layout's name as the set of words in it, punctuation gone.
+
+    Office master names are punctuated every way there is -- ``DA A1 -
+    VERTICAL - No Scale`` sits beside ``DA A1 - VERTICAL COVER/NO SCALE`` in
+    the same book -- and which separator went where is not something anybody
+    reproduces correctly from memory.
+    """
+    return {word for word in re.split(r"[^0-9a-z]+", name.casefold()) if word}
+
+
+def _master_named(masters: Sequence[NavigatorItem], wanted: str) -> NavigatorItem:
+    """The master the name asks for, exactly or unambiguously.
+
+    An exact name wins outright. Failing that the name is read as the words it
+    contains: every master carrying all of them is a candidate, and the one
+    carrying the fewest *extra* words is the answer. ``A1 no scale`` then
+    finds ``A1 - VERTICAL NO SCALE`` without anybody reproducing the dashes.
+
+    What this replaces was exact-match-or-nothing, and it failed in the worst
+    way available: a name that was nearly right printed all seventy-one of the
+    project's masters and stopped, so the spelling that would have worked was
+    somewhere in a wall of text that had already scrolled past.
+
+    A tie is not resolved. Two masters equally close to what was asked for is
+    a question only the person can answer, and either choice would put the
+    study on a title block meant for something else.
+    """
+    tidy = " ".join(wanted.split()).casefold()
+    for master in masters:
+        if " ".join(master.name.split()).casefold() == tidy:
+            return master
+
+    asked = _words(wanted)
+    carrying = [master for master in masters if asked <= _words(master.name)] if asked else []
+    if carrying:
+        fewest = min(len(_words(master.name) - asked) for master in carrying)
+        closest = [master for master in carrying if len(_words(master.name) - asked) == fewest]
+        if len(closest) == 1:
+            return closest[0]
+        tied = "\n    ".join(master.name for master in closest)
+        raise ArchicadError(
+            f"{wanted!r} fits {len(closest)} master layouts equally well:"
+            f"\n    {tied}\nName one of them in full."
+        )
+
+    available = "\n    ".join(master.name for master in masters)
+    raise ArchicadError(
+        f"No master layout is called {wanted!r}. The project has:\n    {available}"
+    )
 
 
 def project_map(connection: ArchicadConnection) -> tuple[NavigatorItem, ...]:
@@ -373,7 +450,8 @@ def layout_from_views(
         return LayoutReport(layout_name, 0, (), scale, ())
 
     master = choose_master(master_layouts(connection), master_layout, scale)
-    layout = _create_layout(connection, layout_name, master)
+    existing = _layout_named(connection, layout_name)
+    layout = existing if existing is not None else _create_layout(connection, layout_name, master)
     sheet, assumed = layout_sheet(connection, layout)
 
     # The drawing's size on the sheet is its view's extent at the drawing's
@@ -427,6 +505,7 @@ def layout_from_views(
         master_name=master.name,
         sheet=sheet,
         sheet_assumed=assumed,
+        reused=existing is not None,
     )
 
 
@@ -438,10 +517,20 @@ def layout_results(
     scale: float = DEFAULT_LAYOUT_SCALE,
     master_layout: str | None = None,
 ) -> LayoutReport:
-    """Put one linked Drawing per storey onto a new Layout.
+    """Put one linked Drawing per storey onto a Layout.
 
     ``storeys`` comes straight from ``DrawReport.storeys``, so the sheet shows
     exactly the plans that carry fills and no others.
+
+    The placing itself is ``layout_from_views``, which is the whole point of
+    this being three lines. Both paths made sheets, only one of them was ever
+    corrected, and the one left behind had every fault the other had been
+    fixed for: positions in millimetres sent to a field measured in metres,
+    which put a drawing meant for x = 140 mm at x = 140 m; the scale sent as
+    the Drawing's magnification, which put a floor plan on the sheet 187
+    metres across; and no second pass, so all eighteen sat at the project's
+    own north, 279.9 degrees off upright. Nobody had noticed because the sheet
+    that was wrong and the sheet that was right came out of the same run.
     """
     connection.require_tapir_at_least(
         LAYOUT_MINIMUM_TAPIR_VERSION, because="CreateLayout and CreateDrawings"
@@ -455,37 +544,49 @@ def layout_results(
 
     ordered = sorted(items)
     views = _clone_to_view_map(connection, [items[storey] for storey in ordered])
-    master = choose_master(master_layouts(connection), master_layout, scale)
-    layout = _create_layout(connection, layout_name, master)
-
-    # Tiled across the page, in millimetres on the sheet. Crude on purpose: a
-    # person moves them where they want them, and the Drawings stay linked
-    # wherever they end up. It only has to start on the paper.
-    sheet, assumed = layout_sheet(connection, layout)
-    positions = sheet.grid(len(ordered))
-    drawings = [
-        {
-            "navigatorItemId": {"guid": view},
-            "layoutDatabaseId": {"guid": layout},
-            "name": f"Sun Study -- storey {storey}",
-            "position": {"x": x, "y": y},
-            "scale": scale,
-        }
-        for (storey, view), (x, y) in zip(zip(ordered, views, strict=True), positions, strict=True)
-    ]
-    placed = connection.run_tapir("CreateDrawings", {"drawingsData": drawings})
-    _check_each(placed, "elements", "CreateDrawings")
-
-    return LayoutReport(
+    _pin_scale(connection, views, scale)
+    placed = layout_from_views(
+        connection,
+        [
+            (view, f"Sun Study -- storey {storey}")
+            for storey, view in zip(ordered, views, strict=True)
+        ],
         layout_name=layout_name,
-        drawings_placed=len(drawings),
-        storeys=tuple(ordered),
         scale=scale,
-        missing_storeys=missing,
-        master_name=master.name,
-        sheet=sheet,
-        sheet_assumed=assumed,
+        master_layout=master_layout,
     )
+    return replace(placed, storeys=tuple(ordered), missing_storeys=missing)
+
+
+def _pin_scale(connection: ArchicadConnection, views: Sequence[str], scale: float) -> None:
+    """Put the study's scale on the views, so the drawings are really at it.
+
+    Without this the Drawing inherits whatever scale the storey happens to be
+    saved at -- 1:100 on the reference project, where the study asks for 1:200
+    -- and the report's "placed 6 drawings at 1:200" is then a sentence about
+    something that did not happen.
+
+    Not fatal. A clone follows its Project Map source and a project could
+    refuse this; a sheet at the wrong scale still beats no sheet, and the
+    fitting pass measures what is actually there either way.
+    """
+    if not views:
+        return
+    try:
+        connection.run_tapir(
+            "SetViewSettings",
+            {
+                "navigatorItemIdsWithViewSettings": [
+                    {
+                        "navigatorItemId": {"guid": view},
+                        "viewSettings": {"drawingScale": int(scale)},
+                    }
+                    for view in views
+                ]
+            },
+        )
+    except ArchicadError:
+        return
 
 
 def view_extents(
@@ -533,49 +634,116 @@ def view_extents(
 MM_PER_M = 1000.0
 
 
+@dataclass(frozen=True)
+class Tiling:
+    """An arrangement of equal drawings on a sheet, and what it cost to fit."""
+
+    positions: list[tuple[float, float]]
+    """Drawing centres, in metres, reading left to right and top to bottom."""
+
+    columns: int
+    rows: int
+
+    fit: float = 1.0
+    """What the drawings must be multiplied by to fit the page, at most 1.
+
+    Below 1 the arrangement is of drawings *this much smaller* than the ones
+    measured, and the caller has to shrink them before the positions mean
+    anything. Above-1 is never returned: a drawing that fits is left alone
+    rather than blown up to fill the paper.
+    """
+
+    @property
+    def fits(self) -> bool:
+        return self.fit >= 1.0
+
+
+def tile_positions(
+    sheet: LayoutSheet,
+    count: int,
+    tile_m: tuple[float, float],
+    gap_m: float = 0.012,
+) -> Tiling:
+    """Arrange ``count`` drawings of a known size on a page, in **metres**.
+
+    ``sheet`` is taken in millimetres because that is how Archicad reports it,
+    and converted once, here. Everything that comes back is in metres, which
+    is the unit a Drawing's position is given in.
+
+    Two failures are behind the shape of this. The first version divided the
+    *page* into as many cells as there were drawings, so six storey plans on
+    an A1 got cells 280 mm wide and the second row ran off the bottom. The
+    version after it sized the grid from the drawings, which is right, but
+    chose the number of columns from the page **width alone** -- so six band
+    diagrams 197 mm tall were laid out in a single column 1,254 mm long on a
+    594 mm page, and four of the six were off the paper.
+
+    So every arrangement from one column to one row is considered, and each is
+    asked the same two questions: does the block fit, and how much of the page
+    does it waste. What fits and wastes least wins; a block shaped like the
+    page beats a long strip of the same area. Nothing fits, the closest does,
+    and ``fit`` says how much the drawings have to shrink -- which is a real
+    answer for a 3D view, whose drawing came out 1,429 mm wide on an A1 and
+    could not be tiled at any spacing.
+    """
+    if count <= 0:
+        return Tiling([], 0, 0)
+    left_mm, top_mm, wide_mm, high_mm = sheet.usable
+    x0, y0 = left_mm / MM_PER_M, top_mm / MM_PER_M
+    usable_w, usable_h = wide_mm / MM_PER_M, high_mm / MM_PER_M
+    width, height = max(tile_m[0], 1e-6) + gap_m, max(tile_m[1], 1e-6) + gap_m
+
+    page_shape = usable_w / usable_h if usable_h > 0 else 1.0
+    # Fit first, then the fewest wasted cells, then the block that sits on the
+    # page most like the page itself. Rounded, so that two arrangements within
+    # a thousandth of each other are settled by the cells they waste and not
+    # by floating-point noise.
+    ranked = sorted(
+        (
+            (
+                -round(min(1.0, usable_w / (columns * width), usable_h / (rows * height)), 3),
+                columns * rows - count,
+                abs(math.log((columns * width) / (rows * height) / page_shape)),
+                columns,
+            )
+            for columns, rows in (
+                (columns, -(-count // columns)) for columns in range(1, count + 1)
+            )
+        )
+    )
+    columns = ranked[0][3]
+    rows = -(-count // columns)
+    fit = min(1.0, usable_w / (columns * width), usable_h / (rows * height))
+    block_w, block_h = columns * width * fit, rows * height * fit
+
+    # The block is centred, so a page with room to spare does not leave the
+    # drawings bunched into a corner with the title block empty beside them.
+    left = x0 + max(0.0, (usable_w - block_w) / 2.0)
+    top = y0 + max(0.0, (usable_h - block_h) / 2.0)
+
+    return Tiling(
+        positions=[
+            (
+                left + (index % columns + 0.5) * width * fit,
+                # Rows read downward from the top of the block.
+                top + block_h - (index // columns + 0.5) * height * fit,
+            )
+            for index in range(count)
+        ],
+        columns=columns,
+        rows=rows,
+        fit=fit,
+    )
+
+
 def sheet_positions(
     sheet: LayoutSheet,
     count: int,
     tile_m: tuple[float, float],
     gap_m: float = 0.012,
 ) -> list[tuple[float, float]]:
-    """Centres for ``count`` drawings of a known size, tiled on the sheet.
-
-    Everything here is in **metres**, including what comes back: that is the
-    unit a Drawing's position is given in, even though the page it sits on is
-    described in millimetres. ``sheet`` is taken in millimetres because that
-    is how Archicad reports it, and converted once, here.
-
-    Sized from the drawings rather than from the page, which is the fix for
-    the first version: that divided the page into as many cells as there were
-    drawings and placed one per cell, so six storey plans on an A1 were
-    assigned cells 280 mm wide, laid out three across, and the second row ran
-    off the bottom of the page.
-
-    The block is centred, so a sheet with room to spare does not leave the
-    drawings bunched into a corner with the title block empty beside them.
-    """
-    if count <= 0:
-        return []
-    left_mm, top_mm, wide_mm, high_mm = sheet.usable
-    x0, y0 = left_mm / MM_PER_M, top_mm / MM_PER_M
-    usable_w, usable_h = wide_mm / MM_PER_M, high_mm / MM_PER_M
-    width, height = tile_m[0] + gap_m, tile_m[1] + gap_m
-    columns = max(1, min(count, int(usable_w // width) or 1))
-    rows = max(1, -(-count // columns))
-
-    block_w, block_h = columns * width, rows * height
-    left = x0 + max(0.0, (usable_w - block_w) / 2.0)
-    top = y0 + max(0.0, (usable_h - block_h) / 2.0)
-
-    return [
-        (
-            left + (index % columns + 0.5) * width,
-            # Rows read downward from the top of the block.
-            top + block_h - (index // columns + 0.5) * height,
-        )
-        for index in range(count)
-    ]
+    """``tile_positions``, for the callers that only want the centres."""
+    return tile_positions(sheet, count, tile_m, gap_m).positions
 
 
 def _clone_to_view_map(connection: ArchicadConnection, items: Sequence[NavigatorItem]) -> list[str]:
@@ -599,17 +767,13 @@ def _clone_to_view_map(connection: ArchicadConnection, items: Sequence[Navigator
 
 
 def _create_layout(connection: ArchicadConnection, name: str, master: NavigatorItem) -> str:
-    """The layout of this name, reusing one that already exists.
+    """A new Layout of this name on this master.
 
-    Reuse rather than create, because ``CreateLayout`` will happily make a
-    second sheet with the same name and the Layout Book then carries two of
-    everything -- one current, one from the last run, indistinguishable in the
-    navigator.
+    Callers look for an existing one first and reuse it, because
+    ``CreateLayout`` will happily make a second sheet of the same name and the
+    Layout Book then carries two of everything -- one current, one from the
+    last run, indistinguishable in the navigator.
     """
-    existing = _layout_named(connection, name)
-    if existing is not None:
-        return existing
-
     response = connection.run_tapir(
         "CreateLayout",
         {

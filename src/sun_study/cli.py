@@ -465,6 +465,19 @@ def report_layout(
         bold=True,
     )
 
+    # The same second pass the other sheets get. A Drawing's angle comes from
+    # the Drawing tool's default -- the project's own north -- and its size is
+    # only knowable once it exists; saving is what makes the layout readable.
+    try:
+        connection.run_tapir("SaveProject", {})
+        sheet, _ = layout_sheet(connection, placed.database_id)
+        typer.echo("  " + straighten_and_tile(connection, placed.database_id, sheet).describe())
+    except ArchicadError as error:
+        typer.secho(
+            f"  the sheet is made; its drawings are still crooked: {error}",
+            fg=typer.colors.YELLOW,
+        )
+
 
 #: Coarser than the 200 mm assessment grid on purpose: the patch is drawn, not
 #: quoted, and four times the rectangles buys nothing anybody can see on a sheet.
@@ -678,6 +691,7 @@ def report_model_views(
     document_name: str | None,
     scale: float,
     also_hide: tuple[str, ...] = (),
+    master_layout: str | None = None,
 ) -> bool:
     """Views of the coloured model -- the 3D window and a 3D Document -- on a sheet.
 
@@ -763,6 +777,7 @@ def report_model_views(
             [(view.navigator_id, view.name) for view in views],
             layout_name=f"{VIEW_PREFIX} Solar Model",
             scale=scale,
+            master_layout=master_layout,
         )
     except ArchicadError as error:
         typer.secho(
@@ -781,8 +796,7 @@ def report_model_views(
     try:
         connection.run_tapir("SaveProject", {})
         sheet, _ = layout_sheet(connection, placed.database_id)
-        turned, moved = straighten_and_tile(connection, placed.database_id, sheet)
-        typer.echo(f"    straightened {turned}, tiled {moved}")
+        typer.echo("    " + straighten_and_tile(connection, placed.database_id, sheet).describe())
     except ArchicadError as error:
         typer.secho(
             f"  the sheet is made; its drawings are still crooked: {error}",
@@ -1449,7 +1463,7 @@ def _sheet_per_instant(
     for label, database_id in finished:
         try:
             sheet, _ = layout_sheet(connection, database_id)
-            turned, moved = straighten_and_tile(connection, database_id, sheet)
+            pass_over = straighten_and_tile(connection, database_id, sheet)
             rows = (tables or {}).get(label)
             drawn = (
                 draw_table(
@@ -1462,7 +1476,8 @@ def _sheet_per_instant(
             typer.secho(f"  {label}: {error}", fg=typer.colors.YELLOW, err=True)
             continue
         typer.echo(
-            f"    straightened {turned}, tiled {moved}"
+            "    "
+            + pass_over.describe()
             + (f", table of {drawn} rows on the sheet" if drawn else "")
         )
     ensure_model_database(connection)
@@ -1834,6 +1849,18 @@ def massing(
     model_scale: Annotated[
         float, typer.Option("--model-scale", help="Scale of the model views on the sheet.")
     ] = DEFAULT_LAYOUT_SCALE,
+    master_layout: Annotated[
+        str | None,
+        typer.Option(
+            "--master-layout",
+            help=(
+                "Master layout to build the sheet on, by name. Partial names "
+                "work as long as they fit only one master. Without this the "
+                "first master in the Layout Book is used, which on a real "
+                "project was an A4."
+            ),
+        ),
+    ] = None,
     model_favorite: Annotated[
         str | None,
         typer.Option(
@@ -1949,6 +1976,7 @@ def massing(
             document_name=model_document,
             scale=model_scale,
             also_hide=tuple(hide_layer or ()),
+            master_layout=master_layout,
         ):
             raise typer.Exit(code=1)
 

@@ -1306,3 +1306,105 @@ A name Archicad does not recognise is deliberately *not* reported here. That
 is a typo, not a hidden layer, and sending the reader to Layer Settings for a
 name that is not in them is worse than silence; ``_require_matches`` already
 catches it against the export, which is where the correct spellings are.
+
+### D53 — Two sheet-building paths, and only one of them was ever fixed
+
+The storey-plan sheet and the times-of-day sheets came out of the same run and
+only one of them was right. Every correction D33 to D39 recorded had been made
+in ``layout_from_views`` and none of them in ``layout_results``, so the
+``Sun Study`` layout carried all three original faults at once, measured on
+the reference project:
+
+* **Positions in millimetres, sent to a field measured in metres.** Drawings
+  meant for x = 140 mm sat at x = 140 m, and the sheet ran from 140 to 888
+  metres across an 841 mm page.
+* **The scale denominator sent as the Drawing's magnification.** ``scale`` on
+  ``CreateDrawings`` is a magnification where 1.0 is 100%, so 200 asked for
+  20000% and produced floor plans 187 metres wide.
+* **No second pass**, so all eighteen stood at 279.9 degrees -- the project's
+  own north, which is the Drawing tool's default angle.
+
+Nobody had noticed because the run reported both sheets in the same green
+line, and the one that was checked was the one that was right.
+
+``layout_results`` is now three lines that clone the storey views, pin the
+scale on them and hand them to ``layout_from_views``. A fix that lands in one
+of two copies is not a fix, and the second copy is where it will be needed
+next.
+
+### D54 — A tiling has to fit the page in both directions, and a drawing that cannot has to shrink
+
+The number of columns was chosen from the page **width** alone. Six band
+diagrams 197 mm tall therefore went into one column: 1,254 mm of drawing on a
+594 mm page, with four of the six off the paper and the sheet reading as
+though the study had produced nothing.
+
+Every arrangement from one column to one row is now considered, and each is
+asked whether the block fits and how much of the page it wastes. What fits and
+wastes least wins, and a block shaped like the page beats a strip of the same
+area -- which is why six drawings that would fit in a row of six go three by
+two instead.
+
+Some drawings fit at no arrangement. A view of the coloured model arrived
+1,429 x 1,256 mm on an A1, and one drawing has only one arrangement. So the
+tiling also returns *what the drawings must be multiplied by* to fit, and the
+sheet pass applies it. Uniformly, including to drawings that would have fitted
+alone: three diagrams of one building at three times of day are read against
+each other, and two at one size beside a third at another is a picture of
+nothing.
+
+The shrink is always reported, and below a quarter it is reported as a
+diagnosis rather than an outcome. 14.8% is not a page slightly too small, it
+is the wrong scale for the sheet, and the run says so.
+
+### D55 — A Drawing's scale cannot be set, its magnification can, and its bounds follow neither
+
+Three findings, and the third is the one that bites.
+
+``SetDetailsOfElements`` accepts ``drawingScale``, answers
+``{"success": true}`` and leaves the scale exactly as it was -- D43 again, in a
+new place. ``ratio``, the magnification, does change. So the only handle on a
+drawing that will not fit its sheet is how big it is on the paper, not what
+scale it is at, which is a reason to put a study on a **no-scale** title block
+rather than one that prints a figure the drawing may no longer be at.
+
+The third: **bounds do not follow magnification.** Set a drawing to 46.9% and
+46.9% is what reads back, while the bounds go on reporting the size from
+before, until Archicad regenerates the drawing -- which happens when somebody
+opens the layout. A pass that re-read to check its own work therefore
+recomputed the full size as "bounds over magnification", got 3,050 mm from a
+drawing 1,429 mm wide, and shrank it again: 46.9%, then 22.1%, halving on
+every run forever.
+
+This is the one case in this codebase where **re-reading is wrong**. What is
+dependable is that bounds and magnification agree *until this code touches
+them*, because Archicad drew them together; so the full size is bounds over
+magnification, computed once, written once, never verified. The guard that
+makes it safe is a rule rather than a measurement: a drawing already below
+full size has been fitted already and is left alone, because nothing readable
+distinguishes one that has regenerated from one that has not.
+
+It costs something real. A sheet does not re-fit itself when the building
+outgrows it, and the run says what magnification it left so there is a handle:
+delete the drawings and let the next run place them fresh.
+
+### D56 — A master layout is named from memory, so it is matched by its words
+
+An office keeps dozens of masters -- seventy-one on the reference project --
+punctuated every way there is: ``DA A1 - VERTICAL - No Scale`` sits three rows
+from ``DA A1 - VERTICAL COVER/NO SCALE``. What a person types is "A1 no
+scale".
+
+Exact-match-or-nothing answered that by printing all seventy-one names and
+stopping, which is the least useful place to put the right answer: in a wall
+of text that has already scrolled past. Now the name is read as the words it
+contains, every master carrying all of them is a candidate, and the one
+carrying the fewest words nobody asked for wins. A tie is still a question --
+two masters equally close is something only the person can settle, and either
+guess puts the study on a title block meant for something else.
+
+The one thing this cannot fix is a layout that already exists. Layouts are
+reused by name, nothing in the add-on changes an existing layout's master, and
+``SetLayoutSettings`` does not offer one. So a re-run with ``--master-layout``
+leaves an old sheet exactly where it was, and the run now says that outright
+instead of reporting the master it would have used.

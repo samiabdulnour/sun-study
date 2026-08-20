@@ -442,6 +442,11 @@ machine-checked against a fake transport:
 | `CreateSlabs` / `CreateMeshes` / `CreateRoofs` with a material | **refused**: no `buildingMaterialId` field. Only `CreateWalls` has one |
 | Creating a 3D Document | **not offered**: no command exists. A View of an existing one can be made |
 | `CreateWalls` with a `layerIndex` | **refused**: schema has no such field. New walls land on the tool's default layer |
+| `SetDetailsOfElements` with a `drawingScale`, on a Drawing | **refused silently**: answers `{"success": true}` and leaves the scale as it was |
+| `SetDetailsOfElements` with a `ratio`, on a Drawing | **works**: the magnification is the only handle on a drawing's size on the page |
+| A Drawing's `bounds` after its `ratio` changes | **stale**: they keep the old size until Archicad regenerates the drawing, which happens when somebody opens the layout ([D55](decisions.md)) |
+| `SetMasterLayout`, `DeleteLayouts` | **not offered**: unregistered. An existing layout keeps the master it was made on |
+| `SetLayoutSettings`, `DeleteNavigatorItems` | exist, and `SetLayoutSettings` carries no master field |
 | Layer create and lookup, element delete | works |
 | `CreateHatches`, `CreateTexts` — fills and legend | **works**: 8 fills and a 7-item legend, replacing the previous run's 15 |
 | `GetElementsByIFCIds` — the results-to-Zones join | **works, once both spellings are offered**: 0 of 15 matched on the export's own GlobalIds, 15 of 15 on the expanded GUIDs |
