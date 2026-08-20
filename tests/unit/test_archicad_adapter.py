@@ -3355,18 +3355,62 @@ def test_legend_labels_are_moved_onto_the_studys_own_layer() -> None:
     layers for the drawing set. Two things go wrong: the study's key is mixed
     into somebody else's layer, and it is outside what the next run clears, so
     switching the study off leaves the legend on the plan.
+
+    That layer is also hidden, which is why the move has to borrow it: the
+    first attempt reported "8 of 8 legend labels would not move", because
+    SetDetailsOfElements answers success and does nothing to an element on a
+    hidden layer.
     """
-    connection, transport = connect(_draw_responses(layer_index=7))
-    draw_assessment(
-        connection,
-        _assessment(_apartment("apt-1")),
-        [_zone("z1")],
-        zone_by_apartment={"apt-1": "z1"},
+    from sun_study.archicad.draw import move_to_layer
+
+    made = [{"elementId": {"guid": "t1"}}, {"elementId": {"guid": "t2"}}]
+    connection, transport = connect(
+        {
+            "GetDetailsOfElements": Sequential(
+                # Where they landed: the Text tool's default, not ours.
+                {"detailsOfElements": [{"layerIndex": 42}, {"layerIndex": 42}]},
+                # And where they are after the move.
+                {"detailsOfElements": [{"layerIndex": 7}, {"layerIndex": 7}]},
+            ),
+            "GetAttributesByType": {
+                "attributes": [
+                    {"attributeId": {"guid": "a"}, "index": 42, "name": "05 | Dims/Notes.DA"},
+                    {"attributeId": {"guid": "b"}, "index": 7, "name": DEFAULT_LAYER_NAME},
+                ]
+            },
+            "GetLayers": {
+                "layers": [
+                    {"name": "05 | Dims/Notes.DA", "isHidden": True, "isLocked": False},
+                    {"name": DEFAULT_LAYER_NAME, "isHidden": False, "isLocked": False},
+                ]
+            },
+            "CreateLayers": {"attributeIds": [{"attributeId": {"guid": "a"}}]},
+            "SetDetailsOfElements": {"executionResults": [{"success": True}] * 2},
+        }
     )
+    assert move_to_layer(connection, made, 7) == 2
 
     moved = transport.parameters_for("SetDetailsOfElements")["elementsWithDetails"]
-    assert moved, "the labels have to be moved; they cannot be created in place"
     assert all(entry["details"]["layerIndex"] == 7 for entry in moved)
+    borrowed, restored = transport.all_parameters_for("CreateLayers")
+    assert borrowed["layerDataArray"] == [
+        {"name": "05 | Dims/Notes.DA", "isHidden": False, "isLocked": False}
+    ], "the layer they landed on is switched on so the move can take"
+    assert restored["layerDataArray"] == [
+        {"name": "05 | Dims/Notes.DA", "isHidden": True, "isLocked": False}
+    ], "and switched straight back: it is the office's layer, not ours"
+
+
+def test_text_already_on_the_studys_layer_is_left_alone() -> None:
+    """Nothing to move, and no reason to unhide anything to move it."""
+    from sun_study.archicad.draw import move_to_layer
+
+    connection, transport = connect(
+        {"GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 7}]}}
+    )
+    assert move_to_layer(connection, [{"elementId": {"guid": "t"}}], 7) == 1
+    assert "SetDetailsOfElements" not in transport.commands()
+    assert "CreateLayers" not in transport.commands()
 
 
 def test_a_legend_label_carries_its_own_height() -> None:

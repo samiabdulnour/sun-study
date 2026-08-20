@@ -1542,3 +1542,28 @@ So the height is stated rather than inherited, and the row spacing is derived
 from it instead of guessed alongside it. Measured: at the stated height a
 label's whole bounding box, ascender and descender included, is 0.43 m, and
 rows now step by 1.5 times the taller of swatch and label.
+
+### D62 — Moving an element off a hidden layer means borrowing that layer first
+
+D60 moved the study's labels onto the study's layer, and every one of them
+refused: ``8 of 8 legend labels would not move``. The target layer was
+visible; the layer they were *created* on was not. ``05 | Dims/Notes.DA`` is
+hidden on the reference project, and ``SetDetailsOfElements`` answers success
+and changes nothing for an element sitting on a hidden layer -- D43, from the
+other side. Every earlier instance of that trap was about the layer being
+written *to*; this one is about the layer being written *from*.
+
+So the move reads where the elements actually landed, switches those layers on
+for the duration, moves, re-reads, and puts them back exactly. Which layer to
+borrow is not something the caller can know: the Text tool's default is a
+project's own setting, and the answer is whatever the elements report about
+themselves.
+
+Elements already on the target are left alone rather than moved to where they
+are -- no write, and nothing unhidden in order to make it.
+
+Worth knowing about the earlier runs: labels created before this fix are still
+on the office's annotation layer, and the run's clean-up only ever touches its
+own layer, so they are not swept up by a later run. Two hundred of them on the
+reference project, findable only by ``Get3DBoundingBoxes`` because a Text will
+not report its own contents.

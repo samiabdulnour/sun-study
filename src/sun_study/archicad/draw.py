@@ -34,6 +34,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.layers import borrowed
 from sun_study.archicad.read import ArchicadZone, disambiguated
 from sun_study.rules.assessment import BuildingAssessment
 
@@ -849,17 +850,36 @@ def move_to_layer(
     """
     if not elements:
         return 0
-    connection.run_tapir(
-        "SetDetailsOfElements",
-        {
-            "elementsWithDetails": [
-                {"elementId": element["elementId"], "details": {"layerIndex": layer_index}}
-                for element in elements
-            ]
-        },
-    )
-    check = connection.run_tapir("GetDetailsOfElements", {"elements": list(elements)})
-    rows = check.get("detailsOfElements") if isinstance(check, dict) else None
-    if not isinstance(rows, list):
+
+    # Where they landed, which is the Text tool's business and not the
+    # caller's. A hidden layer refuses the move silently, so whatever they
+    # arrived on is switched on for the duration and put back after.
+    where = connection.run_tapir("GetDetailsOfElements", {"elements": list(elements)})
+    rows = where.get("detailsOfElements") if isinstance(where, dict) else None
+    landed = {
+        row.get("layerIndex")
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict) and isinstance(row.get("layerIndex"), int)
+    }
+    if landed <= {layer_index}:
+        # The Text tool already defaults to the study's layer, which happens on
+        # a project the tool has been run on before. Nothing to move, and
+        # nothing to unhide in order to move it.
+        return len(elements)
+
+    with borrowed(connection, [index for index in landed if isinstance(index, int)]):
+        connection.run_tapir(
+            "SetDetailsOfElements",
+            {
+                "elementsWithDetails": [
+                    {"elementId": element["elementId"], "details": {"layerIndex": layer_index}}
+                    for element in elements
+                ]
+            },
+        )
+        check = connection.run_tapir("GetDetailsOfElements", {"elements": list(elements)})
+
+    moved = check.get("detailsOfElements") if isinstance(check, dict) else None
+    if not isinstance(moved, list):
         return 0
-    return sum(1 for row in rows if isinstance(row, dict) and row.get("layerIndex") == layer_index)
+    return sum(1 for row in moved if isinstance(row, dict) and row.get("layerIndex") == layer_index)

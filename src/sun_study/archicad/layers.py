@@ -73,6 +73,9 @@ class LayerState:
     hidden: bool = False
     locked: bool = False
 
+    index: int = -1
+    """The attribute index, which is how an *element* names its layer."""
+
 
 @dataclass(frozen=True)
 class LayerPlan:
@@ -134,7 +137,11 @@ def read_layers(connection: ArchicadConnection) -> list[LayerState]:
         raise ArchicadError(f"GetAttributesByType returned no layer list: {response!r}")
 
     known = [
-        (str((entry.get("attributeId") or {}).get("guid", "")), str(entry.get("name", "")))
+        (
+            str((entry.get("attributeId") or {}).get("guid", "")),
+            str(entry.get("name", "")),
+            int(entry.get("index", -1)),
+        )
         for entry in attributes
         if isinstance(entry, dict) and (entry.get("attributeId") or {}).get("guid")
     ]
@@ -143,7 +150,7 @@ def read_layers(connection: ArchicadConnection) -> list[LayerState]:
 
     states = connection.run_tapir(
         "GetLayers",
-        {"attributeIds": [{"attributeId": {"guid": guid}} for guid, _ in known]},
+        {"attributeIds": [{"attributeId": {"guid": guid}} for guid, _, _ in known]},
     )
     rows = states.get("layers") if isinstance(states, dict) else None
     if not isinstance(rows, list) or len(rows) != len(known):
@@ -153,7 +160,7 @@ def read_layers(connection: ArchicadConnection) -> list[LayerState]:
         )
 
     found: list[LayerState] = []
-    for (guid, name), row in zip(known, rows, strict=True):
+    for (guid, name, index), row in zip(known, rows, strict=True):
         attribute = row.get("layerAttribute") if isinstance(row, dict) else None
         if not isinstance(attribute, dict):
             attribute = row if isinstance(row, dict) else {}
@@ -163,6 +170,7 @@ def read_layers(connection: ArchicadConnection) -> list[LayerState]:
                 name=str(attribute.get("name", name)),
                 hidden=bool(attribute.get("isHidden", False)),
                 locked=bool(attribute.get("isLocked", False)),
+                index=index,
             )
         )
     return found
@@ -340,6 +348,41 @@ def _write(connection: ArchicadConnection, layers: Sequence[LayerState]) -> None
             "overwriteExisting": True,
         },
     )
+
+
+@contextmanager
+def borrowed(
+    connection: ArchicadConnection, indices: Sequence[int]
+) -> Iterator[tuple[str, ...]]:
+    """Force these layers visible and unlocked for the duration, then restore.
+
+    For the elements a command creates somewhere the caller did not choose. A
+    Text lands on the Text tool's default layer, and on the reference project
+    that layer is hidden -- so the move onto the study's own layer answered
+    success and did nothing, for all eight labels, exactly as D43 describes.
+
+    Borrowing by layer *index*, because that is what an element reports about
+    itself; the write is by name, because that is what ``CreateLayers`` takes.
+    """
+    wanted = {index for index in indices if index >= 0}
+    if not wanted:
+        yield ()
+        return
+
+    shut = [
+        state for state in read_layers(connection)
+        if state.index in wanted and (state.hidden or state.locked)
+    ]
+    if shut:
+        _write(
+            connection,
+            [LayerState(s.identifier, s.name, hidden=False, locked=False) for s in shut],
+        )
+    try:
+        yield tuple(sorted(state.name for state in shut))
+    finally:
+        if shut:
+            _write(connection, shut)
 
 
 @contextmanager
