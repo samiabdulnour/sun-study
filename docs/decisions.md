@@ -1449,3 +1449,53 @@ now -- ``layerIndex`` on a hidden layer (D43), ``drawingScale`` on a Drawing
 (D55), and ``angle`` -- where the add-on accepts a write, stores it, returns
 it, and changes nothing. Reading a value back is not evidence that it did
 anything; reading the *geometry* back is.
+
+### D59 — A layer combination cannot be activated, but it can be copied
+
+D52 stopped the run when a layer the study needed was switched off, and said
+there was nothing else it could do. Five commands had been tried --
+``SetLayers``, ``SetLayerCombination``, ``ApplyLayerCombination``,
+``OpenView``, ``ActivateNavigatorItem`` -- and all were unregistered.
+
+That conclusion was right about combinations and wrong about layers. A
+combination is only a set of per-layer visibilities, and those are writable:
+``CreateLayers`` with ``overwriteExisting`` sets ``isHidden`` and
+``isLocked``, which the facade skin already relied on to borrow a hidden
+layer. What was missing was the other half -- ``GetLayerCombinations``, whose
+parameter is ``attributes`` rather than the ``attributeIds`` every neighbouring
+command takes, and which returns a combination's full per-layer state. Read
+one, write it onto the layers, and the project is in that combination in every
+way that matters to an export, without Archicad ever being asked to switch.
+
+So the export sets its own layer state, in three steps. A base -- one of the
+project's own combinations by name, usually its IFC export combination, which
+is an office's own account of what belongs in an export -- or everything shown
+if none is named. Then the layers the study needs are forced on, and
+``--hide-layer`` forced off.
+
+The middle step is not a refinement. On the reference project *neither*
+``12 | IFC ARCH. EXPORT`` nor ``12 | IFC CONSULT. CHECK`` shows the
+``06 | Zone.*`` layers, so following the office's own export settings exactly
+reproduces D52: an export with no ``IfcSpace`` in it and a run reporting no
+apartments. What belongs in an export and what a solar study needs are
+different questions, and only the run knows the second.
+
+Everything is snapshotted and restored in a ``finally``. Measured on a project
+with 89 of 142 layers hidden and 63 locked: 94 changed for the export, all 94
+back afterwards, ``06 | Zone.Units`` switched on for the export and off again
+after it. The apartment figures came out identical to the run made against a
+hand-selected combination, which is the check that this reproduces rather than
+approximates.
+
+The restore matters as much as the change. This tool spent three sessions
+re-selecting a combination it had itself clobbered by opening its own views,
+and a run that rearranges what somebody sees and leaves it that way has just
+moved the problem.
+
+Two smaller findings. ``DeleteAttributes`` will not remove a
+``LayerCombination``: it validates the type name -- a wrong spelling is
+refused as invalid -- and then answers ``Attribute not found`` for an id
+``GetAttributesByType`` had just handed over. So combinations are reused by
+name like layouts and views. And the tool records its own resolved state as a
+real combination, ``SS Sun Study Export``, which changes nothing on its own
+but gives the choice a name in Layer Settings that a person can inspect.

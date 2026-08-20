@@ -3131,3 +3131,203 @@ def test_other_failures_keep_their_code_for_looking_up() -> None:
 
     with pytest.raises(CommandFailedError, match=r"code -2130312909"):
         ArchicadConnection(Failing()).run_official("API.GetAllClassificationSystems")
+
+
+# ---------------------------------------------------------------------------
+# The layer state the export runs under. The translator exports what is
+# *shown*, so this is an input to every number the study produces -- and until
+# now it was whatever combination somebody had left active.
+# ---------------------------------------------------------------------------
+def _layer_attributes(*names: str) -> dict[str, Any]:
+    return {
+        "attributes": [
+            {"attributeId": {"guid": f"L{index}"}, "index": index, "name": name}
+            for index, name in enumerate(names)
+        ]
+    }
+
+
+def _layer_states(*states: tuple[str, bool, bool]) -> dict[str, Any]:
+    return {
+        "layers": [
+            {"layerAttribute": {"name": name, "isHidden": hidden, "isLocked": locked}}
+            for name, hidden, locked in states
+        ]
+    }
+
+
+def _layer_world(**overrides: Any) -> dict[str, Any]:
+    """A project of three layers, one of them switched off and locked."""
+    responses: dict[str, Any] = {
+        "GetAttributesByType": Sequential(
+            _layer_attributes("Walls", "Context", "Joinery"),
+            {"attributes": []},  # no layer combinations yet
+        ),
+        "GetLayers": _layer_states(
+            ("Walls", False, False), ("Context", True, True), ("Joinery", False, False)
+        ),
+        "CreateLayerCombinations": {"attributeIds": [{"attributeId": {"guid": "C1"}}]},
+        "CreateLayers": {},
+    }
+    responses.update(overrides)
+    return responses
+
+
+def test_the_export_switches_on_what_the_study_needs_and_puts_it_back() -> None:
+    """The whole point: the answer must not depend on what was on screen.
+
+    A site-plan combination gave an export of 386 walls, 92 windows and no
+    IfcSpace at all (D52), and the reference project's combination reverted
+    three times in one session because the tool's own views kept applying
+    theirs. Checking and complaining put the work on the person; this does it.
+    """
+    from sun_study.archicad.layers import export_state
+
+    connection, transport = connect(_layer_world())
+    with export_state(connection) as plan:
+        pass
+
+    applied, restored = transport.all_parameters_for("CreateLayers")
+    assert applied["overwriteExisting"] is True
+    assert applied["layerDataArray"] == [
+        {"name": "Context", "isHidden": False, "isLocked": False}
+    ], "only the layer that was off, and only switched on"
+    assert restored["layerDataArray"] == [
+        {"name": "Context", "isHidden": True, "isLocked": True}
+    ], "put back exactly as it was, lock included"
+    assert plan.shown == ("Context",)
+    assert plan.changed == 1
+
+
+def test_the_layers_are_put_back_even_when_the_export_fails() -> None:
+    """An export that raises must not leave somebody's model rearranged."""
+    from sun_study.archicad.layers import export_state
+
+    connection, transport = connect(_layer_world())
+    with contextlib.suppress(RuntimeError), export_state(connection):
+        raise RuntimeError("the translator fell over")
+
+    _, restored = transport.all_parameters_for("CreateLayers")
+    assert restored["layerDataArray"] == [
+        {"name": "Context", "isHidden": True, "isLocked": True}
+    ]
+
+
+def test_a_named_layer_is_switched_off_for_the_export() -> None:
+    """Furniture and joinery shade a room without being part of it, and they
+    are a project's own business rather than something to guess from names."""
+    from sun_study.archicad.layers import export_state
+
+    connection, transport = connect(_layer_world())
+    with export_state(connection, hide=["joinery"]) as plan:
+        pass
+
+    applied, _ = transport.all_parameters_for("CreateLayers")
+    assert {"name": "Joinery", "isHidden": True, "isLocked": False} in applied["layerDataArray"]
+    assert plan.hidden == ("Joinery",)
+
+
+def test_a_layer_both_hidden_and_locked_is_counted_once() -> None:
+    """Summing the three lists reported "set 153 of 142 layers"."""
+    from sun_study.archicad.layers import export_state
+
+    connection, _ = connect(_layer_world())
+    with export_state(connection) as plan:
+        assert plan.changed == 1
+        assert plan.shown == ("Context",) and plan.unlocked == ("Context",)
+        assert "set 1 of 3 layers" in plan.describe()
+
+
+def test_the_projects_own_combination_is_copied_rather_than_activated() -> None:
+    """Nothing in the add-on can activate a layer combination -- D52 measured
+    five commands, all unregistered. But a combination is only a set of
+    visibilities, and GetLayerCombinations reads them out, so an office's IFC
+    export combination can be applied by writing it onto the layers.
+    """
+    from sun_study.archicad.layers import export_state
+
+    connection, transport = connect(
+        _layer_world(
+            GetAttributesByType=Sequential(
+                _layer_attributes("Walls", "Context", "Joinery"),
+                {"attributes": [{"attributeId": {"guid": "C9"}, "index": 4, "name": "IFC EXPORT"}]},
+            ),
+            GetLayerCombinations={
+                "layerCombinations": [
+                    {
+                        "layerCombination": {
+                            "name": "IFC EXPORT",
+                            "layers": [
+                                {"attributeId": {"guid": "L0"}, "isHidden": False},
+                                {"attributeId": {"guid": "L1"}, "isHidden": False},
+                                {"attributeId": {"guid": "L2"}, "isHidden": True},
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    with export_state(connection, combination="ifc export") as plan:
+        pass
+
+    assert plan.combination.startswith("ifc export")
+    assert "CreateLayerCombinations" not in transport.commands(), (
+        "the project's own combination is used, not a second copy of it"
+    )
+    applied, _ = transport.all_parameters_for("CreateLayers")
+    assert {"name": "Joinery", "isHidden": True, "isLocked": False} in applied["layerDataArray"]
+    assert {"name": "Context", "isHidden": False, "isLocked": False} in applied["layerDataArray"]
+
+
+def test_a_combination_the_project_does_not_have_stops_the_run() -> None:
+    """Falling back to whatever is on screen would be the exact failure this
+    exists to remove, arriving silently."""
+    from sun_study.archicad.layers import export_state
+
+    connection, _ = connect(_layer_world())
+    with pytest.raises(ArchicadError, match="no layer combination called"):
+        with export_state(connection, combination="12 | IFC ARCH. EXPORT"):
+            pass
+
+
+def test_the_study_layers_are_forced_on_over_the_base_combination() -> None:
+    """Neither of the reference project's own IFC export combinations shows
+    its '06 | Zone.*' layers.
+
+    Following the office's settings exactly therefore reproduces D52: an
+    export with no IfcSpace in it, and a run that reports no apartments. The
+    base says what belongs in an export; the run says what this study needs.
+    """
+    from sun_study.archicad.layers import export_state
+
+    connection, transport = connect(
+        _layer_world(
+            GetAttributesByType=Sequential(
+                _layer_attributes("Walls", "Context", "Joinery"),
+                {"attributes": [{"attributeId": {"guid": "C9"}, "index": 4, "name": "IFC EXPORT"}]},
+            ),
+            GetLayerCombinations={
+                "layerCombinations": [
+                    {
+                        "layerCombination": {
+                            "name": "IFC EXPORT",
+                            "layers": [
+                                {"attributeId": {"guid": "L0"}, "isHidden": False},
+                                {"attributeId": {"guid": "L1"}, "isHidden": True},
+                                {"attributeId": {"guid": "L2"}, "isHidden": True},
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    with export_state(connection, combination="IFC EXPORT", require=["context"]) as plan:
+        pass
+
+    applied, _ = transport.all_parameters_for("CreateLayers")
+    assert {"name": "Context", "isHidden": False, "isLocked": False} in applied["layerDataArray"], (
+        "the base hides it and the study needs it, so the study wins"
+    )
+    assert plan.shown == ("Context",)

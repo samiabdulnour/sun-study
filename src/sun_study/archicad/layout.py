@@ -517,6 +517,7 @@ def layout_results(
     layout_name: str,
     scale: float = DEFAULT_LAYOUT_SCALE,
     master_layout: str | None = None,
+    zoom: tuple[float, float, float, float] | None = None,
 ) -> LayoutReport:
     """Put one linked Drawing per storey onto a Layout.
 
@@ -545,7 +546,7 @@ def layout_results(
 
     ordered = sorted(items)
     views = _clone_to_view_map(connection, [items[storey] for storey in ordered])
-    _pin_scale(connection, views, scale)
+    _pin_view(connection, views, scale, zoom)
     placed = layout_from_views(
         connection,
         [
@@ -559,13 +560,25 @@ def layout_results(
     return replace(placed, storeys=tuple(ordered), missing_storeys=missing)
 
 
-def _pin_scale(connection: ArchicadConnection, views: Sequence[str], scale: float) -> None:
-    """Put the study's scale on the views, so the drawings are really at it.
+def _pin_view(
+    connection: ArchicadConnection,
+    views: Sequence[str],
+    scale: float,
+    zoom: tuple[float, float, float, float] | None,
+) -> None:
+    """Put the study's scale and extent on the views, so the drawings match.
 
-    Without this the Drawing inherits whatever scale the storey happens to be
+    Without the scale the Drawing inherits whatever the storey happens to be
     saved at -- 1:100 on the reference project, where the study asks for 1:200
-    -- and the report's "placed 6 drawings at 1:200" is then a sentence about
+    -- and the report's "placed 6 drawings at 1:200" is a sentence about
     something that did not happen.
+
+    Without the extent it inherits the storey's saved zoom, which is wherever
+    somebody last left the screen. On a fresh copy of the reference project
+    that was the whole site: the drawings came out more than eight times the
+    page and the sheet pass had to reduce them to 11.7% to fit, which it said
+    was the wrong scale for the sheet and was right. The other sheets pin an
+    extent already; this is the same fix, in the path that missed it.
 
     Not fatal. A clone follows its Project Map source and a project could
     refuse this; a sheet at the wrong scale still beats no sheet, and the
@@ -573,15 +586,17 @@ def _pin_scale(connection: ArchicadConnection, views: Sequence[str], scale: floa
     """
     if not views:
         return
+    settings: dict[str, Any] = {"drawingScale": int(scale)}
+    if zoom is not None:
+        x_min, y_min, x_max, y_max = zoom
+        settings["zoom"] = {"xMin": x_min, "yMin": y_min, "xMax": x_max, "yMax": y_max}
+        settings["saveZoom"] = True
     try:
         connection.run_tapir(
             "SetViewSettings",
             {
                 "navigatorItemIdsWithViewSettings": [
-                    {
-                        "navigatorItemId": {"guid": view},
-                        "viewSettings": {"drawingScale": int(scale)},
-                    }
+                    {"navigatorItemId": {"guid": view}, "viewSettings": settings}
                     for view in views
                 ]
             },

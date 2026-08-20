@@ -446,6 +446,11 @@ machine-checked against a fake transport:
 | `SetDetailsOfElements` with a `ratio`, on a Drawing | **works**: the magnification is the only handle on a drawing's size on the page |
 | A Drawing's `bounds` after its `ratio` changes | **stale**: they keep the old size until Archicad regenerates the drawing, which happens when somebody opens the layout ([D55](decisions.md)) |
 | `SetMasterLayout`, `DeleteLayouts` | **not offered**: unregistered. An existing layout keeps the master it was made on |
+| `GetLayerCombinations` | **works**, and its parameter is `attributes`, not the `attributeIds` every neighbouring command takes. Returns a combination's full per-layer state |
+| `CreateLayers` with `overwriteExisting` | **works**: the only way to set a layer's visibility, since there is no `SetLayers`. This is what applies a combination without activating one ([D59](decisions.md)) |
+| `CreateLayerCombinations` | **works**, parameter `layerCombinationDataArray` |
+| `DeleteAttributes` on a `LayerCombination` | **refused**: the type name validates, then the id `GetAttributesByType` just returned answers `Attribute not found` |
+| `SetDetailsOfElements` with an `angle`, on a Drawing | **refused silently**: the field stores and reads back, the frame does not move. `RotateElements` is what turns a drawing ([D58](decisions.md)) |
 | `SetLayoutSettings`, `DeleteNavigatorItems` | exist, and `SetLayoutSettings` carries no master field |
 | Layer create and lookup, element delete | works |
 | `CreateHatches`, `CreateTexts` — fills and legend | **works**: 8 fills and a 7-item legend, replacing the previous run's 15 |
@@ -556,7 +561,7 @@ the translator you export with, under `File ▸ Interoperability ▸ IFC ▸ IFC
 | Setting | Needed | Why |
 |---|---|---|
 | Zones in the export filter | **Yes** | Zones become `IfcSpace`. Without them there are no apartments at all, and `run` reports zero. |
-| The active layer combination | **shows the zone layers** | The translator exports what the combination *shows*, so a hidden `06 \| Zone.*` layer is an export filter in its own right — the reference project produced 386 walls, 92 windows and no `IfcSpace` from a site-plan combination. `archicad-run` now checks this before exporting ([D52](decisions.md)). Nothing in the add-on can switch it; it is a hand in Archicad. |
+| The active layer combination | **no longer your problem** | The translator exports what the combination *shows*, so a hidden `06 \| Zone.*` layer used to be an export filter in its own right — the reference project produced 386 walls, 92 windows and no `IfcSpace` from a site-plan combination. `archicad-run` now sets the layer state itself and puts it back afterwards, so the export does not depend on what was on screen ([D59](decisions.md)). Point it at an office combination with `--layer-combination`. |
 | IFC Space boundaries | **On** | `IfcRelSpaceBoundary` maps each window to the room it serves. Without it the tool falls back to geometric containment, which is a guess. |
 | Project Location set to the real site | **Yes** | Archicad ships a city preset; exact arcminute coordinates such as `(-33,-52,0,0)` are the tell that nobody set it. |
 | IFC Model position | either | Both Survey Point and Project Origin work — see the north section above. |

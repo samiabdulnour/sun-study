@@ -42,6 +42,7 @@ from sun_study.archicad.draw import (
     match_pens,
     pen_table,
 )
+from sun_study.archicad.layers import export_state
 from sun_study.archicad.layout import (
     DEFAULT_LAYOUT_SCALE,
     layout_from_views,
@@ -443,6 +444,7 @@ def report_layout(
     *,
     name: str,
     master: str | None = None,
+    zoom: tuple[float, float, float, float] | None = None,
 ) -> None:
     """Put the drawn storeys on a sheet, and say what happened.
 
@@ -452,7 +454,9 @@ def report_layout(
     the layout is a convenience on top.
     """
     try:
-        placed = layout_results(connection, storeys, layout_name=name, master_layout=master)
+        placed = layout_results(
+            connection, storeys, layout_name=name, master_layout=master, zoom=zoom
+        )
     except ArchicadError as error:
         typer.secho(
             f"  the fills are drawn, but the layout could not be made ({error})",
@@ -3412,18 +3416,29 @@ def archicad_run(
             ),
         ),
     ] = None,
+    layer_combination: Annotated[
+        str | None,
+        typer.Option(
+            "--layer-combination",
+            help=(
+                "Export with this layer combination of the project's own, by "
+                "name -- an office IFC export combination is usually the right "
+                "one. It is copied onto the layers rather than activated, "
+                "which nothing in the add-on can do, and the layers are put "
+                "back afterwards. Without this the tool uses its own: every "
+                "layer on except those named with --hide-layer."
+            ),
+        ),
+    ] = None,
     require_layer: Annotated[
         list[str] | None,
         typer.Option(
             "--require-layer",
             help=(
                 "Stop unless this layer is visible when the export runs. "
-                "Repeatable. The translator exports what is shown, so a layer "
-                "that switches off silently changes the answer without "
-                "changing the shape of the output. Name the ones the study "
-                "depends on -- the neighbouring context above all -- and a "
-                "reverted layer combination becomes an error rather than an "
-                "optimistic result."
+                "Repeatable. Now a backstop rather than the first line of "
+                "defence -- the run sets the layer state itself -- so this "
+                "catches a combination that hides something the study needs."
             ),
         ),
     ] = None,
@@ -3510,14 +3525,6 @@ def archicad_run(
         destination = ifc_out or Path(scratch) / "archicad-export.ifc"
         try:
             location = read_geo_location(connection)
-            _warn_if_zone_layers_hidden(
-                connection, [*(apartment_zone_layer or []), *(open_space_zone_layer or [])]
-            )
-            # Separately, because a missing context layer is not a missing
-            # apartment: the run would succeed and simply overstate the sun.
-            _warn_if_zone_layers_hidden(
-                connection, require_layer or [], role="layers named by --require-layer"
-            )
             typer.echo(f"  exporting IFC to {destination} ...")
             cleared = clear_selection(connection)
             if cleared:
@@ -3527,7 +3534,37 @@ def archicad_run(
                     f"run would analyse an empty model",
                     fg=typer.colors.YELLOW,
                 )
-            exported = export_ifc(connection, destination)
+            # The translator exports what is *shown*, so the layer state is an
+            # input to every number below. It is set here and put back after,
+            # rather than checked and complained about: what somebody left on
+            # screen is not a decision about the study.
+            with export_state(
+                connection,
+                combination=layer_combination,
+                # What the study needs on regardless of what the base shows:
+                # neither of the reference project's own export combinations
+                # shows its zone layers, and an export with no IfcSpace in it
+                # reports no apartments at all.
+                require=(
+                    *(apartment_zone_layer or []),
+                    *(open_space_zone_layer or []),
+                    *(require_layer or []),
+                ),
+                hide=tuple(hide_layer or ()),
+            ) as plan:
+                typer.echo(plan.describe())
+                # Still worth asking, and now about the state actually in force:
+                # a layer the combination itself hides is a real problem, and one
+                # Archicad has never heard of is a typo.
+                _warn_if_zone_layers_hidden(
+                    connection, [*(apartment_zone_layer or []), *(open_space_zone_layer or [])]
+                )
+                # Separately, because a missing context layer is not a missing
+                # apartment: the run would succeed and simply overstate the sun.
+                _warn_if_zone_layers_hidden(
+                    connection, require_layer or [], role="layers named by --require-layer"
+                )
+                exported = export_ifc(connection, destination)
         except ArchicadError as error:
             typer.secho(str(error), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2) from error
@@ -3643,7 +3680,13 @@ def archicad_run(
                 fg=typer.colors.YELLOW,
             )
             if sheet:
-                report_layout(connection, drawn.storeys, name=sheet_name, master=master_layout)
+                report_layout(
+                    connection,
+                    drawn.storeys,
+                    name=sheet_name,
+                    master=master_layout,
+                    zoom=assessed_extent(read_zones(connection), match, margin_m=10.0),
+                )
 
         # One clearing out and one folder for the whole run, before any sheet
         # is made: the two sheet-building steps would otherwise delete each
