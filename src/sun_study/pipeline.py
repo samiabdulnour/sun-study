@@ -52,9 +52,19 @@ from sun_study.rules.ruleset import Weighting as RulesetWeighting
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
 
-__all__ = ["MassingResult", "PipelineResult", "run_assessment", "run_massing"]
+__all__ = [
+    "WEIGHTING_BY_RULESET",
+    "MassingResult",
+    "PipelineResult",
+    "run_assessment",
+    "run_massing",
+]
 
-_WEIGHTING = {
+#: How a ruleset's named weighting maps onto the engine's. Public because a
+#: caller computing durations outside the pipeline -- the open-ground study --
+#: has to weight its instants the same way, or its hours mean something
+#: slightly different from the apartments' beside it.
+WEIGHTING_BY_RULESET = {
     RulesetWeighting.TRAPEZOIDAL: Weighting.TRAPEZOIDAL,
     RulesetWeighting.UNIFORM: Weighting.UNIFORM,
 }
@@ -277,7 +287,7 @@ def run_assessment(
 
     occluder = Occluder(scene.occluders)
     timestep = float(rules.assessment.timestep_minutes)
-    weighting = _WEIGHTING[rules.assessment.weighting]
+    weighting = WEIGHTING_BY_RULESET[rules.assessment.weighting]
 
     living = _durations(scene.window_samples, occluder, sun_vectors, timestep, weighting)
     open_space = _durations(scene.open_space_samples, occluder, sun_vectors, timestep, weighting)
@@ -412,7 +422,7 @@ def run_massing(
 
     occluder = Occluder(scene.occluders)
     timestep = float(rules.assessment.timestep_minutes)
-    weighting = _WEIGHTING[rules.assessment.weighting]
+    weighting = WEIGHTING_BY_RULESET[rules.assessment.weighting]
     weights = instant_weights(len(times), timestep, weighting)
     threshold = rules.area(area).minimum_sunlight_minutes
 

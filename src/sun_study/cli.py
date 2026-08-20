@@ -37,6 +37,7 @@ from sun_study.archicad.draw import (
     BandStyle,
     Pen,
     draw_assessment,
+    hidden_layers,
     indistinguishable_bands,
     match_pens,
     pen_table,
@@ -48,6 +49,7 @@ from sun_study.archicad.layout import (
     layout_sheet,
     project_map,
 )
+from sun_study.archicad.model_bands import draw_model_bands, fit_to_project
 from sun_study.archicad.penetration import (
     PATCH_STYLE,
     CellGroup,
@@ -92,10 +94,14 @@ from sun_study.archicad.series import (
 from sun_study.archicad.sheets import TableRow, draw_table, straighten_and_tile
 from sun_study.archicad.views import (
     VIEW_PREFIX,
+    ModelSource,
     ensure_layer_combination,
+    ensure_view_folder,
     next_view_folder,
     remove_previous,
+    three_d_sources,
     tool_layers,
+    views_for_sources,
     views_for_storeys,
 )
 from sun_study.archicad.write import (
@@ -114,7 +120,17 @@ from sun_study.archicad.write import (
     match_apartments,
     write_assessment,
 )
-from sun_study.core.analysis import band_by_area
+from sun_study.core.analysis import (
+    ZERO_TOLERANCE_MINUTES,
+    band_by_area,
+    cumulative_minutes,
+    instant_weights,
+    sunlit_matrix,
+)
+from sun_study.core.facade import face_panels
+from sun_study.core.occlusion import Occluder
+from sun_study.core.sampling import SamplePoints
+from sun_study.core.solar import assessment_times, solar_position
 from sun_study.disclaimer import DISCLAIMER, STATUS
 from sun_study.ingest.ifc import GeoreferencingError, read_ifc
 from sun_study.ingest.scene import (
@@ -122,8 +138,16 @@ from sun_study.ingest.scene import (
     MassingConfig,
     SceneConfig,
     SceneConfigError,
+    massing_subject,
+    open_ground_grid,
 )
-from sun_study.pipeline import PipelineResult, run_assessment, run_massing
+from sun_study.pipeline import (
+    WEIGHTING_BY_RULESET,
+    MassingResult,
+    PipelineResult,
+    run_assessment,
+    run_massing,
+)
 from sun_study.report.bands_out import (
     build_massing_header,
     write_bands_csv,
@@ -517,6 +541,397 @@ def report_series(
     return False
 
 
+def report_model_bands(
+    connection: ArchicadConnection,
+    result: MassingResult,
+    *,
+    config: MassingConfig,
+    spacing_m: float,
+    layer_name: str,
+    pens: list[str] | None,
+    flat_faces: bool,
+    favorite: str | None = None,
+) -> bool:
+    """Colour the model itself: the facade banded by hours of sun.
+
+    Page 2 of the reference study, made of Archicad elements rather than an
+    image. The real walls cannot be recoloured -- no command in the add-on
+    attaches a Surface to an existing wall -- so what is built is a skin of
+    thin elements standing 30 mm proud of the facade, each in its band's
+    colour, on a layer of its own. From outside it reads as the building
+    painted; switch the layer off and the model is exactly as it was.
+
+    The geometry is gridded a second time here, per planar face rather than
+    per triangle, because a picture needs rectangles and a triangle soup has
+    no rows to merge along. The areas it reports are therefore its own and
+    will differ a little from the measured facade figure above -- the drawing
+    grid drops faces narrower than one cell, which the measurement counts.
+    """
+    # The same reduction the measurement used, height cut included: without
+    # it the picture colours geometry that is not in the denominator.
+    reduced = massing_subject(result.model, config)
+    panels = [
+        panel
+        for element in reduced.subject
+        if element.mesh.triangle_count
+        for panel in face_panels(
+            element.mesh,
+            element.global_id,
+            spacing_m=spacing_m,
+            surface_offset_m=config.surface_offset_m,
+            vertical_tolerance_deg=config.vertical_tolerance_deg,
+            horizontal=flat_faces,
+        )
+    ]
+    if not panels:
+        typer.secho(
+            "  no upright faces to colour. Check --subject-layer: the skin is "
+            "drawn on the scheme, not on the context.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    samples = SamplePoints.concatenate([panel.samples for panel in panels])
+    flat = sum(1 for panel in panels if abs(float(panel.normal[2])) >= 0.5)
+    typer.secho(
+        f"  {len(panels)} faces ({len(panels) - flat} upright, {flat} flat), "
+        f"{len(samples)} cells at {spacing_m:g} m "
+        f"({samples.total_area_m2:.1f} m2 of surface)",
+        bold=True,
+    )
+
+    times = assessment_times(
+        result.ruleset.assessment.date_in(result.assessment_date.year),
+        config.timezone,
+        result.ruleset.assessment.start_time,
+        result.ruleset.assessment.end_time,
+        result.ruleset.assessment.timestep_minutes,
+    )
+    vectors = result.scene.orientation.sun_vectors(
+        solar_position(times, result.model.latitude_deg, result.model.longitude_deg)
+    )
+    lit = sunlit_matrix(samples, Occluder(result.scene.occluders), vectors)
+    minutes = cumulative_minutes(
+        lit,
+        instant_weights(
+            lit.shape[1],
+            float(result.ruleset.assessment.timestep_minutes),
+            WEIGHTING_BY_RULESET[result.ruleset.assessment.weighting],
+        ),
+    )
+
+    styles = resolve_bands(connection, pens)
+    # Slice the durations back out per panel, in the order they were joined.
+    per_panel: list[Any] = []
+    start = 0
+    for panel in panels:
+        per_panel.append(minutes[start : start + len(panel)])
+        start += len(panel)
+
+    grouped: list[list[Any]] = []
+    for index, style in enumerate(styles):
+        lower = styles[index - 1].upper_minutes if index else 0.0
+        chosen = [
+            rectangle
+            for panel, durations in zip(panels, per_panel, strict=True)
+            for rectangle in panel.rectangles(
+                _band_mask(durations, lower, style.upper_minutes)
+            )
+        ]
+        grouped.append(chosen)
+
+    try:
+        # The export's frame is not the project's, and geometry created from
+        # one and placed in the other lands beside the building and turned.
+        transform = fit_to_project(connection, result.model)
+        typer.echo(
+            f"  fitted the export onto the project: {transform.rmse_m:.3f} m residual"
+        )
+        drawn = draw_model_bands(
+            connection,
+            bands=styles,
+            rectangles=grouped,
+            layer_name=layer_name,
+            transform=transform,
+            favorite=favorite,
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        return True
+
+    typer.echo(drawn.describe())
+    if drawn.layer.invisible:
+        typer.secho(
+            f"  Layer {layer_name!r} is switched off in the combination you are "
+            f"working in, so the skin is there but invisible.",
+            fg=typer.colors.YELLOW,
+        )
+    return False
+
+
+def report_model_views(
+    connection: ArchicadConnection,
+    *,
+    layer_prefix: str,
+    skin_layer: str,
+    document_name: str | None,
+    scale: float,
+    also_hide: tuple[str, ...] = (),
+) -> bool:
+    """Views of the coloured model -- the 3D window and a 3D Document -- on a sheet.
+
+    Two of them because they are different things and an office wants both.
+    The 3D window is live: it shows the model as it is now, turns freely, and
+    is what somebody checks the study in. A 3D Document is a *drawing* made
+    from a 3D view, with its own overrides and dimensions, and is what goes in
+    the report.
+
+    A 3D Document cannot be created through this add-on -- there is no command
+    for it -- so this uses one the project already has. If there is none, the
+    3D view is still made and the run says what is missing rather than failing.
+    """
+    sources = three_d_sources(connection)
+    if not sources:
+        typer.secho(
+            "  the Project Map has no 3D window at all, which should not be "
+            "possible; no views were made.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    live = next(
+        (item for item in sources if item.kind == "AxonometryItem"),
+        next((item for item in sources if item.kind == "PerspectiveItem"), None),
+    )
+    documents = [item for item in sources if item.kind == "DocumentFrom3DItem"]
+    document = None
+    if document_name:
+        document = next(
+            (item for item in documents if item.name.casefold() == document_name.casefold()),
+            None,
+        )
+        if document is None:
+            typer.secho(
+                f"  no 3D Document named {document_name!r}. The project has "
+                f"{len(documents)}: {', '.join(sorted({d.name for d in documents}))}",
+                fg=typer.colors.YELLOW,
+            )
+
+    wanted: list[tuple[ModelSource, str]] = []
+    if live is not None:
+        wanted.append((live, f"{VIEW_PREFIX} Solar Model 3D"))
+    if document is not None:
+        wanted.append((document, f"{VIEW_PREFIX} Solar Model Document"))
+    if not wanted:
+        return True
+
+    # Everything the project normally shows, plus the skin, minus this tool's
+    # own 2D layers -- those are floor plan fills and would only clutter a
+    # model view if they were ever drawn in 3D.
+    combination = ensure_layer_combination(
+        connection,
+        f"{VIEW_PREFIX} Solar Model",
+        show=[skin_layer],
+        hide=[
+            *(name for name in tool_layers(connection, layer_prefix) if name != skin_layer),
+            *also_hide,
+        ],
+    )
+
+    folder = ensure_view_folder(connection, f"{VIEW_PREFIX} Solar Model")
+    typer.echo(f"  views go in the {VIEW_PREFIX} Solar Model folder ({folder[:8]})")
+    try:
+        views = views_for_sources(
+            connection,
+            wanted,
+            combination=combination,
+            folder=f"{VIEW_PREFIX} Solar Model",
+            drawing_scale=scale,
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        return True
+
+    for view, (source, _) in zip(views, wanted, strict=True):
+        typer.echo(f"    {view.name}  <- {source.kind} {source.name!r}")
+
+    try:
+        placed = layout_from_views(
+            connection,
+            [(view.navigator_id, view.name) for view in views],
+            layout_name=f"{VIEW_PREFIX} Solar Model",
+            scale=scale,
+        )
+    except ArchicadError as error:
+        typer.secho(
+            f"  the views are made; the sheet is not: {error}",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return False
+
+    typer.echo(placed.describe())
+
+    # Same second pass the plan sheets need, and for the same reason: a
+    # Drawing's angle comes from the Drawing tool's default -- here the
+    # project's own north, 279.9 degrees -- and its size is only knowable
+    # once it exists. Saving is what makes the new layout readable at all.
+    try:
+        connection.run_tapir("SaveProject", {})
+        sheet, _ = layout_sheet(connection, placed.database_id)
+        turned, moved = straighten_and_tile(connection, placed.database_id, sheet)
+        typer.echo(f"    straightened {turned}, tiled {moved}")
+    except ArchicadError as error:
+        typer.secho(
+            f"  the sheet is made; its drawings are still crooked: {error}",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    return False
+
+
+def report_ground(
+    connection: ArchicadConnection,
+    result: PipelineResult,
+    *,
+    level_m: float,
+    match: ApartmentMatch,
+    layer_prefix: str,
+    spacing_m: float,
+    margin_m: float = 15.0,
+) -> bool:
+    """Solar access to the open ground, banded, drawn and tabulated.
+
+    The other half of the reference study's summary sheets: the apartments
+    answer the ADG, and this answers what the public domain and the communal
+    open space get. Gridded around the assessed building at a stated height,
+    with anything standing on it removed by firing a ray upward -- ground
+    under a slab is not open ground.
+
+    The height has to be given. Taken from the geometry it would be the lowest
+    thing in the model, which on a developed project is a basement slab: a
+    ground plane under the building, in shadow all day by construction, which
+    is exactly what a first run reported.
+    """
+    subject = [
+        element
+        for apartment in match.by_apartment
+        if (element := result.model.by_id(apartment)) is not None
+    ]
+    if not subject:
+        typer.secho("  no apartments to grid the ground around", fg=typer.colors.RED, err=True)
+        return True
+
+    ground = open_ground_grid(
+        subject,
+        result.scene.occluders,
+        MassingConfig(
+            timezone=result.scene.config.timezone,
+            ground_level_m=level_m,
+            ground_spacing_m=spacing_m,
+            ground_margin_m=margin_m,
+        ),
+    )
+    if not len(ground):
+        typer.secho(
+            f"  no open ground at {level_m:g} m: every sample had something "
+            f"directly above it. Check the height against the site.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    times = assessment_times(
+        result.ruleset.assessment.date_in(result.assessment_date.year),
+        result.scene.config.timezone,
+        result.ruleset.assessment.start_time,
+        result.ruleset.assessment.end_time,
+        result.ruleset.assessment.timestep_minutes,
+    )
+    vectors = result.scene.orientation.sun_vectors(
+        solar_position(times, result.model.latitude_deg, result.model.longitude_deg)
+    )
+    lit = sunlit_matrix(ground, Occluder(result.scene.occluders), vectors)
+    minutes = cumulative_minutes(
+        lit,
+        instant_weights(
+            lit.shape[1],
+            float(result.ruleset.assessment.timestep_minutes),
+            WEIGHTING_BY_RULESET[result.ruleset.assessment.weighting],
+        ),
+    )
+
+    table = band_by_area(ground, minutes)
+    typer.secho(
+        f"  open ground at {level_m:g} m: {table.total_area_m2:.1f} m2 in {len(ground)} samples",
+        bold=True,
+    )
+    for band in table.bands:
+        typer.echo(f"    {band.label:<9} {band.area_m2:9.2f} m2   {band.share:6.2%}")
+    typer.echo(f"    {table.summary()}")
+
+    styles = resolve_bands(connection, None)
+    groups = [
+        CellGroup(
+            label=band.label,
+            mask=_band_mask(minutes, band.lower_minutes, band.upper_minutes),
+            style=style,
+            area_m2=band.area_m2,
+            share=band.share,
+        )
+        for band, style in zip(table.bands, styles, strict=False)
+    ]
+
+    storey = _storey_at(connection, level_m)
+    try:
+        drawn = draw_cell_groups(
+            connection,
+            groups=groups,
+            positions=ground.positions,
+            parent_ids=ground.parent_ids,
+            spacing_m=spacing_m,
+            zone_by_apartment=match.by_apartment,
+            zones=read_zones(connection),
+            export_extents={
+                apartment: element.mesh.vertices
+                for apartment in match.by_apartment
+                if (element := result.model.by_id(apartment)) is not None
+            },
+            layer_name=f"{layer_prefix} Ground",
+            title=f"Solar access to open ground at {level_m:g} m",
+            on_storey=storey,
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        return True
+
+    typer.echo(drawn.describe())
+    return not drawn.complete
+
+
+def _storey_at(connection: ArchicadConnection, level_m: float) -> int | None:
+    """The storey whose level is nearest a height, for a fill to live on.
+
+    Ground is not on a storey in any real sense, but a 2D fill has to be: an
+    Archicad Fill belongs to one, and a plan of any other shows nothing.
+    """
+    try:
+        stories = connection.run_tapir("GetStories", {})
+    except ArchicadError:
+        return None
+    rows = stories.get("stories") if isinstance(stories, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return None
+    best = min(
+        (row for row in rows if isinstance(row, dict) and "level" in row),
+        key=lambda row: abs(float(row["level"]) - level_m),
+        default=None,
+    )
+    return int(best["index"]) if best is not None and "index" in best else None
+
+
 def report_area_bands(
     connection: ArchicadConnection,
     result: PipelineResult,
@@ -528,6 +943,7 @@ def report_area_bands(
     csv_out: Path | None = None,
     sheets: bool = False,
     master_layout: str | None = None,
+    also_hide: Sequence[str] = (),
     storeys: Sequence[int] = (),
     zoom: tuple[float, float, float, float] | None = None,
     folder: str = "",
@@ -688,6 +1104,7 @@ def report_area_bands(
             # 1:200.
             scale=300.0,
             folder=folder,
+            also_hide=also_hide,
         )
     return problem
 
@@ -713,10 +1130,17 @@ def _band_mask(minutes: Any, lower: float, upper: float | None) -> Any:
 
     upper is None on the open-ended top band, which is the one that has to
     catch everything above its floor rather than nothing.
+
+    The no-sun band is recognised by an upper bound at or below the zero
+    tolerance, not by an exact zero. ``band_by_area`` describes that band with
+    an upper bound of 0 and ``BandStyle`` describes it with 1e-9, and reading
+    only the first spelling silently produces an empty band: on the reference
+    facade that hid 5,885 m2 of wall that never sees the sun -- the majority
+    of the elevation -- while every other band looked right.
     """
-    if upper is not None and upper <= 0.0:
-        return minutes <= 1e-9
-    above = (minutes > 1e-9) & (minutes >= lower)
+    if upper is not None and upper <= ZERO_TOLERANCE_MINUTES:
+        return minutes <= ZERO_TOLERANCE_MINUTES
+    above = (minutes > ZERO_TOLERANCE_MINUTES) & (minutes >= lower)
     return above if upper is None else above & (minutes < upper)
 
 
@@ -822,6 +1246,7 @@ def report_penetration(
     sheets: bool,
     master_layout: str | None,
     folder: str = "",
+    also_hide: Sequence[str] = (),
 ) -> bool:
     """Draw the study diagram on the floor plan. True if anything is wrong."""
     series = result.instants
@@ -892,6 +1317,7 @@ def report_penetration(
                 instant.label: instant_key(result, clock.index(instant.label), instant.label)
                 for instant in chosen
             },
+            also_hide=also_hide,
             titles={
                 instant.label: (
                     f"Direct sun on the floor at {instant.label}, {result.assessment_date:%d %B}"
@@ -941,6 +1367,7 @@ def _sheet_per_instant(
     tables: dict[str, Sequence[TableRow]] | None = None,
     titles: dict[str, str] | None = None,
     folder: str = "",
+    also_hide: Sequence[str] = (),
 ) -> None:
     """A layer combination, a set of views and a Layout for each instant.
 
@@ -962,6 +1389,12 @@ def _sheet_per_instant(
     # about it: a combination that names only its own group leaves the rest
     # showing, which put the 2-hour and banded plans on top of the 09:00 sheet.
     mine_all = set(tool_layers(connection, layer_prefix)) | set(every)
+    # Plus whatever the run asked to be switched off -- the project's own
+    # annotation layers, which are not this tool's to own but do clutter a
+    # study drawing. Named per run rather than guessed at: what counts as
+    # noise on a sun study is a decision about the drawing, not about the
+    # layer's name.
+    extra_hidden = sorted(set(also_hide))
     # A fresh, numbered folder each run: neither a view nor a folder can be
     # deleted through the API, so reusing one would mix this run's views with
     # the last run's inside it.
@@ -982,7 +1415,7 @@ def _sheet_per_instant(
                 connection,
                 f"{VIEW_PREFIX} Sun Study {label}",
                 show=[mine],
-                hide=sorted(mine_all - {mine}),
+                hide=[*sorted(mine_all - {mine}), *extra_hidden],
             )
             views = views_for_storeys(
                 connection,
@@ -1307,6 +1740,130 @@ def massing(
     ground_margin: Annotated[
         float, typer.Option("--ground-margin", help="Metres of ground to grid beyond the subject.")
     ] = 10.0,
+    exclude_above: Annotated[
+        float | None,
+        typer.Option(
+            "--exclude-above",
+            help=(
+                "Drop geometry lying entirely above this height, in project "
+                "metres. A massing study measures area, so parked hotlink "
+                "masters join the denominator rather than merely shading it."
+            ),
+        ),
+    ] = None,
+    ground_level: Annotated[
+        float | None,
+        typer.Option(
+            "--ground-level",
+            help=(
+                "Height of the ground plane to assess, in project metres. "
+                "Defaults to the lowest point of the subject, which on a "
+                "developed model is a basement slab -- a ground plane under "
+                "the building, in shadow all day by construction."
+            ),
+        ),
+    ] = None,
+    subject_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--subject-layer",
+            help=(
+                "Archicad layer whose elements are the scheme being measured. "
+                "Repeatable. Everything else still shades but is not counted. "
+                "Without it, facade area on a developed model is every "
+                "internal partition and balustrade as well as the envelope."
+            ),
+        ),
+    ] = None,
+    model_bands: Annotated[
+        bool,
+        typer.Option(
+            "--model-bands",
+            help=(
+                "Colour the model in Archicad: a thin skin of real 3D "
+                "elements over the facade, one colour per band. Needs "
+                "Archicad open on the same project the IFC came from."
+            ),
+        ),
+    ] = False,
+    model_grid: Annotated[
+        float,
+        typer.Option(
+            "--model-grid",
+            help=(
+                "Cell size of the facade skin in metres. Finer looks better "
+                "and makes more elements; a face narrower than one cell is "
+                "not drawn."
+            ),
+        ),
+    ] = 0.5,
+    model_layer: Annotated[
+        str, typer.Option("--model-layer", help="Layer the facade skin is drawn on.")
+    ] = "Sun Study Facade",
+    model_flat: Annotated[
+        bool,
+        typer.Option(
+            "--model-flat/--no-model-flat",
+            help=(
+                "Colour horizontal faces too -- balcony decks, terraces and "
+                "soffits. They take more sun than any wall, so leaving them "
+                "out shows the least-lit half of the building. Needs the slab "
+                "layers naming with --subject-layer."
+            ),
+        ),
+    ] = True,
+    model_views: Annotated[
+        bool,
+        typer.Option(
+            "--model-views",
+            help=(
+                "Make views of the coloured model -- the 3D window and a 3D "
+                "Document -- and put them on a layout. A 3D Document cannot be "
+                "created through the API, so one the project already has is "
+                "used; name it with --model-document."
+            ),
+        ),
+    ] = False,
+    model_document: Annotated[
+        str | None,
+        typer.Option(
+            "--model-document",
+            help="Which existing 3D Document to make a view of, by name.",
+        ),
+    ] = None,
+    model_scale: Annotated[
+        float, typer.Option("--model-scale", help="Scale of the model views on the sheet.")
+    ] = DEFAULT_LAYOUT_SCALE,
+    model_favorite: Annotated[
+        str | None,
+        typer.Option(
+            "--model-favorite",
+            help=(
+                "Wall favourite to take the skin's settings from. Needed for "
+                "one setting no command can reach: a wall shows its building "
+                "material's colour only when its surface override is off, and "
+                "the Wall tool's default may have it on -- in which case every "
+                "band renders the same colour. Make one wall with the override "
+                "off, save it as a favourite, and name it here."
+            ),
+        ),
+    ] = None,
+    hide_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--hide-layer",
+            help=(
+                "Layer to switch off in this tool's layer combinations. "
+                "Repeatable. For the annotation layers that clutter a study "
+                "drawing without adding to it."
+            ),
+        ),
+    ] = None,
+    port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    pen: Annotated[
+        list[str] | None,
+        typer.Option("--pen", help="Override one band's pen, as 'label=index'. Repeatable."),
+    ] = None,
     csv_out: Annotated[
         Path | None, typer.Option("--csv", help="Write the band tables as CSV.")
     ] = None,
@@ -1329,6 +1886,9 @@ def massing(
         facade_spacing_m=facade_grid,
         ground_spacing_m=ground_grid,
         ground_margin_m=ground_margin,
+        exclude_above_m=exclude_above,
+        subject_layers=tuple(subject_layer or ()),
+        ground_level_m=ground_level,
     )
 
     try:
@@ -1363,6 +1923,34 @@ def massing(
 
     typer.echo("")
     typer.secho(result.summary(), fg=typer.colors.GREEN, bold=True)
+
+    if model_bands:
+        typer.echo("")
+        connection = _connect(port)
+        if report_model_bands(
+            connection,
+            result,
+            config=config,
+            spacing_m=model_grid,
+            layer_name=model_layer,
+            pens=pen,
+            flat_faces=model_flat,
+            favorite=model_favorite,
+        ):
+            raise typer.Exit(code=1)
+
+    if model_views:
+        typer.echo("")
+        connection = _connect(port)
+        if report_model_views(
+            connection,
+            layer_prefix="Sun Study",
+            skin_layer=model_layer,
+            document_name=model_document,
+            scale=model_scale,
+            also_hide=tuple(hide_layer or ()),
+        ):
+            raise typer.Exit(code=1)
 
     if csv_out or json_out:
         header = build_massing_header(
@@ -1455,6 +2043,54 @@ def _the_only_archicad(tried: int) -> ArchicadConnection | None:
     except ArchicadError:
         return None
     return connection
+
+
+def _warn_if_zone_layers_hidden(
+    connection: ArchicadConnection, wanted: Sequence[str], *, role: str = "zone layers"
+) -> None:
+    """Stop before the export when a layer the study needs is switched off.
+
+    The translator exports what the current layer combination shows. Zones on
+    a hidden layer are therefore not in the file, and the run fails several
+    minutes and one large export later saying that the apartment zone layers
+    matched nothing -- true, but it names the export's layers rather than the
+    project's, so the cause is not in the message. On the reference project
+    all four ``06 | Zone.*`` layers were hidden by a site-plan combination and
+    the export carried 386 walls, 92 windows and no ``IfcSpace`` at all.
+
+    Nothing here can fix it: Tapir 1.5.7 has no command that changes layer
+    visibility or activates a layer combination, so this asks for a hand in
+    Archicad rather than reaching for one.
+    """
+    # One layer commonly carries both the dwellings and the balconies, so the
+    # two options name it twice and it would be reported twice.
+    unique = list(dict.fromkeys(wanted))
+    if not unique:
+        return
+    try:
+        hidden = hidden_layers(connection, unique)
+    except ArchicadError:
+        return  # a diagnosis is not worth failing a run over
+    if not hidden:
+        return
+
+    listed = ", ".join(repr(name) for name in hidden)
+    typer.secho(
+        f"  {len(hidden)} of the {role} this run needs are hidden in "
+        f"Archicad right now: {listed}",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    typer.secho(
+        "  The IFC translator exports what the current layer combination "
+        "shows, so those zones would not be in the export and the run would "
+        "report no apartments. Switch to a layer combination that shows them "
+        "-- or unhide them in Layer Settings -- and run again. Nothing in the "
+        "add-on can do it from here.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+    raise typer.Exit(code=2)
 
 
 @app.command("archicad-ports")
@@ -2686,6 +3322,18 @@ def archicad_run(
             ),
         ),
     ] = None,
+    plan_ground: Annotated[
+        float | None,
+        typer.Option(
+            "--plan-ground",
+            help=(
+                "Assess and draw the open ground at this height, in project "
+                "metres -- solar access to the public domain and communal "
+                "open space. Building footprints are removed, so what is "
+                "banded is ground somebody can stand on."
+            ),
+        ),
+    ] = None,
     plan_bands: Annotated[
         bool,
         typer.Option(
@@ -2722,6 +3370,33 @@ def archicad_run(
                 "Master layout to build the sheet on. Archicad refuses to make "
                 "a Layout without one. Defaults to a master whose name states "
                 "the drawing scale, and the run says which it used."
+            ),
+        ),
+    ] = None,
+    require_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--require-layer",
+            help=(
+                "Stop unless this layer is visible when the export runs. "
+                "Repeatable. The translator exports what is shown, so a layer "
+                "that switches off silently changes the answer without "
+                "changing the shape of the output. Name the ones the study "
+                "depends on -- the neighbouring context above all -- and a "
+                "reverted layer combination becomes an error rather than an "
+                "optimistic result."
+            ),
+        ),
+    ] = None,
+    hide_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--hide-layer",
+            help=(
+                "Layer to switch off in this tool's layer combinations, and so "
+                "on the sheets it makes. Repeatable. For the project's own "
+                "annotation layers, which clutter a study drawing without "
+                "adding to it."
             ),
         ),
     ] = None,
@@ -2796,6 +3471,14 @@ def archicad_run(
         destination = ifc_out or Path(scratch) / "archicad-export.ifc"
         try:
             location = read_geo_location(connection)
+            _warn_if_zone_layers_hidden(
+                connection, [*(apartment_zone_layer or []), *(open_space_zone_layer or [])]
+            )
+            # Separately, because a missing context layer is not a missing
+            # apartment: the run would succeed and simply overstate the sun.
+            _warn_if_zone_layers_hidden(
+                connection, require_layer or [], role="layers named by --require-layer"
+            )
             typer.echo(f"  exporting IFC to {destination} ...")
             cleared = clear_selection(connection)
             if cleared:
@@ -2852,7 +3535,7 @@ def archicad_run(
         report_assessment(result, timezone=timezone, area=area, csv_out=csv_out, json_out=json_out)
 
         partial = False
-        if write or draw or plan_instant or plan_bands or plan_hours:
+        if write or draw or plan_instant or plan_bands or plan_hours or plan_ground is not None:
             # One join, shared. Two independent ones would agree almost always,
             # and the time they did not would be a diagram whose colours
             # belonged to the neighbouring apartments.
@@ -2954,6 +3637,21 @@ def archicad_run(
                     sheets=sheet,
                     master_layout=master_layout,
                     folder=view_folder,
+                    also_hide=tuple(hide_layer or ()),
+                )
+                or partial
+            )
+
+        if plan_ground is not None:
+            typer.echo("")
+            partial = (
+                report_ground(
+                    connection,
+                    result,
+                    level_m=plan_ground,
+                    match=match,
+                    layer_prefix=layer,
+                    spacing_m=patch_grid or DEFAULT_PATCH_GRID_M,
                 )
                 or partial
             )
@@ -2972,6 +3670,7 @@ def archicad_run(
                     sheets=sheet,
                     master_layout=master_layout,
                     folder=view_folder,
+                    also_hide=tuple(hide_layer or ()),
                     storeys=sorted(
                         {
                             zone.storey_index

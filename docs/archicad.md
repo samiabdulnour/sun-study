@@ -88,6 +88,14 @@ column is the add-on version the command first appeared in.
 | `GetIFCIdsOfElements` | 1.5.1 | Tapir | The same join, inverted, for diagnostics |
 | `IFCFileOperation` | 1.2.6 | Tapir | Exporting the model to analyse |
 | `GetAllProperties` | 1.1.3 | Tapir | Resolving property names to identifiers |
+| `CreateSurfaces` | 1.2.2 | Tapir | One Surface per band, in the reference colours |
+| `CreateBuildingMaterials` | 1.0.1 | Tapir | Carries a band's Surface to a wall, via `cutSurfaceIndex` |
+| `CreateWalls` | 1.4.0 | Tapir | The facade skin: one thin wall per merged rectangle |
+| `CreateViewsInViewMap` | 1.1.7 | Tapir | Views of the 3D window and of a 3D Document |
+| `GetNavigatorItemTree` | 1.1.7 | Tapir | Finding the 3D window and the project's 3D Documents |
+| `SetDetailsOfElements` | 1.0.7 | Tapir | Moving new walls onto the tool's own layer |
+| `GetAttributesByType` | 1.0.7 | Tapir | Surface and layer indices, which creation does not return |
+| `GetLayers` | 1.0.7 | Tapir | Whether a layer is hidden — the difference between a change and a no-op |
 | `CreatePropertyGroups` | 1.0.7 | Tapir | `sun-study init-properties` |
 | `CreatePropertyDefinitions` | 1.0.9 | Tapir | `sun-study init-properties` |
 | `SetPropertyValuesOfElements` | 1.0.6 | Tapir | Writing the results |
@@ -429,6 +437,11 @@ machine-checked against a fake transport:
 | Property group create and lookup | works, **once definitions carry a `defaultValue`** |
 | Property **value** writes | **partly blocked**: on one project 2 of 8 zones took every value and 6 refused every value; on another the refusing zones were traced to the locked layer `10 \| Calc.GFA` |
 | `GetDetailsOfElements` layer index, `GetHotlinks` — why a write was refused | **works**: named a locked layer as the cause |
+| `SetDetailsOfElements` with a surface, on a Wall | **refused**: a wall has no settable surface. Only Objects report one at all |
+| `CreateMorphs`, box and explicit body | **refused** on Archicad 26: `Failed to create morph` for every shape tried |
+| `CreateSlabs` / `CreateMeshes` / `CreateRoofs` with a material | **refused**: no `buildingMaterialId` field. Only `CreateWalls` has one |
+| Creating a 3D Document | **not offered**: no command exists. A View of an existing one can be made |
+| `CreateWalls` with a `layerIndex` | **refused**: schema has no such field. New walls land on the tool's default layer |
 | Layer create and lookup, element delete | works |
 | `CreateHatches`, `CreateTexts` — fills and legend | **works**: 8 fills and a 7-item legend, replacing the previous run's 15 |
 | `GetElementsByIFCIds` — the results-to-Zones join | **works, once both spellings are offered**: 0 of 15 matched on the export's own GlobalIds, 15 of 15 on the expanded GUIDs |
@@ -538,6 +551,7 @@ the translator you export with, under `File ▸ Interoperability ▸ IFC ▸ IFC
 | Setting | Needed | Why |
 |---|---|---|
 | Zones in the export filter | **Yes** | Zones become `IfcSpace`. Without them there are no apartments at all, and `run` reports zero. |
+| The active layer combination | **shows the zone layers** | The translator exports what the combination *shows*, so a hidden `06 \| Zone.*` layer is an export filter in its own right — the reference project produced 386 walls, 92 windows and no `IfcSpace` from a site-plan combination. `archicad-run` now checks this before exporting ([D52](decisions.md)). Nothing in the add-on can switch it; it is a hand in Archicad. |
 | IFC Space boundaries | **On** | `IfcRelSpaceBoundary` maps each window to the room it serves. Without it the tool falls back to geometric containment, which is a guess. |
 | Project Location set to the real site | **Yes** | Archicad ships a city preset; exact arcminute coordinates such as `(-33,-52,0,0)` are the tell that nobody set it. |
 | IFC Model position | either | Both Survey Point and Project Origin work — see the north section above. |

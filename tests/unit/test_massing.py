@@ -446,3 +446,42 @@ def test_triangle_samples_rejects_a_parent_id_mismatch() -> None:
     mesh = TriangleMesh.concatenate([box((0, 0, 0), (1, 1, 1))])
     with pytest.raises(ValueError, match="parent ids"):
         triangle_samples(mesh.triangles(), ["only-one"], spacing_m=1.0)
+
+
+def test_the_drawing_and_the_measurement_see_the_same_elements() -> None:
+    """The height cut has to apply to both, or the picture is of something else.
+
+    ``massing_subject`` is what the facade drawing grids and what
+    ``build_massing_scene`` measures. When the cut lived in the caller instead
+    of here, the drawing path forgot it and coloured three sets of parked
+    hotlink masters floating above the site -- fully sunlit at every hour, so
+    the diagram gained facade area and the top band quadrupled.
+    """
+    from sun_study.ingest.scene import massing_subject
+
+    model = read_ifc(SAMPLE)
+    tall = max(
+        float(element.mesh.vertices[:, 2].max())
+        for element in model.occluders()
+        if len(element.mesh.vertices)
+    )
+    config = MassingConfig(timezone="Australia/Sydney", exclude_above_m=tall / 2.0)
+
+    reduced = massing_subject(model, config)
+    scene = build_massing_scene(model, config)
+
+    assert reduced.elements_above_cut == scene.provenance["elements_above_cut"]
+    assert len(reduced.solids) == len(reduced.subject) + len(reduced.context)
+    # Nothing that survived the cut lies wholly above it.
+    for element in reduced.solids:
+        assert float(element.mesh.vertices[:, 2].min()) <= config.exclude_above_m
+
+
+def test_the_reduction_does_not_cut_when_no_height_is_given() -> None:
+    from sun_study.ingest.scene import massing_subject
+
+    model = read_ifc(SAMPLE)
+    reduced = massing_subject(model, MassingConfig(timezone="Australia/Sydney"))
+
+    assert reduced.elements_above_cut == 0
+    assert len(reduced.solids) == len(model.occluders())

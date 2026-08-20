@@ -389,6 +389,16 @@ def layout_from_views(
     else:
         positions = [(x / MM_PER_M, y / MM_PER_M) for x, y in sheet.grid(len(views))]
 
+    # Only what is not already on the sheet. A Drawing made from a 3D view or
+    # a 3D Document is created at a placeholder extent -- 59 mm square on this
+    # project -- and takes its true size only when Archicad regenerates it,
+    # which happens when somebody opens the layout. ``UpdateDrawings`` would
+    # force it and needs Archicad 27. So deleting and re-placing on every run
+    # would reset every drawing to the placeholder and the tiling could never
+    # use a real size; leaving them alone lets a second run arrange them
+    # properly once they have settled. Plan drawings do not have this
+    # problem and are unaffected either way.
+    already = _drawings_by_name(connection, layout)
     drawings = [
         {
             "navigatorItemId": {"guid": identifier},
@@ -401,13 +411,15 @@ def layout_from_views(
             "scale": DRAWING_MAGNIFICATION,
         }
         for (identifier, name), (x, y) in zip(views, positions, strict=True)
+        if name not in already
     ]
-    placed = connection.run_tapir("CreateDrawings", {"drawingsData": drawings})
-    _check_each(placed, "elements", "CreateDrawings")
+    if drawings:
+        placed = connection.run_tapir("CreateDrawings", {"drawingsData": drawings})
+        _check_each(placed, "elements", "CreateDrawings")
 
     return LayoutReport(
         layout_name=layout_name,
-        drawings_placed=len(drawings),
+        drawings_placed=len(drawings) + len(already),
         storeys=(),
         scale=scale,
         missing_storeys=(),
@@ -587,6 +599,17 @@ def _clone_to_view_map(connection: ArchicadConnection, items: Sequence[Navigator
 
 
 def _create_layout(connection: ArchicadConnection, name: str, master: NavigatorItem) -> str:
+    """The layout of this name, reusing one that already exists.
+
+    Reuse rather than create, because ``CreateLayout`` will happily make a
+    second sheet with the same name and the Layout Book then carries two of
+    everything -- one current, one from the last run, indistinguishable in the
+    navigator.
+    """
+    existing = _layout_named(connection, name)
+    if existing is not None:
+        return existing
+
     response = connection.run_tapir(
         "CreateLayout",
         {
@@ -604,6 +627,67 @@ def _create_layout(connection: ArchicadConnection, name: str, master: NavigatorI
     if not identifier:
         raise ArchicadError(f"CreateLayout returned no database id: {response!r}")
     return str(identifier)
+
+
+def _layout_named(connection: ArchicadConnection, name: str) -> str | None:
+    """The database of an existing Layout with this name, if there is one."""
+    try:
+        response = connection.run_tapir(
+            "GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"}
+        )
+    except ArchicadError:
+        return None
+    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
+    if not isinstance(root, dict):
+        return None
+
+    found: list[dict[str, Any]] = []
+
+    def walk(node: dict[str, Any]) -> None:
+        if str(node.get("name", "")) == name and str(node.get("type", "")) == "LayoutItem":
+            found.append(node)
+        for wrapper in node.get("children") or []:
+            child = (wrapper or {}).get("navigatorItem") if isinstance(wrapper, dict) else None
+            walk(child if isinstance(child, dict) else wrapper)
+
+    walk(root.get("rootItem", root))
+    if not found:
+        return None
+    try:
+        answer = connection.run_tapir(
+            "GetDatabaseIdFromNavigatorItemId",
+            {"navigatorItemIds": [{"navigatorItemId": found[0]["navigatorItemId"]}]},
+        )
+    except ArchicadError:
+        return None
+    databases = answer.get("databases") if isinstance(answer, dict) else None
+    if not isinstance(databases, list) or not databases:
+        return None
+    identifier = (databases[0].get("databaseId") or {}).get("guid")
+    return str(identifier) if identifier else None
+
+
+def _drawings_by_name(connection: ArchicadConnection, database_id: str) -> dict[str, Any]:
+    """The Drawings already on a sheet, keyed by the name they were given."""
+    connection.run_tapir(
+        "ChangeWindow", {"databaseId": {"guid": database_id}, "windowType": "Layout"}
+    )
+    found = connection.run_tapir("GetElementsByType", {"elementType": "Drawing"})
+    elements = found.get("elements") if isinstance(found, dict) else None
+    if not isinstance(elements, list) or not elements:
+        return {}
+    try:
+        response = connection.run_tapir("GetDetailsOfElements", {"elements": elements})
+    except ArchicadError:
+        return {}
+    rows = response.get("detailsOfElements") if isinstance(response, dict) else None
+    if not isinstance(rows, list) or len(rows) != len(elements):
+        return {}
+    return {
+        str(((row or {}).get("details") or {}).get("customName", "")): element
+        for element, row in zip(elements, rows, strict=True)
+        if ((row or {}).get("details") or {}).get("customName")
+    }
 
 
 def _check_each(response: Any, key: str, command: str) -> list[dict[str, Any]]:

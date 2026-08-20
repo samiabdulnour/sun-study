@@ -47,6 +47,7 @@ from sun_study.archicad.draw import (
     Pen,
     band_for,
     draw_assessment,
+    hidden_layers,
     indistinguishable_bands,
     match_pens,
     pen_table,
@@ -1163,6 +1164,36 @@ def _access_responses(**overrides: Any) -> dict[str, Any]:
     }
     responses.update(overrides)
     return responses
+
+
+def test_a_hidden_zone_layer_is_reported_before_the_export() -> None:
+    """The failure this exists to catch, seen on the reference project.
+
+    The translator exports what the layer combination shows, so zones on a
+    hidden layer are simply not in the file. Downstream that reads as
+    "apartment zone layers matched nothing" against a list of the layers that
+    *did* export, which never contains the one at fault.
+    """
+    connection, _ = connect(
+        _access_responses(GetLayers={"layers": [{"index": 4, "isHidden": True}]})
+    )
+
+    assert hidden_layers(connection, ["06 | Zone.Apartment"]) == ["06 | Zone.Apartment"]
+
+
+def test_a_visible_layer_is_not_reported() -> None:
+    connection, _ = connect(_access_responses())
+
+    assert hidden_layers(connection, ["06 | Zone.Apartment"]) == []
+
+
+def test_a_layer_name_archicad_does_not_know_is_left_to_the_export() -> None:
+    """A typo is not a visibility problem, and guessing at one here would send
+    the reader to Layer Settings for a name that is not in them. The scene
+    already reports it against the export, where the real names are."""
+    connection, _ = connect(_access_responses())
+
+    assert hidden_layers(connection, ["06|Zone.Apartment"]) == []
 
 
 def test_a_locked_layer_is_named_as_the_whole_cause() -> None:

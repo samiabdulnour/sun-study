@@ -49,6 +49,7 @@ __all__ = [
     "clear_layer",
     "draw_assessment",
     "ensure_layer",
+    "hidden_layers",
     "indistinguishable_bands",
     "match_pens",
     "pen_table",
@@ -466,6 +467,29 @@ def ensure_layer(connection: ArchicadConnection, name: str) -> LayerState:
             f"cannot continue without a layer index to place fills on."
         )
     return created
+
+
+def hidden_layers(connection: ArchicadConnection, names: Sequence[str]) -> list[str]:
+    """Which of ``names`` are switched off in the project right now.
+
+    The IFC translator exports what the current layer combination *shows*, so
+    a hidden layer is simply absent from the export. That failure arrives far
+    downstream and in the wrong words: the zones never reach the model, and
+    the scene reports "apartment zone layers matched nothing", listing the
+    layers that did export -- none of which is the one at fault. The reader is
+    left comparing two lists to notice an absence.
+
+    Asking Archicad first turns that into a sentence. A name this does not
+    recognise is not reported here; that is a typo, and ``_require_matches``
+    already says so against the export, where the available names are.
+    """
+    if not names:
+        return []
+    return [
+        name
+        for name in names
+        if (state := _find_layer(connection, name)) is not None and state.hidden
+    ]
 
 
 def _find_layer(connection: ArchicadConnection, name: str) -> LayerState | None:

@@ -1200,6 +1200,30 @@ class MassingConfig:
 
     timezone: str
 
+    exclude_above_m: float | None = None
+    """Drop every element lying entirely above this height, in project metres.
+
+    The same knob the apartment study has, and needed here for a stronger
+    reason: a massing study measures *area*, so parked hotlink masters do not
+    merely shade the result, they join the denominator. On the reference
+    project, with three sets of masters overhead, the facade came to
+    1,057,039 m2 and the ground to 25 hectares -- both off by more than an
+    order of magnitude, and both perfectly plausible-looking percentages.
+    See [D30](../../docs/decisions.md).
+    """
+
+    subject_layers: tuple[str, ...] = ()
+    """Only elements on these Archicad layers are the scheme being measured.
+
+    Empty means "everything that is not context", which is right for a massing
+    model -- a mass, its podium and a few context blocks -- and badly wrong for
+    a developed one. Facade area is the area of *upright faces of the subject*,
+    and in a detailed model that is every internal partition, every joinery
+    panel and every balustrade: on the reference project it came to 1,049,714
+    m2, of which the actual external wall is a small fraction. Naming the
+    external wall layers is what makes the denominator mean "facade".
+    """
+
     context_name_prefixes: tuple[str, ...] = ("Context",)
     """Elements whose name starts with one of these are occluders only.
 
@@ -1251,11 +1275,17 @@ class MassingConfig:
             f"ground grid {self.ground_spacing_m:g} m | "
             f"surface offset {self.surface_offset_m * 1000:.0f} mm | "
             f"facade = faces within {self.vertical_tolerance_deg:g} deg of vertical | "
-            f"context prefixes {list(self.context_name_prefixes)}"
+            + (f"subject layers {list(self.subject_layers)} | " if self.subject_layers else "")
+            + f"context prefixes {list(self.context_name_prefixes)}"
             + (f" or layers {list(self.context_layers)}" if self.context_layers else "")
             + " | "
             f"ground level {ground}, margin {self.ground_margin_m:g} m | "
-            f"vegetation excluded"
+            + (
+                f"geometry above {self.exclude_above_m:g} m dropped | "
+                if self.exclude_above_m is not None
+                else ""
+            )
+            + "vegetation excluded"
         )
 
 
@@ -1283,9 +1313,56 @@ class MassingScene:
 
 
 def _is_context(element: IfcElement, config: MassingConfig) -> bool:
-    return _on_layer(element, config.context_layers) or any(
+    """Whether an element shades the study without being measured by it.
+
+    Named context first, then -- when the subject has been named explicitly --
+    everything that is not it. The second rule is what keeps a developed
+    model's partitions and joinery out of a facade figure.
+    """
+    if _on_layer(element, config.context_layers):
+        return True
+    if any(
         element.name.casefold().startswith(prefix.casefold())
         for prefix in config.context_name_prefixes
+    ):
+        return True
+    return bool(config.subject_layers) and not _on_layer(element, config.subject_layers)
+
+
+@dataclass(frozen=True)
+class MassingSubject:
+    """A model reduced to what a massing study is about."""
+
+    model: IfcModel
+    """The model with everything above the cut removed."""
+    elements_above_cut: int
+    solids: list[IfcElement]
+    subject: list[IfcElement]
+    context: list[IfcElement]
+
+
+def massing_subject(model: IfcModel, config: MassingConfig) -> MassingSubject:
+    """Reduce a model to the scheme, its context, and what shades them.
+
+    Public because the drawing side needs exactly the same reduction as the
+    measuring side, and doing it in two places is how they come apart. The
+    height cut belongs *inside* here for that reason: the first version left
+    it to the caller and the caller that drew the facade forgot it, so the
+    picture included three sets of parked hotlink masters floating above the
+    site. They are fully sunlit at every hour, so the diagram gained 1,315 m2
+    of facade and the top band went from 1.0% to 4.2% -- a plausible-looking
+    number describing geometry nobody is proposing to build.
+    """
+    model, cut_above = _cut_above(model, config.exclude_above_m)
+    # IfcSpace is a void, never a solid; it would shade the building from
+    # inside. Everything else occludes, subject and context alike.
+    solids = model.occluders()
+    return MassingSubject(
+        model=model,
+        elements_above_cut=cut_above,
+        solids=solids,
+        subject=[element for element in solids if not _is_context(element, config)],
+        context=[element for element in solids if _is_context(element, config)],
     )
 
 
@@ -1297,12 +1374,9 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
     measuring.
     """
     orientation = model.orientation(config.timezone)
-
-    # IfcSpace is a void, never a solid; it would shade the building from
-    # inside. Everything else occludes, subject and context alike.
-    solids = model.occluders()
-    subject = [element for element in solids if not _is_context(element, config)]
-    context = [element for element in solids if _is_context(element, config)]
+    reduced = massing_subject(model, config)
+    model, cut_above = reduced.model, reduced.elements_above_cut
+    solids, subject, context = reduced.solids, reduced.subject, reduced.context
 
     occluders = TriangleMesh.concatenate([element.mesh for element in solids])
 
@@ -1323,7 +1397,7 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
     ]
     facade = SamplePoints.concatenate([group for group in facade_groups if len(group)])
 
-    ground = _ground_grid(subject, occluders, config)
+    ground = open_ground_grid(subject, occluders, config)
 
     provenance: dict[str, object] = {
         "mode": "massing",
@@ -1333,6 +1407,7 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
         "true_north_bearing_deg": orientation.normalised_bearing_deg,
         "subject_elements": len(subject),
         "context_elements": len(context),
+        "elements_above_cut": cut_above,
         "occluder_triangles": occluders.triangle_count,
         "facade_samples": len(facade),
         "facade_area_m2": round(facade.total_area_m2, 3),
@@ -1352,7 +1427,7 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
     )
 
 
-def _ground_grid(
+def open_ground_grid(
     subject: list[IfcElement], occluders: TriangleMesh, config: MassingConfig
 ) -> SamplePoints:
     """An open-ground grid around the subject, with building footprints removed.

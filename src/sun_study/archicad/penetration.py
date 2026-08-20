@@ -37,7 +37,7 @@ warning.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -65,6 +65,7 @@ __all__ = [
     "CellGroup",
     "PenetrationReport",
     "PlanInstant",
+    "box_centre",
     "draw_cell_groups",
     "draw_penetration",
     "fit_to_plan",
@@ -163,7 +164,7 @@ class PenetrationReport:
         return "\n".join(lines)
 
 
-def _box_centre(points: FloatArray) -> list[float]:
+def box_centre(points: FloatArray) -> list[float]:
     """The centre of a plan bounding box.
 
     Used on both sides of the fit rather than a mean of vertices or of cells.
@@ -205,8 +206,8 @@ def fit_to_plan(
         extent = export_extents.get(apartment)
         if not zone.outline or extent is None or not len(extent):
             continue
-        source.append(_box_centre(extent))
-        target.append(_box_centre(np.array(zone.outline, dtype=np.float64)))
+        source.append(box_centre(extent))
+        target.append(box_centre(np.array(zone.outline, dtype=np.float64)))
 
     if len(source) < 2:
         raise ArchicadError(
@@ -334,8 +335,13 @@ def draw_cell_groups(
     layer_name: str,
     title: str = "",
     caption_height_mm: float = 2.5,
+    on_storey: int | None = None,
 ) -> PenetrationReport:
     """Draw floor cells grouped by band, one colour each, plus a legend.
+
+    ``on_storey`` draws every cell on one storey instead of grouping them by
+    apartment. That is what open ground needs: it belongs to no dwelling, and
+    the storey it appears on is the one whose level it sits at.
 
     This is the whole-day picture -- how long the sun was on each piece of
     floor, banded -- where ``draw_penetration`` draws one instant. Both put
@@ -366,7 +372,18 @@ def draw_cell_groups(
 
     fills: list[dict[str, Any]] = []
     storeys: set[int] = set()
-    for group in groups:
+    if on_storey is not None:
+        anywhere = next(iter(matched.values()), None)
+        for group in groups:
+            here = positions[np.asarray(group.mask, dtype=bool)]
+            if not len(here) or anywhere is None:
+                continue
+            flat = replace(anywhere, storey_index=on_storey)
+            for shape in _contours(here, np.ones(len(here), dtype=bool), spacing_m):
+                fills.append(_patch_fill(shape, transform, group.style, layer, flat))
+            storeys.add(on_storey)
+
+    for group in groups if on_storey is None else ():
         for apartment, zone in matched.items():
             mine = np.array([parent == apartment for parent in parent_ids]) & np.asarray(
                 group.mask, dtype=bool

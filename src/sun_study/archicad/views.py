@@ -32,7 +32,15 @@ from typing import Any
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.layout import NavigatorItem, _walk
 
-__all__ = ["VIEW_PREFIX", "StoreyView", "ensure_layer_combination", "views_for_storeys"]
+__all__ = [
+    "VIEW_PREFIX",
+    "ModelSource",
+    "StoreyView",
+    "ensure_layer_combination",
+    "three_d_sources",
+    "views_for_sources",
+    "views_for_storeys",
+]
 
 #: On every view, layout and layer combination this tool makes. A project
 #: carries hundreds of navigator items and the ones a study adds have to be
@@ -421,3 +429,123 @@ def _check(response: Any, command: str) -> list[dict[str, Any]]:
                     )
             return [entry for entry in items if isinstance(entry, dict)]
     return []
+
+
+@dataclass(frozen=True)
+class ModelSource:
+    """A Project Map item worth making a view of: the 3D window, or a document."""
+
+    identifier: str
+    name: str
+    kind: str
+    """The navigator item's own type, e.g. ``AxonometryItem``."""
+
+
+def three_d_sources(connection: ArchicadConnection) -> list[ModelSource]:
+    """The project's 3D windows and 3D Documents, from the Project Map.
+
+    Both are worth offering and they are not the same thing. The 3D window is
+    live: it shows the model as it is now, from any angle, and a view of it
+    inherits nothing but what is pinned to it. A 3D Document is a *drawing*
+    made from a 3D view, with its own pen and fill overrides and its own
+    dimensions, which is what an office puts on a sheet.
+
+    A 3D Document cannot be created through this add-on -- there is no command
+    for it -- so what is offered here is the ones the project already has.
+    """
+    try:
+        response = connection.run_tapir(
+            "GetNavigatorItemTree", {"navigatorMapId": "ProjectMap"}
+        )
+    except ArchicadError:
+        return []
+    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
+    if not isinstance(root, dict):
+        return []
+
+    wanted = {"PerspectiveItem", "AxonometryItem", "DocumentFrom3DItem"}
+    found: list[ModelSource] = []
+
+    def walk(node: dict[str, Any]) -> None:
+        kind = str(node.get("type", ""))
+        identifier = str((node.get("navigatorItemId") or {}).get("guid", ""))
+        if kind in wanted and identifier:
+            found.append(ModelSource(identifier, str(node.get("name", "")), kind))
+        for wrapper in node.get("children") or []:
+            child = (wrapper or {}).get("navigatorItem") if isinstance(wrapper, dict) else None
+            walk(child if isinstance(child, dict) else wrapper)
+
+    walk(root.get("rootItem", root))
+    return found
+
+
+def views_for_sources(
+    connection: ArchicadConnection,
+    sources: Sequence[tuple[ModelSource, str]],
+    *,
+    combination: str,
+    folder: str,
+    drawing_scale: float | None = None,
+) -> list[StoreyView]:
+    """One independent View per source, pinned to a layer combination.
+
+    The same shape as ``views_for_storeys`` and for the same reasons -- reuse
+    by name inside this run's folder, because a View cannot be deleted -- but
+    without the plan settings. A 3D view has no plan rotation to zero and no
+    plan extent to pin: what it is looking at belongs to the 3D window, not to
+    the view, and forcing a zoom on it would be meaningless.
+
+    ``storey_index`` on the result is always zero. These are views of the whole
+    model, which is not on a storey.
+    """
+    if not sources:
+        return []
+
+    already = _by_name_under(connection, "PublicViewMap", folder)
+    missing = [(source, name) for source, name in sources if name not in already]
+
+    if missing:
+        parent = ensure_view_folder(connection, folder)
+        response = connection.run_tapir(
+            "CreateViewsInViewMap",
+            {
+                "viewsData": [
+                    {
+                        "navigatorItemId": {"guid": source.identifier},
+                        "name": name,
+                        "parentNavigatorItemId": {"guid": parent},
+                    }
+                    for source, name in missing
+                ]
+            },
+        )
+        created = _check(response, "CreateViewsInViewMap")
+        made = [str((entry.get("navigatorItemId") or {}).get("guid", "")) for entry in created]
+        if len(made) != len(missing) or not all(made):
+            raise ArchicadError(
+                f"CreateViewsInViewMap returned {len(made)} views for "
+                f"{len(missing)} sources; the lists must be parallel."
+            )
+        already.update({name: guid for (_, name), guid in zip(missing, made, strict=True)})
+
+    identifiers = [already[name] for _, name in sources]
+    settings: dict[str, Any] = {"layerCombination": combination}
+    if drawing_scale is not None:
+        # The view carries the scale and the Drawing goes on at 100%, exactly
+        # as on the plans: set on both and they multiply.
+        settings["drawingScale"] = int(drawing_scale)
+
+    connection.run_tapir(
+        "SetViewSettings",
+        {
+            "navigatorItemIdsWithViewSettings": [
+                {"navigatorItemId": {"guid": identifier}, "viewSettings": settings}
+                for identifier in identifiers
+            ]
+        },
+    )
+
+    return [
+        StoreyView(storey_index=0, name=name, navigator_id=identifier)
+        for (_, name), identifier in zip(sources, identifiers, strict=True)
+    ]

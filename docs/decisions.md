@@ -1082,3 +1082,227 @@ back to the tiled rectangles, which cover the same area exactly and only need
 more of them. A drawing is a claim about sunlight, and a tidier drawing is not
 worth a false one.
 
+
+### D42 — An element's surface cannot be set; new geometry carries the colour instead
+
+The reference study's facade page shows the building painted by hours of sun.
+The obvious implementation is to give every wall the surface of its band. That
+is not reachable through this API, and the search for it is worth recording so
+nobody repeats it:
+
+* `GetDetailsOfElements` reports a `surfaceId` only for library-part based
+  elements — Objects. A Wall, Slab, Roof or Mesh reports geometry and nothing
+  about its appearance, so its surface can be neither read nor written.
+* `SetDetailsOfElements` reaches `floorIndex`, `layerIndex`, `drawIndex` and a
+  `typeSpecificDetails` union whose `WallSettings` is purely geometric. There
+  is no setter anywhere in the add-on that attaches a Surface to an existing
+  element.
+* `CreateMorphs` — the natural element for a coloured skin, since a morph takes
+  a `surfaceId` directly — validates its input on this build and then answers
+  `Failed to create morph` for every shape tried, box and explicit body alike.
+  A morph is not reachable on Archicad 26 either.
+
+What is reachable is creating geometry that already carries the colour:
+`CreateSurfaces` takes an RGB, `CreateBuildingMaterials` takes a
+`cutSurfaceIndex`, and `CreateWalls` takes a `buildingMaterialId`. So the
+facade picture is a skin of thin walls standing 30 mm proud of the real one,
+one per merged rectangle, on a layer of its own. It is native 3D — it shows in
+the 3D window, in a 3D document and in a rendering — and switching the layer
+off restores the model exactly.
+
+Two smaller findings from the same session. `CreateSurfaces` answers with
+attribute *ids* while a building material wants an *index*, and there is no
+converting one to the other except by reading the attribute list back.
+`CreateWalls` has no `layerIndex`: new walls land on the Wall tool's default
+layer and have to be moved afterwards.
+
+### D43 — A hidden layer silently refuses modification, not just deletion
+
+D31 recorded that `DeleteElements` answers `{"success": true}` and removes
+nothing when the target sits on a hidden layer. The same is true of
+`SetDetailsOfElements`, which matters more than it sounds: new walls land on
+the Wall tool's default layer, on the reference project that layer is hidden,
+and so the move onto the tool's own layer reported success for every element
+and moved none of them.
+
+Chasing that produced a false lead worth naming. Sending `layerIndex` as a
+float appeared to fix it — the int failed, `144.0` returned success — and it
+had not; the layer was unchanged either way, and the float call was simply the
+one made after something else had changed. The rule that catches this is the
+one already in force everywhere else here: **re-read, never believe the
+response.** The layers involved are therefore forced visible for the duration
+of the change and put back exactly as they were, and the elements' layers are
+read back before the run reports success.
+
+### D44 — The no-sun band is spelled two ways, and reading one of them loses most of the drawing
+
+`band_by_area` gives the no-sun band an upper bound of exactly 0.
+`BandStyle` gives it `1e-9`, the tolerance below which a duration counts as
+none. `_band_mask` recognised only the first, so a legend built from
+`BandStyle` produced an *empty* no-sun band — silently, with every other band
+correct.
+
+On the reference facade that is 5,885 m² of wall, 83% of the elevation, and
+the failure is invisible in the output: the percentages that appear all look
+reasonable, and the missing band simply is not mentioned. It was caught by
+totalling the bands against the surface area, which is now what the test does.
+Any banding of a whole surface should carry that check.
+
+### D45 — Surface reflectances are percentages, and a fraction renders black
+
+``CreateSurfaces`` takes its colour as three fractions in ``[0..1]`` and its
+reflectances as percentages in ``[0..100]``, truncated to whole numbers. The
+two live side by side in the same object, so the natural thing — writing
+``1.0`` for "full" throughout — stores ambient 1% and diffuse 0%.
+
+The failure is a quiet one. Every band colour is stored exactly right and
+reads back exactly right; the surfaces simply reflect nothing, so the coloured
+model renders black and the diagram looks like a bug in the geometry rather
+than in two numbers. Confirmed by probing: ``1.0`` comes back as ``1``, ``0.5``
+as ``0``, ``100`` as ``100``.
+
+Both are now sent at 100. A diagram's band has to read as its legend colour
+wherever it appears rather than shading off with the angle of the face it sits
+on -- that shading is a second, competing signal about sunlight in a drawing
+whose entire subject is sunlight. Specular and shine stay at zero for the same
+reason: a highlight reads as sun on a face that may have had none.
+
+``DeleteAttributes`` takes ``attributesToDelete``, each entry an
+``attributeType`` **and** an ``attributeId`` — not the ``attributeIds`` list
+every other attribute command takes.
+
+### D46 — Geometry built from the export must be fitted onto the project first
+
+The first facade skin was created straight from the export's world
+coordinates, and appeared beside the building and turned — the failure D30's
+``PlanTransform`` exists to prevent, repeated because the massing path was
+written without it. The two frames differ by the project's own rotation
+(279.9 degrees here) and a shift; on this project fitting them leaves 0.175 m
+of residual.
+
+Anything created in the project from geometry computed on the export needs
+that fit, not only the 2D patches that first needed it. The pairing is Zones,
+because a Zone exists identically on both sides — the same room, a GlobalId in
+the file and an outline in the project — and the same ``MAX_FIT_RESIDUAL_M``
+guard applies: over half a metre of residual means the export is not of the
+project's current state, and a wrong placement is worse than none.
+
+The standoff that pushes the skin clear of the wall is applied in the export's
+frame, *before* the transform, so it stays perpendicular to its own face.
+Applied afterwards it would push every rectangle along one rotated direction.
+
+### D47 — A 3D window answers reads with what it is showing
+
+``GetElementsByType`` in a 3D window returned 873 of the 1,968 walls the
+previous pass had drawn on the tool's own layer. The clear-out therefore
+deleted 873, re-read, found none left, and reported itself finished — a
+verified count that was verified against the same partial view that produced
+it.
+
+This is D40 with a sharper edge: it is not only that reads follow the current
+database, it is that a 3D database's answer depends on what the view is set to
+show. Any operation that has to see *all* of something forces a floor plan
+first. Re-reading is still necessary and is not, on its own, sufficient.
+
+### D48 — A wall is the only element that can be created with a material, so a flat patch is a wall lying down
+
+Only ``CreateWalls`` takes a ``buildingMaterialId``. ``CreateSlabs``,
+``CreateMeshes``, ``CreateRoofs``, ``CreateBeams`` and ``CreateColumns`` all
+take a shape and no material at all -- their only route to one is
+``favoriteName``, which needs a Favorite somebody made by hand. So the
+horizontal half of the picture -- balcony decks, terraces, soffits, which take
+more sun than any wall does -- cannot be slabs.
+
+It can still be walls. A wall is a box: give it the rectangle's long side as
+its length, its short side as the *thickness*, and 40 mm as the height, and it
+lies on a deck as a coloured plate. Nothing is lost except lean, which is why
+sloping faces are not panelled at all.
+
+Grouping faces by plane had to change with it. The key was the two horizontal
+components of the normal plus the plane offset, which is enough to separate
+upright faces and puts a slab's top and its soffit in the same group -- both
+have x and y of zero. All three components are keyed now.
+
+### D49 — A 3D Document cannot be created, only used
+
+There is no command in the add-on that creates a 3D Document; the nearest
+names -- ``GenerateDocumentation``, ``Set3DCutPlanes`` -- do something else.
+What can be done is make a *View* of one the project already has, through
+``CreateViewsInViewMap``, and pin a layer combination to it.
+
+That is worth doing rather than routing around, because the two model views
+are different things. The 3D window is live: it shows the model as it is now,
+turns freely, and is what somebody checks a study in. A 3D Document is a
+drawing made from a 3D view, with its own pen and fill overrides and its own
+dimensions, and is what goes on a sheet. An office wants both, and the tool
+can supply the first outright and the second only if one exists.
+
+### D50 — A wall shows its material only when its surface override is off, and nothing turns that off
+
+The first coloured skin rendered uniformly grey, with every band's Surface
+carrying the right colour and every band's Building Material pointing at the
+right Surface -- both verified by reading them back. The cause is a third
+thing: a wall's own **surface override**. With it on, the wall shows the
+overriding surface and its building material's colour never appears.
+
+Nothing in the add-on turns an override off. ``WallSettings`` is geometry
+only; ``CreateWalls`` on 1.5.7 has no ``favoriteName`` field, though the
+newer published schema does. What is left is the Wall tool's *defaults*, which
+``CreateWalls`` inherits and ``ApplyFavoritesToElementDefaults`` can set from
+a Favorite. So one Favorite, made by hand from a wall with the override
+switched off, fixes every later run -- and is the only route there is.
+
+Worth knowing for diagnosis: ``GetFavoritePreviewImage`` renders a Favorite in
+3D and returns a PNG, which is the only way from here to *see* what a created
+element looks like. It is what showed the grey.
+
+### D51 — A drawing made from a 3D source is created at a placeholder size
+
+A Drawing placed from a plan view has its true extent as soon as the project
+is saved. A Drawing placed from a 3D view or a 3D Document does not: it is
+created 59 mm square and keeps that until Archicad regenerates it, which
+happens when somebody opens the layout. ``UpdateDrawings`` would force it and
+refuses below Archicad 27.
+
+Two consequences. Straightening still works -- the angle is set through
+``DrawingSettings`` and holds -- but tiling on the first run arranges
+placeholders. And a run must therefore *not* delete and re-place the drawings
+it finds, or every run resets them to the placeholder and no run ever tiles a
+real size; existing drawings are reused by name and only the missing ones
+placed. Open the sheet once, run again, and the arrangement uses true sizes.
+
+Also: ``CreateLayout`` does not care that a layout of that name exists, and
+will make a second. Layouts are reused by name -- unlike views, a layout
+*can* be deleted, but reuse avoids needing to.
+
+
+### D52 — A hidden layer is an export filter, and it fails in the wrong words
+
+The translator exports what the current layer combination *shows*. On the
+reference project, opened on a site-plan combination, all four ``06 | Zone.*``
+layers were hidden and locked; the export came out at 35 MB carrying 386
+walls, 92 windows, 90 slabs and **no ``IfcSpace`` at all**.
+
+What the run then said was true and useless: ``apartment zone layers ['06 |
+Zone.Units'] matched nothing``, followed by the eleven layers that *did*
+export. The layer at fault is by construction absent from that list, so the
+message asks the reader to notice an absence in a list of eighteen names, and
+arrives only after a multi-minute export. Both diagnostics available at that
+point -- the export's layers and the export's spaces -- describe the symptom.
+
+So visibility is checked against the *live project* before the export, where
+the answer is one boolean per layer. ``hidden_layers`` asks Archicad, and the
+run stops in about two seconds naming the layers to switch on.
+
+It stops rather than warns because there is nothing else it could do. Tapir
+1.5.7 has no command that changes layer visibility or activates a layer
+combination -- ``SetLayers``, ``SetLayerCombination``, ``ApplyLayerCombination``,
+``OpenView``, ``ActivateNavigatorItem`` and ``SetCurrentWindow`` all answer
+code 4010, unregistered. ``CreateLayerCombinations`` exists and is no help: a
+combination that cannot be activated changes nothing. This is a hand in
+Archicad, and the message says so instead of implying a flag might fix it.
+
+A name Archicad does not recognise is deliberately *not* reported here. That
+is a typo, not a hidden layer, and sending the reader to Layer Settings for a
+name that is not in them is worse than silence; ``_require_matches`` already
+catches it against the export, which is where the correct spellings are.

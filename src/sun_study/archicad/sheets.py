@@ -23,7 +23,6 @@ bounding box, and the second measurement is the one the tiling needs.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -121,6 +120,12 @@ def straighten_and_tile(
 
     The sheet is described in millimetres and the drawings live in metres,
     which is the unit everything here works in.
+
+    A Drawing's angle is one of the few things ``SetDetailsOfElements`` will
+    change directly, through ``DrawingSettings``, so the angle is *set* rather
+    than rotated away. ``RotateElements`` did work and had to be handed a
+    centre and two points on an arc to imply the angle, which is a lot of
+    arithmetic to express "north up".
     """
     placements = measure_drawings(connection, layout_database_id)
     if not placements:
@@ -129,40 +134,32 @@ def straighten_and_tile(
     crooked = [p for p in placements if abs(p.angle_rad) > tolerance_rad]
     if crooked:
         connection.run_tapir(
-            "RotateElements",
+            "SetDetailsOfElements",
             {
-                "elementsWithRotations": [
+                "elementsWithDetails": [
                     {
                         "elementId": placement.element["elementId"],
-                        "rotation": _turn_by(-placement.angle_rad, placement.centre),
+                        "details": {"typeSpecificDetails": {"angle": 0.0}},
                     }
                     for placement in crooked
                 ]
             },
         )
-        # Rotating moves the bounding box, and the tiling needs the new one.
+        # Straightening moves the bounding box, and the tiling needs the new
+        # one. Also the only proof it happened: the response says nothing.
         placements = measure_drawings(connection, layout_database_id)
+        still = [p for p in placements if abs(p.angle_rad) > tolerance_rad]
+        if still:
+            raise ArchicadError(
+                f"{len(still)} of {len(crooked)} drawings would not straighten. "
+                f"They are on a locked layout, or the layout has not been saved "
+                f"since it was made."
+            )
 
     moves = _tile(placements, sheet, gap_m)
     if moves:
         connection.run_tapir("MoveElements", {"elementsWithMoveVectors": moves})
     return len(crooked), len(moves)
-
-
-def _turn_by(angle_rad: float, origin: tuple[float, float]) -> dict[str, Any]:
-    """A rotation of ``angle_rad`` about ``origin``, as two points on its arc.
-
-    ``RotateElements`` takes no angle. It takes a centre and the two ends of an
-    arc, and derives the angle from them -- so the caller has to build the arc.
-    A unit radius keeps the numbers well away from the precision at which two
-    points would read as the same one.
-    """
-    x, y = origin
-    return {
-        "origin": {"x": x, "y": y},
-        "beginPoint": {"x": x + 1.0, "y": y},
-        "endPoint": {"x": x + math.cos(angle_rad), "y": y + math.sin(angle_rad)},
-    }
 
 
 def _tile(
