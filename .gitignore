@@ -25,6 +25,11 @@ outputs/
 examples/
 sun-study-info.txt
 
+# Screenshots handed over to show a defect. They are pictures of a real
+# project's Archicad session -- its name, its file path, its layout book --
+# and they are read once and never wanted again.
+problems/
+
 # --- Python ---
 __pycache__/
 *.py[cod]
