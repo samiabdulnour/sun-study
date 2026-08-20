@@ -2616,7 +2616,7 @@ def test_a_reused_layout_says_it_kept_its_own_master() -> None:
 
     assert "CreateLayout" not in transport.commands(), "a second sheet of one name is worse"
     assert report.reused
-    assert "kept the master it was made on" in report.describe()
+    assert "is on whatever master it was made on" in report.describe()
     assert "delete the layout to rebuild it" in report.describe()
 
 

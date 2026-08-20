@@ -231,9 +231,10 @@ class LayoutReport:
         ]
         if self.reused:
             lines.append(
-                f"  the layout already existed and was reused, so it kept the master "
-                f"it was made on -- not {self.master_name!r}. Nothing here can change "
-                f"an existing layout's master; delete the layout to rebuild it."
+                "  the layout already existed and was reused, so it is on whatever "
+                "master it was made on -- which may or may not be the one asked for, "
+                "and cannot be read back. Nothing here can change an existing "
+                "layout's master; delete the layout to rebuild it."
             )
         if self.storeys:
             shown = ", ".join(str(storey) for storey in self.storeys)
