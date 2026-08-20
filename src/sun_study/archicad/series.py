@@ -45,7 +45,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.connection import ArchicadConnection, ArchicadError, activate
 from sun_study.archicad.draw import DRAWING_MINIMUM_TAPIR_VERSION, BandStyle, ensure_layer
 from sun_study.archicad.layout import _walk
 from sun_study.archicad.read import layer_names
@@ -209,26 +209,6 @@ def database_of(connection: ArchicadConnection, navigator_id: str) -> str:
     if not identifier:
         raise ArchicadError(f"No database id for navigator item {navigator_id}: {response!r}")
     return str(identifier)
-
-
-def activate(connection: ArchicadConnection, database_id: str, window_type: str) -> None:
-    """Make one database current, so element creation lands in it.
-
-    On AC26 only the ``databaseId`` form works -- the ``navigatorItemId`` form
-    is rejected as needing Archicad 27. ``GetCurrentWindowType`` is *not* a
-    check on this: the database moves while the visible window does not, so it
-    still reports ``FloorPlan`` afterwards. The command's own result is the
-    only confirmation there is.
-    """
-    result = connection.run_tapir(
-        "ChangeWindow", {"databaseId": {"guid": database_id}, "windowType": window_type}
-    )
-    if not (isinstance(result, dict) and result.get("success")):
-        raise ArchicadError(
-            f"Could not make {window_type} database {database_id} current: {result!r}. "
-            f"A worksheet created in this session cannot be activated until the "
-            f"project has been reopened."
-        )
 
 
 def clear_database(connection: ArchicadConnection) -> tuple[int, int]:

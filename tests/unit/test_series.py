@@ -12,10 +12,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.connection import ArchicadConnection, ArchicadError, activate
 from sun_study.archicad.series import (
     PatchRow,
-    activate,
     clear_database,
     draw_patch_series,
     find_worksheet,

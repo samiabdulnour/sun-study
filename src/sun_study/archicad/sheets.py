@@ -28,7 +28,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.connection import ArchicadConnection, ArchicadError, activate
 from sun_study.archicad.layout import LayoutSheet, Tiling, tile_positions
 
 __all__ = [
@@ -131,9 +131,7 @@ def measure_drawings(
     Requires the project to have been saved since the layout was made: an
     unsaved layout answers with a per-element error instead.
     """
-    connection.run_tapir(
-        "ChangeWindow", {"databaseId": {"guid": layout_database_id}, "windowType": "Layout"}
-    )
+    activate(connection, layout_database_id, "Layout")
     found = connection.run_tapir("GetElementsByType", {"elementType": "Drawing"})
     elements = found.get("elements") if isinstance(found, dict) else None
     if not isinstance(elements, list) or not elements:
@@ -417,9 +415,7 @@ def draw_table(
     if not rows:
         return 0
 
-    connection.run_tapir(
-        "ChangeWindow", {"databaseId": {"guid": layout_database_id}, "windowType": "Layout"}
-    )
+    activate(connection, layout_database_id, "Layout")
     # The sheet is regenerated with its layout, so anything here is this
     # tool's own from an earlier pass over the same sheet.
     for kind in ("Text", "Hatch"):

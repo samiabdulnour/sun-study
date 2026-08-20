@@ -69,7 +69,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.connection import ArchicadConnection, ArchicadError, activate
 
 __all__ = [
     "DEFAULT_LAYOUT_SCALE",
@@ -849,9 +849,7 @@ def _layout_named(connection: ArchicadConnection, name: str) -> str | None:
 
 def _drawings_by_name(connection: ArchicadConnection, database_id: str) -> dict[str, Any]:
     """The Drawings already on a sheet, keyed by the name they were given."""
-    connection.run_tapir(
-        "ChangeWindow", {"databaseId": {"guid": database_id}, "windowType": "Layout"}
-    )
+    activate(connection, database_id, "Layout")
     found = connection.run_tapir("GetElementsByType", {"elementType": "Drawing"})
     elements = found.get("elements") if isinstance(found, dict) else None
     if not isinstance(elements, list) or not elements:

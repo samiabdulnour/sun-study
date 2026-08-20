@@ -28,6 +28,7 @@ from sun_study.archicad.connection import (
     ArchicadError,
     ArchicadNotRunningError,
     HttpTransport,
+    activate,
     find_instances,
     where_archicad_actually_is,
 )
@@ -85,7 +86,6 @@ from sun_study.archicad.series import (
     FLOOR_STYLE,
     SUNLIT_STYLE,
     PatchRow,
-    activate,
     database_of,
     draw_patch_series,
     ensure_model_database,

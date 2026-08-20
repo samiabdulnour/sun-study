@@ -2443,7 +2443,7 @@ def _layout_responses(**overrides: Any) -> dict[str, Any]:
                 {"zoom": {"xMin": 0.0, "yMin": 0.0, "xMax": 53.0, "yMax": 37.0}},
             ]
         },
-        "ChangeWindow": {},
+        "ChangeWindow": {"success": True},
         "GetElementsByType": {"elements": []},
         "CloneProjectMapItemToViewMap": {
             "navigatorItems": [
@@ -2694,7 +2694,7 @@ def test_a_drawing_is_measured_by_its_corners_not_by_its_angle_field() -> None:
     off_axis = math.radians(9.9)
     connection, transport = connect(
         {
-            "ChangeWindow": {},
+            "ChangeWindow": {"success": True},
             "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
             "GetDetailsOfElements": Sequential(
                 {"detailsOfElements": [_tilted(0.19, 0.29, off_axis)]},
@@ -2723,7 +2723,7 @@ def test_a_frame_square_to_the_page_is_left_alone() -> None:
 
     connection, transport = connect(
         {
-            "ChangeWindow": {},
+            "ChangeWindow": {"success": True},
             "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
             "GetDetailsOfElements": {"detailsOfElements": [_tilted(0.19, 0.29, math.pi / 2)]},
             "MoveElements": {},
@@ -2748,7 +2748,7 @@ def test_a_drawing_too_big_for_its_sheet_is_shrunk_before_it_is_tiled() -> None:
 
     connection, transport = connect(
         {
-            "ChangeWindow": {},
+            "ChangeWindow": {"success": True},
             "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
             "GetDetailsOfElements": Sequential(
                 {"detailsOfElements": [_drawing(1.4292, 1.2557)]},
@@ -2780,7 +2780,7 @@ def test_a_drawing_already_shrunk_is_not_shrunk_again() -> None:
 
     connection, transport = connect(
         {
-            "ChangeWindow": {},
+            "ChangeWindow": {"success": True},
             "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
             # Stale bounds: still the full-size ones, at a magnification that
             # says this drawing has already been fitted.
@@ -2809,7 +2809,7 @@ def test_a_drawing_left_at_a_scale_denominator_is_repaired_in_one_write() -> Non
 
     connection, transport = connect(
         {
-            "ChangeWindow": {},
+            "ChangeWindow": {"success": True},
             "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
             "GetDetailsOfElements": {"detailsOfElements": [_drawing(187.37, 249.88, ratio=200.0)]},
             "SetDetailsOfElements": {"executionResults": [{"success": True}]},
@@ -2828,7 +2828,7 @@ def test_drawings_that_fit_are_moved_and_not_resized() -> None:
 
     connection, transport = connect(
         {
-            "ChangeWindow": {},
+            "ChangeWindow": {"success": True},
             "GetElementsByType": {"elements": [{"elementId": {"guid": "d1"}}]},
             "GetDetailsOfElements": {"detailsOfElements": [_drawing(0.189, 0.295)]},
             "MoveElements": {},
@@ -3251,6 +3251,26 @@ def test_a_named_layer_is_switched_off_for_the_export() -> None:
 
 def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
     connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
+
+
+def test_a_refused_switch_stops_the_read_instead_of_answering_about_another_sheet() -> None:
+    """Three call sites issued ChangeWindow and ignored the answer. A refused
+    move leaves the previous database current, so the read that follows
+    succeeds -- against the wrong layout -- and the drawings measured belong
+    to a sheet nobody asked about."""
+    from sun_study.archicad.sheets import measure_drawings
+
+    connection, transport = connect(
+        {
+            "ChangeWindow": {"success": False},
+            "GetElementsByType": {"elements": [{"elementId": {"guid": "D1"}}]},
+        }
+    )
+    with pytest.raises(ArchicadError) as raised:
+        measure_drawings(connection, "lay-1")
+
+    assert "Could not make Layout database" in str(raised.value)
+    assert "GetElementsByType" not in transport.commands(), "no read against the wrong sheet"
 
 
 def test_a_connection_that_has_not_moved_makes_no_claim_about_where_it_is() -> None:

@@ -300,6 +300,40 @@ class Database:
         return self.window_type == "FloorPlan"
 
 
+def activate(connection: ArchicadConnection, database_id: str, window_type: str) -> None:
+    """Make one database current, so reads and creation land in it.
+
+    Here, rather than beside the callers, because moving the database is what
+    the connection remembers and the two belong together -- three call sites
+    used to issue the raw command and none of them looked at the answer.
+
+    Checking is not a formality. On AC26 only the ``databaseId`` form works;
+    the ``navigatorItemId`` form is rejected as needing Archicad 27. And
+    ``GetCurrentWindowType`` is *not* a check on this -- the database moves
+    while the visible window does not, so it reports ``FloorPlan`` either way.
+    The command's own result is the only confirmation there is, and a refused
+    move leaves the previous database current, so a read that follows one
+    quietly answers about the wrong sheet.
+    """
+    result = connection.run_tapir(
+        "ChangeWindow", {"databaseId": {"guid": database_id}, "windowType": window_type}
+    )
+    if isinstance(result, dict) and result.get("success"):
+        return
+    hint = (
+        " A worksheet created in this session cannot be activated until the "
+        "project has been reopened."
+        if window_type == "Worksheet"
+        else " A layout is only readable once the project has been saved since "
+        "it was made."
+        if window_type == "Layout"
+        else ""
+    )
+    raise ArchicadError(
+        f"Could not make {window_type} database {database_id} current: {result!r}.{hint}"
+    )
+
+
 class ArchicadConnection:
     """A connection to Archicad, with Tapir's commands reachable through it."""
 
