@@ -329,21 +329,16 @@ def views_for_storeys(
 
     identifiers = [already[name] for name in wanted]
 
-    # The layer combination, and the extent -- but deliberately *not* the
-    # scale. Setting the view to the same denominator as the Drawing looked
-    # like the tidy thing to do and is not: the two compound rather than
-    # cancel, and a 1:200 view placed at 1:200 came out at 20000% and far
-    # wider than the sheet. The view keeps the scale it inherits from the
-    # storey it copies, which is what produced correctly sized drawings.
+    # The scale is set here and *only* here. The two denominators compound
+    # rather than cancel, so a 1:200 view placed into a 1:200 Drawing came out
+    # at 20000% and many times the page. The view carries it; the Drawing is
+    # placed at 100%.
     #
     # The zoom is worth pinning. A view inherits whatever the storey happened
     # to be zoomed to, so a drawing made from it crops the building wherever
     # somebody last left the screen.
     settings: dict[str, Any] = {
         "layerCombination": combination,
-        # The *view* carries the scale and the Drawing is placed at 100%.
-        # Setting both to 200 multiplies them: the sheet came back at 20000%
-        # and many times the page.
         "drawingScale": int(drawing_scale),
         # Zeroed explicitly. A view inherits the storey's rotation, and this
         # project's is turned to true north, so every drawing arrived at
@@ -355,14 +350,22 @@ def views_for_storeys(
         settings["zoom"] = {"xMin": x_min, "yMin": y_min, "xMax": x_max, "yMax": y_max}
         settings["saveZoom"] = True
 
-    connection.run_tapir(
+    # Checked, like every other write here. This one call decides the layer
+    # combination, the scale and the rotation of every drawing on the sheet --
+    # a view that quietly kept the storey's rotation is the 279.9 degrees the
+    # sheets arrived at, and a per-item error here is the difference between
+    # a wrong sheet and a run that says which view refused.
+    _check(
+        connection.run_tapir(
+            "SetViewSettings",
+            {
+                "navigatorItemIdsWithViewSettings": [
+                    {"navigatorItemId": {"guid": identifier}, "viewSettings": settings}
+                    for identifier in identifiers
+                ]
+            },
+        ),
         "SetViewSettings",
-        {
-            "navigatorItemIdsWithViewSettings": [
-                {"navigatorItemId": {"guid": identifier}, "viewSettings": settings}
-                for identifier in identifiers
-            ]
-        },
     )
 
     return [

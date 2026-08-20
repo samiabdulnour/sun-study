@@ -3271,6 +3271,77 @@ def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
     connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
 
 
+# -- the views every drawing is made from ---------------------------------
+
+
+def _view_world(**overrides: Any) -> dict[str, Any]:
+    responses: dict[str, Any] = {
+        "GetNavigatorItemTree": _navigator(
+            "PublicViewMap", ("FolderItem", "SS Sun Study fix 01")
+        ),
+        "CreateViewMapFolder": {"navigatorItemId": {"guid": "F1"}},
+        "CreateViewsInViewMap": {"navigatorItems": [{"navigatorItemId": {"guid": "V1"}}]},
+        "SetViewSettings": {},
+    }
+    responses.update(overrides)
+    return responses
+
+
+def _storey() -> Any:
+    from sun_study.archicad.layout import NavigatorItem
+
+    return NavigatorItem(identifier="N0", name="LEVEL 01", kind="StoryItem", prefix="1")
+
+
+def test_a_view_carries_the_scale_and_is_pinned_square_to_the_page() -> None:
+    """The two denominators compound rather than cancel, so the view carries
+    the scale and the Drawing is placed at 100%. And a view inherits the
+    storey's rotation -- this project's is turned to true north, which is
+    where every drawing's 279.9 degrees came from."""
+    from sun_study.archicad.views import views_for_storeys
+
+    connection, transport = connect(_view_world())
+    made = views_for_storeys(
+        connection,
+        [_storey()],
+        combination="SS Sun Study 09:00",
+        suffix="09:00",
+        drawing_scale=200,
+        folder="SS Sun Study fix 01",
+    )
+
+    assert [view.name for view in made] == ["SS LEVEL 01 09:00"]
+    sent = transport.parameters_for("SetViewSettings")["navigatorItemIdsWithViewSettings"]
+    settings = sent[0]["viewSettings"]
+    assert settings["drawingScale"] == 200
+    assert settings["rotation"] == 0
+    assert settings["layerCombination"] == "SS Sun Study 09:00"
+
+
+def test_a_view_that_refuses_its_settings_is_raised_not_drawn_anyway() -> None:
+    """This one call decides the layer combination, the scale and the rotation
+    of every drawing on the sheet. Ignoring a per-item error here is the
+    difference between a wrong sheet and a run that says which view refused."""
+    from sun_study.archicad.views import views_for_storeys
+
+    connection, _ = connect(
+        _view_world(
+            SetViewSettings={
+                "executionResults": [{"error": {"message": "view is locked", "code": -1}}]
+            }
+        )
+    )
+    with pytest.raises(ArchicadError, match="view is locked"):
+        views_for_storeys(
+            connection,
+            [_storey()],
+            combination="SS X",
+            suffix="09:00",
+            drawing_scale=200,
+            folder="SS Sun Study fix 01",
+        )
+
+
 # -- the selection that empties an export ---------------------------------
 
 
