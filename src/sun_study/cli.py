@@ -477,6 +477,13 @@ def report_layout(
             f"  the sheet is made; its drawings are still crooked: {error}",
             fg=typer.colors.YELLOW,
         )
+    finally:
+        # Finishing a sheet means standing in it, and a Layout has no Zones.
+        # Whatever runs next reads the database that is current, so leaving
+        # one in front makes the project look empty of apartments: the first
+        # run to do this paired 0 of 10 flats and refused every plan drawing
+        # after the sheet, several steps away from the cause.
+        ensure_model_database(connection)
 
 
 #: Coarser than the 200 mm assessment grid on purpose: the patch is drawn, not
@@ -803,6 +810,10 @@ def report_model_views(
             fg=typer.colors.YELLOW,
             err=True,
         )
+    finally:
+        # A Layout is left current by finishing one, and a Layout has no
+        # model in it. Put the floor plan back for whatever reads next.
+        ensure_model_database(connection)
     return False
 
 

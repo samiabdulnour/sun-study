@@ -1408,3 +1408,21 @@ reused by name, nothing in the add-on changes an existing layout's master, and
 ``SetLayoutSettings`` does not offer one. So a re-run with ``--master-layout``
 leaves an old sheet exactly where it was, and the run now says that outright
 instead of reporting the master it would have used.
+
+### D57 — Finishing a sheet leaves you standing in it, and a Layout has no Zones
+
+Adding the straighten-and-tile pass to the storey sheet broke every drawing
+step after it. The pass has to make the layout current to work in it, and it
+left it current; ``read_zones`` then read the *layout's* database, found no
+Zones, and the plan transform paired 0 apartments of 10.
+
+What the run said was "the export and the project disagree about where the
+apartments are". That is D40's rule -- reads follow the current database --
+arriving four steps from its cause and dressed as a geometry problem, on a
+project where the export had been correct all along.
+
+Every path that finishes a sheet now puts a floor plan back, in a ``finally``,
+because the failure also happens when the sheet pass raises. The rule this
+follows is the one ``ensure_model_database`` was written for: the current
+database is a shared piece of the session, and anything that moves it owns
+putting it back.

@@ -2549,6 +2549,42 @@ def test_a_layout_is_built_on_a_master_that_names_the_scale() -> None:
     assert "on master 'A1 - VERTICAL 1:200'" in report.describe()
 
 
+def test_finishing_a_sheet_puts_the_floor_plan_back() -> None:
+    """Measured on the reference project, one command after this was added.
+
+    Straightening and tiling a sheet has to stand in the layout to do it, and
+    a Layout holds no Zones. Every read after it is scoped to the database
+    that is current, so the run went on to pair 0 of 10 apartments and refuse
+    every plan drawing -- reporting it as a disagreement between the export
+    and the project, which is several steps from the cause.
+    """
+    import sun_study.cli as cli
+
+    calls: list[str] = []
+
+    from sun_study.archicad.sheets import SheetReport
+
+    def note(name: str) -> Any:
+        def fake(*_: Any, **__: Any) -> Any:
+            calls.append(name)
+            return SheetReport(0, 0) if name == "straighten_and_tile" else None
+
+        return fake
+
+    connection, _ = connect(_layout_responses(SaveProject={}))
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(cli, "straighten_and_tile", note("straighten_and_tile"))
+    monkey.setattr(cli, "ensure_model_database", note("ensure_model_database"))
+    try:
+        cli.report_layout(connection, [8, 9], name="Sun Study")
+    finally:
+        monkey.undo()
+
+    assert calls == ["straighten_and_tile", "ensure_model_database"], (
+        "the floor plan goes back after the sheet, and after it in that order"
+    )
+
+
 def test_a_reused_layout_says_it_kept_its_own_master() -> None:
     """Otherwise --master-layout looks like it worked and did nothing.
 
