@@ -1140,3 +1140,77 @@ def test_clipping_survives_the_surface_offset() -> None:
     )
     assert samples is not None and len(samples) > 0
     assert samples.positions[:, 2] == pytest.approx(1.0)
+
+
+# -- which apartment a balcony belongs to ---------------------------------
+# A balcony sits at its own apartment's floor level, which puts it flush
+# against the ceiling of the apartment below. The two are equidistant, so the
+# level of the surface somebody stands on is the only thing that separates
+# them -- and which face that is depends on how the balcony was modelled.
+
+
+def _box(x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) -> Any:
+    from sun_study.core.geometry import TriangleMesh
+
+    corners = np.array(
+        [
+            (x, y, z)
+            for x in (x0, x1)
+            for y in (y0, y1)
+            for z in (z0, z1)
+        ],
+        dtype=np.float64,
+    )
+    # Only the extent matters here: ownership is decided from bounds and
+    # centroid, both of which come off the vertices.
+    faces = np.array([[0, 1, 2], [1, 2, 3]], dtype=np.int64)
+    return TriangleMesh(corners, faces)
+
+
+def _thing(identifier: str, ifc_class: str, mesh: Any) -> Any:
+    from sun_study.ingest.ifc import IfcElement
+
+    return IfcElement(
+        global_id=identifier,
+        ifc_class=ifc_class,
+        name=identifier,
+        long_name="",
+        predefined_type="",
+        storey=None,
+        mesh=mesh,
+    )
+
+
+def test_a_balcony_zone_belongs_to_the_flat_it_opens_off_not_the_one_above() -> None:
+    """A Zone is a void: you stand on its floor and its top is the ceiling, a
+    storey higher. Reading the top matched the apartment whose floor was level
+    with the balcony's *ceiling*, so every balcony went up one floor -- the
+    ground-floor balcony was drawn on the plan above, where the balcony is
+    smaller, and the floor it belonged to came out bare.
+    """
+    from sun_study.ingest.scene import _open_space_owner
+
+    lower = _thing("lower", "IfcSpace", _box(0, 0, 63.6, 8, 8, 66.8))
+    upper = _thing("upper", "IfcSpace", _box(0, 0, 66.8, 8, 8, 70.0))
+    balcony = _thing("balcony", "IfcSpace", _box(8, 0, 63.6, 11, 4, 66.8))
+
+    owner, route = _open_space_owner(balcony, (lower, upper), 3.0, 0.5)
+
+    assert owner is not None and owner.global_id == "lower"
+    assert route == "level-matched"
+
+
+def test_a_balcony_slab_still_belongs_to_the_flat_standing_on_it() -> None:
+    """The other way it gets modelled. A slab is a solid and the surface
+    somebody stands on is its top, so the rule has to read the opposite face
+    -- which is what made reading the top look right in the first place."""
+    from sun_study.ingest.scene import _open_space_owner
+
+    lower = _thing("lower", "IfcSpace", _box(0, 0, 63.6, 8, 8, 66.8))
+    upper = _thing("upper", "IfcSpace", _box(0, 0, 66.8, 8, 8, 70.0))
+    slab = _thing("slab", "IfcSlab", _box(8, 0, 66.5, 11, 4, 66.8))
+
+    owner, route = _open_space_owner(slab, (lower, upper), 3.0, 0.5)
+
+    assert owner is not None and owner.global_id == "upper"
+    assert route == "level-matched"

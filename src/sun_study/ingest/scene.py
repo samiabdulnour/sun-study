@@ -902,11 +902,25 @@ def _open_space_owner(
     if not reachable:
         return None, "unresolved"
 
-    slab_top = float(slab.bounds[1][2])
+    # The surface somebody stands on, which is not the same face for the two
+    # ways a balcony gets modelled -- the same distinction ``_floor_grid``
+    # makes. A slab is a solid and you stand on its top. A Zone is a *void*
+    # and you stand on its floor; its top is the ceiling, a storey higher.
+    #
+    # Reading the top of a Zone put every balcony one floor up: it matched the
+    # apartment whose floor was level with the balcony's ceiling. On the
+    # reference project the ground-floor balcony was drawn on the plan above,
+    # where the balcony is smaller, so the patch overhung the outline and the
+    # floor it belonged to came out bare.
+    standing = (
+        float(slab.bounds[0][2])
+        if slab.ifc_class == "IfcSpace"
+        else float(slab.bounds[1][2])
+    )
     standing_on = [
         space
         for space in reachable
-        if abs(float(space.bounds[0][2]) - slab_top) <= level_tolerance_m
+        if abs(float(space.bounds[0][2]) - standing) <= level_tolerance_m
     ]
     if standing_on:
         owner = min(standing_on, key=lambda s: _distance_to_box(slab.centroid, *s.bounds))

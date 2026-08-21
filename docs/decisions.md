@@ -1696,3 +1696,35 @@ banded and two-hour plans are ADG diagrams. Both names are options, and a
 subset that is not there is reported rather than created. The Layout Book is
 the practice's structure; inventing a subset in it is a bigger decision than a
 sun study gets to make on its own.
+
+### D67 — A balcony Zone is a void, so you stand on its floor, not its top
+
+Reported from the drawings: the sun patch on the wrong floor. On the ground
+floor the balcony was bare; on the floor above, where the balcony is smaller,
+a patch was drawn that overhung the apartment outline.
+
+``_open_space_owner`` decides which flat a balcony belongs to. Nearest box is
+not enough -- a balcony sits at its own apartment's floor level, which puts it
+flush against the ceiling of the apartment below, so the two are exactly
+equidistant and iteration order picks the winner. The disambiguator is the
+level of the surface somebody stands on, and that was read as
+``slab.bounds[1][2]``: the top.
+
+Right for a slab, wrong for a Zone, and this project models balconies as
+Zones. A Zone is a *void*: you stand on its floor and its top is the ceiling,
+one storey up. So every balcony matched the apartment whose floor was level
+with its ceiling and went up a floor. ``_floor_grid`` already makes exactly
+this distinction, in a docstring twenty lines long, for exactly this reason;
+the owner rule did not.
+
+Measured before: 8 of 11 apartments had floor cells spanning 3.20 m -- one
+storey height -- because the flat's own floor and a borrowed balcony floor
+were in the same set. After: every apartment on one plane, all 12 balconies
+level-matched, no fallbacks, the same 22,541 cells.
+
+What made this hard to see is that nothing about it looks wrong. The patch is
+drawn at the balcony's true position in plan, on a storey one above where it
+belongs, and a plan of a floor with a smaller balcony is exactly where a patch
+overhanging the outline is visible. Every other suspect checked out: 48 of 48
+spaces matched a zone on the correct floor, all 35 zones sat within 0.0 m of
+the storey they claimed, and the plan transform fitted to 0.29 m.
