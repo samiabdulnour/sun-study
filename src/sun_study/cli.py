@@ -10,6 +10,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import datetime as dt
+import re
 import sys
 import tempfile
 from collections.abc import Iterator, Sequence
@@ -21,6 +22,7 @@ import numpy as np
 import typer
 
 from sun_study import __version__
+from sun_study.archicad import naming
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
     PORT_RANGE,
@@ -46,6 +48,7 @@ from sun_study.archicad.draw import (
 from sun_study.archicad.layers import export_state
 from sun_study.archicad.layout import (
     DEFAULT_LAYOUT_SCALE,
+    file_under_subset,
     layout_from_views,
     layout_results,
     layout_sheet,
@@ -158,6 +161,16 @@ from sun_study.report.csv_out import write_csv
 from sun_study.report.header import build_header
 from sun_study.report.json_out import write_json
 from sun_study.rules.ruleset import BUILTIN_RULESETS, RulesetError, load_ruleset
+
+#: A sheet label that is a time of day. Those are shadow diagrams; the
+#: banded and two-hour plans are not, and the two go to different subsets.
+_CLOCK = re.compile(r"\d{1,2}:\d{2}")
+
+#: What a run leaves behind, named so it files itself inside the office's
+#: own numbering. One prefix, set in sun_study.archicad.naming.
+FACADE_LAYER = naming.layer("Facade")
+SHEET_NAME = naming.named("Sun Study")
+LAYER_GROUP = naming.LAYER_GROUP
 
 app = typer.Typer(
     add_completion=False,
@@ -976,6 +989,8 @@ def report_area_bands(
     storeys: Sequence[int] = (),
     zoom: tuple[float, float, float, float] | None = None,
     folder: str = "",
+    instant_subset: str = "",
+    analysis_subset: str = "",
 ) -> bool:
     """The whole-day area figures: printed, drawn, and written out.
 
@@ -1134,6 +1149,8 @@ def report_area_bands(
             scale=300.0,
             folder=folder,
             also_hide=also_hide,
+            instant_subset=instant_subset,
+            analysis_subset=analysis_subset,
         )
     return problem
 
@@ -1276,6 +1293,8 @@ def report_penetration(
     master_layout: str | None,
     folder: str = "",
     also_hide: Sequence[str] = (),
+    instant_subset: str = "",
+    analysis_subset: str = "",
 ) -> bool:
     """Draw the study diagram on the floor plan. True if anything is wrong."""
     series = result.instants
@@ -1354,6 +1373,8 @@ def report_penetration(
                 for instant in chosen
             },
             folder=folder,
+            instant_subset=instant_subset,
+            analysis_subset=analysis_subset,
         )
     return not drawn.complete
 
@@ -1397,6 +1418,8 @@ def _sheet_per_instant(
     titles: dict[str, str] | None = None,
     folder: str = "",
     also_hide: Sequence[str] = (),
+    instant_subset: str = "",
+    analysis_subset: str = "",
 ) -> None:
     """A layer combination, a set of views and a Layout for each instant.
 
@@ -1495,6 +1518,28 @@ def _sheet_per_instant(
             + pass_over.describe()
             + (f", table of {drawn} rows on the sheet" if drawn else "")
         )
+    # File the sheets where the practice keeps this kind of drawing, rather
+    # than at the root of a book of 299 layouts. Split by what the sheet is:
+    # a clock time is a shadow diagram, everything else -- the banded plan,
+    # the two-hour plan, the facade -- is an ADG diagram.
+    for subset, chosen in (
+        (instant_subset, [label for label, _ in finished if _CLOCK.fullmatch(label)]),
+        (analysis_subset, [label for label, _ in finished if not _CLOCK.fullmatch(label)]),
+    ):
+        if not subset or not chosen:
+            continue
+        try:
+            filed = file_under_subset(
+                connection, [f"{VIEW_PREFIX} Sun Study {label}" for label in chosen], subset
+            )
+        except ArchicadError as error:
+            typer.secho(f"  {error}", fg=typer.colors.YELLOW, err=True)
+            continue
+        typer.secho(
+            filed.describe(),
+            fg=typer.colors.YELLOW if filed.no_such_subset else None,
+        )
+
     ensure_model_database(connection)
     connection.run_tapir("SaveProject", {})
 
@@ -1829,7 +1874,7 @@ def massing(
     ] = 0.5,
     model_layer: Annotated[
         str, typer.Option("--model-layer", help="Layer the facade skin is drawn on.")
-    ] = "Sun Study Facade",
+    ] = FACADE_LAYER,
     model_flat: Annotated[
         bool,
         typer.Option(
@@ -1986,7 +2031,7 @@ def massing(
         connection = _connect(port)
         if report_model_views(
             connection,
-            layer_prefix="Sun Study",
+            layer_prefix=LAYER_GROUP,
             skin_layer=model_layer,
             document_name=model_document,
             scale=model_scale,
@@ -3328,7 +3373,30 @@ def archicad_run(
     sheet_name: Annotated[
         str,
         typer.Option("--sheet-name", help="Name for the Layout that --sheet creates."),
-    ] = "Sun Study",
+    ] = SHEET_NAME,
+    layout_subset: Annotated[
+        str,
+        typer.Option(
+            "--layout-subset",
+            help=(
+                "Layout Book subset the clock-time sheets are filed under, so "
+                "they sit with the practice's own drawings of that kind rather "
+                "than at the root of the book. Named, never created: the book "
+                "is the office's structure. Empty leaves them at the root."
+            ),
+        ),
+    ] = "SHADOW DIAGRAMS",
+    adg_subset: Annotated[
+        str,
+        typer.Option(
+            "--adg-subset",
+            help=(
+                "Layout Book subset for the sheets that are not a time of day "
+                "-- the banded plan, the two-hour plan. Empty leaves them at "
+                "the root."
+            ),
+        ),
+    ] = "ADG DIAGRAMS",
     series_worksheet: Annotated[
         str | None,
         typer.Option(
@@ -3720,6 +3788,8 @@ def archicad_run(
                     master_layout=master_layout,
                     folder=view_folder,
                     also_hide=tuple(hide_layer or ()),
+                    instant_subset=layout_subset,
+                    analysis_subset=adg_subset,
                 )
                 or partial
             )
@@ -3762,6 +3832,8 @@ def archicad_run(
                         }
                     ),
                     zoom=assessed_extent(read_zones(connection), match, margin_m=10.0),
+                    instant_subset=layout_subset,
+                    analysis_subset=adg_subset,
                 )
                 or partial
             )

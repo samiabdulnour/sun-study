@@ -32,6 +32,7 @@ from typing import Any
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.layers import read_layers
 from sun_study.archicad.layout import NavigatorItem, _walk
+from sun_study.archicad.naming import TOOL_PREFIX
 from sun_study.archicad.series import ensure_model_database
 
 __all__ = [
@@ -48,7 +49,7 @@ __all__ = [
 #: carries hundreds of navigator items and the ones a study adds have to be
 #: obvious at a glance -- and sortable together -- rather than reading as
 #: somebody's stray copy of a storey.
-VIEW_PREFIX = "SS"
+VIEW_PREFIX = TOOL_PREFIX
 
 
 @dataclass(frozen=True)

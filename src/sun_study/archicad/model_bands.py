@@ -54,6 +54,7 @@ import numpy as np
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import BandStyle, LayerState, ensure_layer
 from sun_study.archicad.layers import borrowed
+from sun_study.archicad.naming import TOOL_PREFIX
 from sun_study.archicad.penetration import MAX_FIT_RESIDUAL_M, box_centre
 from sun_study.archicad.read import elements_by_ifc_ids, zones
 from sun_study.archicad.series import ensure_model_database
@@ -73,7 +74,7 @@ __all__ = [
 
 #: Prefix on every attribute this module creates, so a project's own surfaces
 #: and building materials are never at risk of being overwritten by name.
-ATTRIBUTE_PREFIX = "SS"
+ATTRIBUTE_PREFIX = TOOL_PREFIX
 
 #: How thick the skin is, and how far its centreline stands off the real face.
 #: Thin enough to read as a coat of paint at any scale the facade is drawn at,

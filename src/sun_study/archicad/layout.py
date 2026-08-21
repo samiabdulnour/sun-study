@@ -76,11 +76,13 @@ __all__ = [
     "DEFAULT_SHEET",
     "LAYOUT_MINIMUM_TAPIR_VERSION",
     "MM_PER_M",
+    "Filing",
     "LayoutReport",
     "LayoutSheet",
     "NavigatorItem",
     "Tiling",
     "choose_master",
+    "file_under_subset",
     "layout_from_views",
     "layout_results",
     "layout_sheet",
@@ -807,6 +809,144 @@ def _create_layout(connection: ArchicadConnection, name: str, master: NavigatorI
     if not identifier:
         raise ArchicadError(f"CreateLayout returned no database id: {response!r}")
     return str(identifier)
+
+
+@dataclass(frozen=True)
+class Filing:
+    """What filing the sheets into a subset did."""
+
+    subset: str
+    moved: tuple[str, ...]
+    already: tuple[str, ...]
+    """Sheets that were in the subset already -- a rerun, and nothing to do."""
+
+    missing: tuple[str, ...]
+    """Sheets the Layout Book does not hold. Named rather than counted."""
+
+    no_such_subset: bool = False
+
+    def describe(self) -> str:
+        if self.no_such_subset:
+            return (
+                f"  no subset called {self.subset!r} in the Layout Book, so the "
+                f"sheets were left at the book root. Make the subset, or name an "
+                f"existing one with --layout-subset."
+            )
+        done = len(self.moved) + len(self.already)
+        if not done:
+            return f"  nothing to file under {self.subset!r}"
+        said = f"  filed {done} sheet(s) under {self.subset!r}"
+        if self.already:
+            said += f" ({len(self.already)} already there)"
+        if self.missing:
+            said += f"; not in the Layout Book: {', '.join(self.missing)}"
+        return said
+
+
+def _book(connection: ArchicadConnection) -> dict[str, Any] | None:
+    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})
+    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
+    return root if isinstance(root, dict) else None
+
+
+def _parents(root: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    """Every item's ``(name, parent name)``, keyed by its navigator id."""
+    found: dict[str, tuple[str, str]] = {}
+
+    def walk(node: dict[str, Any], parent: str, depth: int = 0) -> None:
+        if depth > 32:
+            return
+        identifier = (node.get("navigatorItemId") or {}).get("guid")
+        name = str(node.get("name", ""))
+        if identifier:
+            found[str(identifier)] = (name, parent)
+        for wrapper in node.get("children") or []:
+            child = (wrapper or {}).get("navigatorItem") if isinstance(wrapper, dict) else None
+            if isinstance(child, dict):
+                walk(child, name, depth + 1)
+
+    walk(root, "")
+    return found
+
+
+def file_under_subset(
+    connection: ArchicadConnection, names: Sequence[str], subset: str
+) -> Filing:
+    """Move these Layouts into a named subset of the Layout Book.
+
+    Two commands, because the obvious one does not work. ``CreateLayout``
+    accepts a ``parentNavigatorItemId`` -- the schema takes it without
+    complaint and answers with a database id -- and puts the sheet at the book
+    root regardless. Measured: the layout came back under ``SAMPLE``, not
+    under the subset asked for. ``MoveNavigatorItem`` does the job, taking
+    ``navigatorItemIdToMove`` and ``parentNavigatorItemId``, so a sheet is made
+    first and filed second.
+
+    Verified by reading the book back rather than by the ``{"success": true}``
+    each move answers with, which is the same reason every other write in this
+    package is read back.
+
+    A subset that is not there is reported, not created: the Layout Book is the
+    practice's own structure, and inventing a subset in it is a bigger decision
+    than a sun study gets to make on its own.
+    """
+    wanted = list(dict.fromkeys(names))
+    if not wanted:
+        return Filing(subset=subset, moved=(), already=(), missing=())
+
+    root = _book(connection)
+    if root is None:
+        raise ArchicadError("The Layout Book would not answer; cannot file the sheets.")
+    before = _parents(root)
+
+    target = next(
+        (guid for guid, (name, _) in before.items() if name == subset),
+        None,
+    )
+    if target is None:
+        return Filing(
+            subset=subset, moved=(), already=(), missing=tuple(wanted), no_such_subset=True
+        )
+
+    by_name = {name: guid for guid, (name, _) in before.items() if name in set(wanted)}
+    missing = tuple(name for name in wanted if name not in by_name)
+    already = tuple(
+        name
+        for name in wanted
+        if before.get(by_name.get(name, ""), ("", ""))[1] == subset
+    )
+
+    for name in wanted:
+        guid = by_name.get(name)
+        if guid is None or name in already:
+            continue
+        connection.run_tapir(
+            "MoveNavigatorItem",
+            {
+                "navigatorItemIdToMove": {"guid": guid},
+                "parentNavigatorItemId": {"guid": target},
+            },
+        )
+
+    after_root = _book(connection)
+    after = _parents(after_root) if after_root else {}
+    stuck = [
+        name
+        for name in wanted
+        if name in by_name and after.get(by_name[name], ("", ""))[1] != subset
+    ]
+    if stuck:
+        raise ArchicadError(
+            f"{len(stuck)} sheet(s) would not move into {subset!r}: {', '.join(stuck)}. "
+            f"MoveNavigatorItem reported success and the Layout Book still holds "
+            f"them elsewhere."
+        )
+    return Filing(
+        subset=subset,
+        moved=tuple(n for n in wanted if n in by_name and n not in already),
+        already=already,
+        missing=missing,
+    )
 
 
 def _layout_named(connection: ArchicadConnection, name: str) -> str | None:

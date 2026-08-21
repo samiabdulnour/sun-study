@@ -30,6 +30,12 @@ sun-study-info.txt
 # and they are read once and never wanted again.
 problems/
 
+# Diagnostic dumps from tooling run in this directory. A credential-manager
+# diagnose writes the machine's username, home paths and whole PATH into the
+# working tree, and this repository is public.
+gcm-diagnose.log
+*-diagnose.log
+
 # --- Python ---
 __pycache__/
 *.py[cod]

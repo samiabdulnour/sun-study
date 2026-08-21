@@ -65,6 +65,7 @@ from sun_study.archicad.layout import (
     project_map,
     storey_items,
 )
+from sun_study.archicad.naming import TOOL_PREFIX
 from sun_study.archicad.read import (
     GeoreferencingMismatchError,
     classification_items_of,
@@ -172,6 +173,12 @@ class FakeTransport:
             else payload["command"]
             for payload in self.sent
         ]
+
+
+#: The prefix the tool leads its own layers, views and layouts with. Tests
+#: build names from it rather than spelling one out: the prefix files the
+#: output inside an office's numbering and is expected to differ per office.
+SS = TOOL_PREFIX
 
 
 def connect(responses: dict[str, Any]) -> tuple[ArchicadConnection, FakeTransport]:
@@ -3271,13 +3278,119 @@ def _go_to(connection: ArchicadConnection, guid: str, window: str) -> None:
     connection.run_tapir("ChangeWindow", {"databaseId": {"guid": guid}, "windowType": window})
 
 
+# -- filing the sheets where the practice keeps them ----------------------
+# CreateLayout takes a parentNavigatorItemId, answers with a database id, and
+# puts the sheet at the book root anyway -- measured on the reference project.
+# So the sheet is made first and moved second, and the move is read back.
+
+
+def _node(name: str, kind: str, *children: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "navigatorItemId": {"guid": name},
+        "name": name,
+        "type": kind,
+        "children": [{"navigatorItem": child} for child in children],
+    }
+
+
+def _book(*children: dict[str, Any]) -> dict[str, Any]:
+    return {"navigatorItemTree": _node("BOOK", "BookItem", *children)}
+
+
+def test_a_sheet_is_moved_into_the_subset_the_practice_already_uses() -> None:
+    from sun_study.archicad.layout import file_under_subset
+
+    loose = _book(
+        _node("SHADOW DIAGRAMS", "SubSetItem"),
+        _node(f"{SS} Sun Study 09:00", "LayoutItem"),
+    )
+    filed = _book(
+        _node("SHADOW DIAGRAMS", "SubSetItem", _node(f"{SS} Sun Study 09:00", "LayoutItem")),
+    )
+    connection, transport = connect(
+        {
+            "GetNavigatorItemTree": Sequential(loose, filed),
+            "MoveNavigatorItem": {"success": True},
+        }
+    )
+    report = file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+
+    assert transport.parameters_for("MoveNavigatorItem") == {
+        "navigatorItemIdToMove": {"guid": f"{SS} Sun Study 09:00"},
+        "parentNavigatorItemId": {"guid": "SHADOW DIAGRAMS"},
+    }
+    assert report.moved == (f"{SS} Sun Study 09:00",)
+    assert "filed 1 sheet(s) under 'SHADOW DIAGRAMS'" in report.describe()
+
+
+def test_a_sheet_already_in_the_subset_is_not_moved_again() -> None:
+    """The ordinary case on a rerun, and moving it would be a write for
+    nothing."""
+    from sun_study.archicad.layout import file_under_subset
+
+    filed = _book(
+        _node("ADG DIAGRAMS", "SubSetItem", _node(f"{SS} Sun Study Bands", "LayoutItem")),
+    )
+    connection, transport = connect({"GetNavigatorItemTree": filed})
+    report = file_under_subset(connection, [f"{SS} Sun Study Bands"], "ADG DIAGRAMS")
+
+    assert "MoveNavigatorItem" not in transport.commands()
+    assert report.already == (f"{SS} Sun Study Bands",) and report.moved == ()
+
+
+def test_a_subset_that_is_not_there_is_reported_not_created() -> None:
+    """The Layout Book is the practice's own structure. Inventing a subset in
+    it is a bigger decision than a sun study gets to make."""
+    from sun_study.archicad.layout import file_under_subset
+
+    connection, transport = connect(
+        {"GetNavigatorItemTree": _book(_node(f"{SS} Sun Study 09:00", "LayoutItem"))}
+    )
+    report = file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+
+    assert report.no_such_subset is True
+    assert "MoveNavigatorItem" not in transport.commands()
+    assert "no subset called 'SHADOW DIAGRAMS'" in report.describe()
+
+
+def test_a_move_that_reported_success_and_did_nothing_is_caught() -> None:
+    """MoveNavigatorItem answers {"success": true}. So does CreateLayout when
+    it ignores the parent it was given, which is how this whole function came
+    to exist -- so the book is read back rather than believed."""
+    from sun_study.archicad.layout import file_under_subset
+
+    loose = _book(
+        _node("SHADOW DIAGRAMS", "SubSetItem"),
+        _node(f"{SS} Sun Study 09:00", "LayoutItem"),
+    )
+    connection, _ = connect(
+        {
+            "GetNavigatorItemTree": loose,
+            "MoveNavigatorItem": {"success": True},
+        }
+    )
+    with pytest.raises(ArchicadError, match="would not move into"):
+        file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+
+
+def test_a_sheet_the_book_does_not_hold_is_named_rather_than_counted() -> None:
+    from sun_study.archicad.layout import file_under_subset
+
+    book = _book(_node("SHADOW DIAGRAMS", "SubSetItem"))
+    connection, _ = connect({"GetNavigatorItemTree": book})
+    report = file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+
+    assert report.missing == (f"{SS} Sun Study 09:00",)
+    assert report.moved == ()
+
+
 # -- the views every drawing is made from ---------------------------------
 
 
 def _view_world(**overrides: Any) -> dict[str, Any]:
     responses: dict[str, Any] = {
         "GetNavigatorItemTree": _navigator(
-            "PublicViewMap", ("FolderItem", "SS Sun Study fix 01")
+            "PublicViewMap", ("FolderItem", f"{SS} Sun Study fix 01")
         ),
         "CreateViewMapFolder": {"navigatorItemId": {"guid": "F1"}},
         "CreateViewsInViewMap": {"navigatorItems": [{"navigatorItemId": {"guid": "V1"}}]},
@@ -3304,18 +3417,18 @@ def test_a_view_carries_the_scale_and_is_pinned_square_to_the_page() -> None:
     made = views_for_storeys(
         connection,
         [_storey()],
-        combination="SS Sun Study 09:00",
+        combination=f"{SS} Sun Study 09:00",
         suffix="09:00",
         drawing_scale=200,
-        folder="SS Sun Study fix 01",
+        folder=f"{SS} Sun Study fix 01",
     )
 
-    assert [view.name for view in made] == ["SS LEVEL 01 09:00"]
+    assert [view.name for view in made] == [f"{SS} LEVEL 01 09:00"]
     sent = transport.parameters_for("SetViewSettings")["navigatorItemIdsWithViewSettings"]
     settings = sent[0]["viewSettings"]
     assert settings["drawingScale"] == 200
     assert settings["rotation"] == 0
-    assert settings["layerCombination"] == "SS Sun Study 09:00"
+    assert settings["layerCombination"] == f"{SS} Sun Study 09:00"
 
 
 def test_a_view_that_refuses_its_settings_is_raised_not_drawn_anyway() -> None:
@@ -3335,10 +3448,10 @@ def test_a_view_that_refuses_its_settings_is_raised_not_drawn_anyway() -> None:
         views_for_storeys(
             connection,
             [_storey()],
-            combination="SS X",
+            combination=f"{SS} X",
             suffix="09:00",
             drawing_scale=200,
-            folder="SS Sun Study fix 01",
+            folder=f"{SS} Sun Study fix 01",
         )
 
 
@@ -3426,9 +3539,9 @@ def test_the_drawings_that_go_with_a_layout_are_not_counted_as_removed() -> None
             "GetNavigatorItemTree": Sequential(
                 _navigator(
                     "LayoutBook",
-                    ("LayoutItem", "SS Sun Study 09:00"),
-                    ("DrawingItem", "SS LEVEL 01 09:00"),
-                    ("DrawingItem", "SS LEVEL 02 09:00"),
+                    ("LayoutItem", f"{SS} Sun Study 09:00"),
+                    ("DrawingItem", f"{SS} LEVEL 01 09:00"),
+                    ("DrawingItem", f"{SS} LEVEL 02 09:00"),
                 ),
                 _navigator("LayoutBook"),
                 _navigator("PublicViewMap"),
@@ -3441,7 +3554,7 @@ def test_the_drawings_that_go_with_a_layout_are_not_counted_as_removed() -> None
     gone, left = remove_previous(connection)
 
     asked = transport.parameters_for("DeleteNavigatorItems")["navigatorItemIds"]
-    assert [entry["navigatorItemId"]["guid"] for entry in asked] == ["SS Sun Study 09:00"]
+    assert [entry["navigatorItemId"]["guid"] for entry in asked] == [f"{SS} Sun Study 09:00"]
     assert (gone, left) == (1, 0)
 
 
@@ -3457,12 +3570,12 @@ def test_the_tools_own_run_folder_is_not_a_view_it_failed_to_delete() -> None:
                 _navigator("LayoutBook"),
                 _navigator(
                     "PublicViewMap",
-                    ("FolderItem", "SS Sun Study fix 01"),
-                    ("StoryItem", "SS LEVEL 01 09:00"),
+                    ("FolderItem", f"{SS} Sun Study fix 01"),
+                    ("StoryItem", f"{SS} LEVEL 01 09:00"),
                 ),
-                _navigator("PublicViewMap", ("FolderItem", "SS Sun Study fix 01")),
+                _navigator("PublicViewMap", ("FolderItem", f"{SS} Sun Study fix 01")),
                 _navigator("LayoutBook"),
-                _navigator("PublicViewMap", ("FolderItem", "SS Sun Study fix 01")),
+                _navigator("PublicViewMap", ("FolderItem", f"{SS} Sun Study fix 01")),
             ),
             "DeleteNavigatorItems": {},
         }
@@ -3478,7 +3591,7 @@ def test_a_view_a_drawing_still_points_at_is_reported_as_left_behind() -> None:
     again rather than from the length of the request."""
     from sun_study.archicad.views import remove_previous
 
-    stuck = _navigator("PublicViewMap", ("StoryItem", "SS LEVEL 01 09:00"))
+    stuck = _navigator("PublicViewMap", ("StoryItem", f"{SS} LEVEL 01 09:00"))
     connection, _ = connect(
         {
             "GetNavigatorItemTree": Sequential(
@@ -3666,12 +3779,12 @@ def test_the_study_layer_is_shown_and_the_named_clutter_is_hidden() -> None:
 
     name = ensure_layer_combination(
         connection,
-        "SS Sun Study 09:00",
+        f"{SS} Sun Study 09:00",
         show=["Sun Study 09:00"],
         hide=["05 | Grids.Main Floor Plan"],
     )
 
-    assert name == "SS Sun Study 09:00"
+    assert name == f"{SS} Sun Study 09:00"
     written_layers = _combination_written(transport)
     assert written_layers["c"]["isHidden"] is False, "the study's own layer is the point"
     assert written_layers["b"]["isHidden"] is True, "named clutter is forced off"
@@ -3684,7 +3797,7 @@ def test_a_layer_that_is_shown_is_never_left_locked() -> None:
 
     connection, transport = connect(_combination_world())
     connection.note_model_database()
-    ensure_layer_combination(connection, "SS X", show=["Walls"], hide=[])
+    ensure_layer_combination(connection, f"{SS} X", show=["Walls"], hide=[])
 
     assert _combination_written(transport)["a"]["isLocked"] is False
 
@@ -3698,7 +3811,7 @@ def test_the_parts_of_a_layer_the_study_has_no_opinion_on_are_carried_through() 
 
     connection, transport = connect(_combination_world())
     connection.note_model_database()
-    ensure_layer_combination(connection, "SS X", show=[], hide=[])
+    ensure_layer_combination(connection, f"{SS} X", show=[], hide=[])
 
     walls = _combination_written(transport)["a"]
     assert walls["isWireframe"] is True
@@ -3738,7 +3851,7 @@ def test_a_combination_is_built_from_the_model_even_from_inside_a_layout() -> No
     )
     _go_to(connection, "L1", "Layout")
 
-    ensure_layer_combination(connection, "SS X", show=[], hide=[])
+    ensure_layer_combination(connection, f"{SS} X", show=[], hide=[])
 
     moves = transport.all_parameters_for("ChangeWindow")
     assert moves[-1] == {"databaseId": {"guid": "S0"}, "windowType": "FloorPlan"}, (

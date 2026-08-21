@@ -1647,3 +1647,52 @@ carries the whole layer, and a restore puts back what was there.
 
 ``ensure_layer_combination`` had no tests at all before this. It decides what
 every drawing shows.
+
+### D65 — The tool's output is named into the project's own numbering
+
+``SS`` was this tool's mark on everything it made: ``SS Sun Study 09:00``,
+layers called ``Sun Study.Results`` with no group at all. On the reference
+project the layer groups run ``00 |`` to ``13 |``, each with a divider of its
+own, and the combinations follow the same scheme. Output called ``SS`` sorts
+nowhere and reads as somebody's initials.
+
+So everything the tool creates now leads with ``14 |`` -- the next free group:
+layers ``14 | Sun Study.Results`` and ``14 | Sun Study.Facade``, combinations
+``14 | Sun Study 09:00``, surfaces, views and layouts the same.
+
+The prefix could not simply be deleted, which is the part worth recording.
+``remove_previous`` finds a run's own work by it, so an empty prefix matches
+every view and every layout in the project and the clean-up before a rerun
+would delete the practice's drawings. Replacing one marker with another keeps
+that guarantee; removing it would have been the most expensive kind of tidying.
+
+It lives in ``archicad/naming.py``, alone, because five modules need the same
+string and none of them should import another to get it -- and because ``14``
+is right for a project whose groups end at 13 and wrong for the next office.
+
+The property group is deliberately *not* renamed. ``Sun Study Note`` and its
+siblings are written onto Zones and already carry values on this project;
+renaming them would orphan every one and leave a schedule pointing at nothing.
+A property is not a layer.
+
+### D66 — A layout cannot be created into a subset, only moved into one
+
+Asked to file its sheets with the practice's own, in ``SHADOW DIAGRAMS`` and
+``ADG DIAGRAMS`` rather than at the root of a book of 299 layouts.
+
+``CreateLayout`` looks like it does this. Its schema accepts
+``parentNavigatorItemId`` -- strict enough elsewhere to refuse a misspelt
+field by name -- and answers with a database id. Measured: the sheet arrived
+under the book root, not under the subset. Accepted, and ignored.
+
+``MoveNavigatorItem`` does it, taking ``navigatorItemIdToMove`` and
+``parentNavigatorItemId``, verified by reading the book back and finding the
+layout at ``SAMPLE > DEVELOPMENT APPLICATION > SHADOW DIAGRAMS``. So a sheet
+is made first and filed second, and the filing is read back rather than
+believed -- both commands answer ``{"success": true}`` either way.
+
+Which subset by what the sheet *is*: a clock time is a shadow diagram, and the
+banded and two-hour plans are ADG diagrams. Both names are options, and a
+subset that is not there is reported rather than created. The Layout Book is
+the practice's structure; inventing a subset in it is a bigger decision than a
+sun study gets to make on its own.

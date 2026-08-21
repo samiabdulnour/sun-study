@@ -67,6 +67,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.naming import named
 
 __all__ = [
     "EXPORT_COMBINATION",
@@ -83,7 +84,7 @@ __all__ = [
 #: The combination the tool makes when it is not pointed at one of the
 #: project's own. Prefixed like everything else this tool leaves behind, so a
 #: person can find all of it in one search.
-EXPORT_COMBINATION = "SS Sun Study Export"
+EXPORT_COMBINATION = named("Sun Study Export")
 
 
 @dataclass(frozen=True)

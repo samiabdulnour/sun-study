@@ -35,6 +35,7 @@ from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.layers import LayerState, borrowed
+from sun_study.archicad.naming import layer
 from sun_study.archicad.read import ArchicadZone, disambiguated
 from sun_study.rules.assessment import BuildingAssessment
 
@@ -59,7 +60,7 @@ __all__ = [
 #: Everything this tool draws goes here, and nothing else does. That is what
 #: makes deleting the previous run safe, and what lets the whole diagram be
 #: switched off in a layer combination.
-DEFAULT_LAYER_NAME = "Sun Study.Results"
+DEFAULT_LAYER_NAME = layer("Results")
 
 #: The add-on version ``CreateHatches`` arrived in. Higher than the rest of
 #: this package needs, so drawing is gated separately rather than raising the
