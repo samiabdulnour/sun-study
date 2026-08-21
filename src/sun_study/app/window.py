@@ -9,6 +9,15 @@ commonest way a run measures the wrong thing.
 
 Everything that is a real decision, and everything the reference project needed
 that another will not, sits behind Advanced, closed.
+
+Every field says what it is
+---------------------------
+A line under each control, and a longer one on hover. Not decoration: most of
+these settings fail *quietly*. A facade study with the slab layers missing does
+not report an error, it reports the least-lit half of the building; an export
+without the zone layers runs for minutes and then cannot place the skin. The
+hint says what the setting is; the tooltip says what happens when it is wrong,
+because that is the part nobody can infer from a label.
 """
 
 from __future__ import annotations
@@ -23,11 +32,71 @@ from sun_study.app.runner import Run
 from sun_study.disclaimer import STATUS
 
 PAD = 8
+HINT = "#5a5a5a"
 
 #: Layer name fragments that mark the envelope a facade study measures. A
 #: guess, offered rather than applied: the picker is filled with them and the
 #: list stays editable, because the next project names its slabs differently.
 SKIN_WORDS = ("Wall.External", "Floor.", "Balustrade", "Screens")
+
+
+class Tooltip:
+    """The longer explanation, on hover.
+
+    Hand-rolled because Tk has none, and short enough to be worth it. The
+    delay matters: without it, dragging the mouse across the form flashes six
+    of these, which reads as a fault rather than as help.
+    """
+
+    def __init__(self, widget: tk.Widget, text: str, delay_ms: int = 450) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after: str | None = None
+        self._window: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    @property
+    def visible(self) -> bool:
+        """Whether the hover text is on screen."""
+        return self._window is not None
+
+    def _schedule(self, _event: object = None) -> None:
+        self._cancel()
+        self._after = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel(self) -> None:
+        if self._after is not None:
+            self.widget.after_cancel(self._after)
+            self._after = None
+
+    def _show(self) -> None:
+        if self._window is not None:
+            return
+        x = self.widget.winfo_rootx() + 14
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self._window = tk.Toplevel(self.widget)
+        self._window.wm_overrideredirect(True)
+        self._window.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            self._window,
+            text=self.text,
+            justify="left",
+            wraplength=430,
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            padx=7,
+            pady=5,
+        ).pack()
+
+    def _hide(self, _event: object = None) -> None:
+        self._cancel()
+        if self._window is not None:
+            self._window.destroy()
+            self._window = None
 
 
 @dataclass
@@ -42,7 +111,7 @@ class Window:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Sun Study")
-        self.root.minsize(760, 640)
+        self.root.minsize(820, 700)
 
         #: Lines from the worker thread. Tkinter is not thread-safe, so nothing
         #: touches a widget from the runner's thread: lines go through here and
@@ -68,19 +137,41 @@ class Window:
         # Which Archicad. Listed, never assumed: each instance gets its own
         # port, so the default is right only for whichever started first, and
         # two projects open is the ordinary case in an office.
-        ttk.Label(frame, text="Archicad").grid(row=row, column=0, sticky="w")
+        label = ttk.Label(frame, text="Archicad")
+        label.grid(row=row, column=0, sticky="w")
         picker = ttk.Frame(frame)
         picker.grid(row=row, column=1, sticky="ew", pady=2)
         picker.columnconfigure(0, weight=1)
         self.instance = ttk.Combobox(picker, state="readonly", values=[])
         self.instance.grid(row=0, column=0, sticky="ew")
         self.instance.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
-        ttk.Button(picker, text="Refresh", command=self.refresh, width=9).grid(
-            row=0, column=1, padx=(6, 0)
+        rescan = ttk.Button(picker, text="Refresh", command=self.refresh, width=9)
+        rescan.grid(row=0, column=1, padx=(6, 0))
+        Tooltip(
+            rescan,
+            "Looks again for running Archicads and re-reads the chosen "
+            "project. Press it after opening a project, or after adding a "
+            "layer or a Layout Book subset that should appear in the lists "
+            "below.",
         )
         row += 1
+        self._hint(
+            frame,
+            row,
+            "The open project to measure. Check the name if you have two open.",
+        )
+        row += 1
+        for target in (label, self.instance):
+            Tooltip(
+                target,
+                "Archicad gives every open instance its own port, so there is no "
+                "single right one to guess at. The study reads and draws in "
+                "whichever project is chosen here — pick the wrong one and it "
+                "measures the wrong building and says nothing. Press Refresh "
+                "after opening or closing a project.",
+            )
 
-        self.status = ttk.Label(frame, text="", foreground="#666")
+        self.status = ttk.Label(frame, text="", foreground=HINT)
         self.status.grid(row=row, column=1, sticky="w", pady=(0, PAD))
         row += 1
 
@@ -90,34 +181,95 @@ class Window:
         self.do_facade = tk.BooleanVar(value=True)
         self.do_floors = tk.BooleanVar(value=True)
         self.do_plans = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            studies,
-            text="Facade skin in 3D",
-            variable=self.do_facade,
-            command=self._sync,
-        ).grid(row=0, column=0, sticky="w")
+
+        facade_box = ttk.Checkbutton(
+            studies, text="Facade skin in 3D", variable=self.do_facade, command=self._sync
+        )
+        facade_box.grid(row=0, column=0, sticky="w")
+        Tooltip(
+            facade_box,
+            "Paints the outside of the building with one colour per band of "
+            "direct sun hours on 21 June, as real 3D elements on the tool's own "
+            "layer. Switch that layer off to hide the result; nothing else in "
+            "the model is touched. This measures surface area, not apartments, "
+            "so it answers a massing question rather than an ADG one.",
+        )
         self.floors_box = ttk.Checkbutton(
             studies,
             text="including floors, balcony decks and soffits",
             variable=self.do_floors,
         )
         self.floors_box.grid(row=1, column=0, sticky="w", padx=(18, 0))
-        ttk.Checkbutton(
+        Tooltip(
+            self.floors_box,
+            "Horizontal surfaces take far more sun than any wall. Leaving them "
+            "out is not a smaller study — it is a study of the least-lit half "
+            "of the building, and nothing in the result says so. Needs the slab "
+            "layers named under Advanced → Facade layers.",
+        )
+        plans_box = ttk.Checkbutton(
             studies, text="Apartment plans and sheets", variable=self.do_plans
-        ).grid(row=2, column=0, sticky="w")
+        )
+        plans_box.grid(row=2, column=0, sticky="w")
+        Tooltip(
+            plans_box,
+            "The ADG assessment proper: hours of direct sun per apartment, the "
+            "sun patch drawn on each floor plan, and a sheet per time of day. "
+            "Needs Zones and windows in the model, so it is off by default — "
+            "the facade study works on a massing that has neither.",
+        )
+        row += 1
+        self._hint(frame, row, "What to run. Both together run one after the other.")
         row += 1
 
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
         row += 1
 
-        self.apartments = self._combo(frame, row, "Apartment zones")
-        row += 1
-        self.master = self._combo(frame, row, "Sheet master")
-        row += 1
-        self.exclude = self._entry(frame, row, "Ignore above (m)", "100")
-        row += 1
-        self.year = self._entry(frame, row, "Year", "2024")
-        row += 1
+        self.apartments, row = self._combo(
+            frame,
+            row,
+            "Apartment zones",
+            "The layer your apartment Zones sit on.",
+            "Only layers that actually carry Zones are listed, found by asking "
+            "the Zones rather than by reading layer names — on this project "
+            "three layers are named for zones and hold none, while an "
+            "annotation layer holds 37. This decides which Zones become "
+            "apartments in the assessment.",
+        )
+        self.master, row = self._combo(
+            frame,
+            row,
+            "Sheet master",
+            "Title block the layouts are built on.",
+            "A no-scale master is the right one: the drawings are shrunk to fit "
+            "the page, so they are no longer at any stated scale and a title "
+            "block claiming 1:200 would be wrong. An existing layout keeps the "
+            "master it was made on — nothing in the add-on can change it — so "
+            "delete old study sheets before changing this.",
+        )
+        self.exclude, row = self._entry(
+            frame,
+            row,
+            "Ignore above (m)",
+            "100",
+            "Drops anything sitting entirely above this height.",
+            "Hotlinked unit-type masters are parked high above the real "
+            "building — 157 to 281 m on this project — on the same layers as "
+            "the building itself, so height is the only thing that separates "
+            "them. Left in, they join the area being measured and quietly "
+            "change every percentage. Clear the box to keep everything.",
+        )
+        self.year, row = self._entry(
+            frame,
+            row,
+            "Year",
+            "2024",
+            "Which year's midwinter date to assess.",
+            "The assessment runs on 21 June, the shortest day, which is the "
+            "worst case the ADG asks about. The year only shifts the date and "
+            "the sun positions slightly; it is here so a study can be repeated "
+            "against the same day as an earlier report.",
+        )
 
         # Advanced, closed. Everything in it has a defensible default and is
         # the kind of thing one project needs and the next does not.
@@ -126,20 +278,103 @@ class Window:
             frame, text="▸  Advanced", command=self._toggle_advanced, width=16
         )
         self.advanced_button.grid(row=row, column=0, columnspan=2, sticky="w", pady=(PAD, 2))
+        Tooltip(
+            self.advanced_button,
+            "Settings with a sensible default that one project needs and the "
+            "next does not. Worth opening the first time a new project is set "
+            "up, and worth leaving alone after that.",
+        )
         row += 1
 
         self.advanced = ttk.Frame(frame)
         self.advanced.grid(row=row, column=0, columnspan=2, sticky="ew")
         self.advanced.columnconfigure(1, weight=1)
         self.advanced.grid_remove()
-        self.combination = self._combo(self.advanced, 0, "Export combination")
-        self.subject = self._entry(self.advanced, 1, "Facade layers", "")
-        self.require = self._entry(self.advanced, 2, "Also export", "")
-        self.hide = self._entry(self.advanced, 3, "Keep off drawings", "")
-        self.instants = self._entry(self.advanced, 4, "Plan times", "09:00, 12:00, 15:00")
-        self.shadow_subset = self._combo(self.advanced, 5, "Times filed in")
-        self.adg_subset = self._combo(self.advanced, 6, "Diagrams filed in")
-        self.grid_m = self._entry(self.advanced, 7, "Skin cell (m)", "0.5")
+        inner = 0
+        self.combination, inner = self._combo(
+            self.advanced,
+            inner,
+            "Export combination",
+            "The office layer combination the IFC export starts from.",
+            "The translator exports what is shown, so the layer state is an "
+            "input to every number below. The run sets it from this "
+            "combination, forces on what the study needs over the top, and "
+            "puts every layer back afterwards — so the answer does not depend "
+            "on what happened to be on screen.",
+        )
+        self.subject, inner = self._entry(
+            self.advanced,
+            inner,
+            "Facade layers",
+            "",
+            "The layers that are the building being measured. Comma separated.",
+            "Everything else in the model still casts shade but is not counted "
+            "in the area. Without this, the facade area on a developed model "
+            "includes every internal partition and balustrade. The slab layers "
+            "belong here too, or there are no floors to colour.",
+        )
+        self.require, inner = self._entry(
+            self.advanced,
+            inner,
+            "Also export",
+            "",
+            "Layers forced into the export whatever the combination says.",
+            "The zone layers must be in the export or the 3D skin cannot be "
+            "placed on the building — the study needs a Zone to line the IFC "
+            "up against, and neither of this project's IFC combinations shows "
+            "them. Left empty, the zone layers are added automatically.",
+        )
+        self.hide, inner = self._entry(
+            self.advanced,
+            inner,
+            "Keep off drawings",
+            "",
+            "Layers switched off on the study drawings and in the export.",
+            "Grids and dimension layers usually: they are the practice's own "
+            "annotation and clutter a sun study without adding to it. What "
+            "counts as clutter is a decision about the drawing, so it is named "
+            "here rather than guessed from layer names.",
+        )
+        self.instants, inner = self._entry(
+            self.advanced,
+            inner,
+            "Plan times",
+            "09:00, 12:00, 15:00",
+            "Times of day to draw a sun patch for. Comma separated.",
+            "One floor-plan sheet per time. Nine, twelve and three are the "
+            "conventional set. Each one adds a set of views and a layout, so a "
+            "long list makes a long run.",
+        )
+        self.shadow_subset, inner = self._combo(
+            self.advanced,
+            inner,
+            "Times filed in",
+            "Layout Book subset the clock-time sheets go into.",
+            "So the sheets sit with the practice's own drawings of that kind "
+            "instead of at the root of the book. The subset has to exist "
+            "already — the run will not create one, because the Layout Book is "
+            "the office's structure to organise.",
+        )
+        self.adg_subset, inner = self._combo(
+            self.advanced,
+            inner,
+            "Diagrams filed in",
+            "Subset for the sheets that are not a time of day.",
+            "The banded plan and the two-hour plan. Same rule: the subset must "
+            "exist, and a missing one is reported rather than invented, with "
+            "the sheets left at the root of the book.",
+        )
+        self.grid_m, inner = self._entry(
+            self.advanced,
+            inner,
+            "Skin cell (m)",
+            "0.5",
+            "Cell size of the 3D facade skin.",
+            "Finer looks better and makes many more elements — half the cell "
+            "size is roughly four times the count, and this project already "
+            "makes over five thousand at 0.5 m. A face narrower than one cell "
+            "is not drawn at all, so a coarse setting loses thin columns.",
+        )
         row += 1
 
         buttons = ttk.Frame(frame)
@@ -147,8 +382,20 @@ class Window:
         buttons.columnconfigure(0, weight=1)
         self.go = ttk.Button(buttons, text="Run study", command=self._start)
         self.go.grid(row=0, column=0, sticky="ew")
+        Tooltip(
+            self.go,
+            "Runs the study in the project chosen above. Minutes rather than "
+            "seconds: the export alone takes a couple. Nothing is saved — look "
+            "at the result in Archicad and save it yourself if you want to "
+            "keep it.",
+        )
         self.cancel = ttk.Button(buttons, text="Stop", command=self._stop, state="disabled")
         self.cancel.grid(row=0, column=1, padx=(6, 0))
+        Tooltip(
+            self.cancel,
+            "Asks the run to stop and lets it put the project's layer state "
+            "back on the way out. It can take a few seconds to come to a halt.",
+        )
         row += 1
 
         self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
@@ -157,28 +404,45 @@ class Window:
 
         frame.rowconfigure(row, weight=1)
         self.log = scrolledtext.ScrolledText(
-            frame, height=14, wrap="word", state="disabled", font=("Consolas", 9)
+            frame, height=11, wrap="word", state="disabled", font=("Consolas", 9)
         )
         self.log.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
         row += 1
 
-        ttk.Label(frame, text=STATUS, foreground="#a33", wraplength=700).grid(
+        ttk.Label(frame, text=STATUS, foreground="#a33", wraplength=760).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
         self._sync()
 
-    def _combo(self, parent: ttk.Frame, row: int, label: str) -> ttk.Combobox:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
-        box = ttk.Combobox(parent, values=[])
-        box.grid(row=row, column=1, sticky="ew", pady=2)
-        return box
+    def _hint(self, parent: ttk.Frame, row: int, text: str) -> None:
+        ttk.Label(parent, text=text, foreground=HINT, wraplength=560).grid(
+            row=row, column=1, sticky="w", pady=(0, 4)
+        )
 
-    def _entry(self, parent: ttk.Frame, row: int, label: str, initial: str) -> ttk.Entry:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+    def _combo(
+        self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
+    ) -> tuple[ttk.Combobox, int]:
+        name = ttk.Label(parent, text=label)
+        name.grid(row=row, column=0, sticky="w", pady=(2, 0))
+        box = ttk.Combobox(parent, values=[])
+        box.grid(row=row, column=1, sticky="ew", pady=(2, 0))
+        self._hint(parent, row + 1, hint)
+        for target in (name, box):
+            Tooltip(target, detail)
+        return box, row + 2
+
+    def _entry(
+        self, parent: ttk.Frame, row: int, label: str, initial: str, hint: str, detail: str
+    ) -> tuple[ttk.Entry, int]:
+        name = ttk.Label(parent, text=label)
+        name.grid(row=row, column=0, sticky="w", pady=(2, 0))
         box = ttk.Entry(parent)
         box.insert(0, initial)
-        box.grid(row=row, column=1, sticky="ew", pady=2)
-        return box
+        box.grid(row=row, column=1, sticky="ew", pady=(2, 0))
+        self._hint(parent, row + 1, hint)
+        for target in (name, box):
+            Tooltip(target, detail)
+        return box, row + 2
 
     def _toggle_advanced(self) -> None:
         opening = not self.advanced_open.get()
@@ -223,9 +487,8 @@ class Window:
             )
         )
         self._fill(self.apartments, found.zone_layers, ("Zone.Unit", "Zone."))
-        # "VERTICAL - No Scale" before "COVER/NO SCALE": both say no scale
-        # and one of them is a cover sheet. A diagram shrunk to fit the page
-        # is at no stated scale, which is why a no-scale title block is right.
+        # "VERTICAL - No Scale" before "COVER/NO SCALE": both say no scale and
+        # one of them is a cover sheet.
         self._fill(
             self.master,
             found.masters,
@@ -235,9 +498,7 @@ class Window:
         self._fill(self.shadow_subset, found.subsets, ("SHADOW",))
         self._fill(self.adg_subset, found.subsets, ("ADG",))
         if not self.subject.get():
-            skin = [
-                name for name in found.layers if any(word in name for word in SKIN_WORDS)
-            ]
+            skin = [name for name in found.layers if any(w in name for w in SKIN_WORDS)]
             self.subject.insert(0, ", ".join(skin))
 
     def _fill(
@@ -285,9 +546,6 @@ class Window:
                 args += ["--subject-layer", name]
             # Without an IfcSpace there is nothing to fit the skin onto the
             # building against, and no IFC combination shows the zone layers.
-            # The zone-named ones only: plenty of annotation layers carry a
-            # Zone too, and forcing those into the export adds nothing to
-            # measure and a good deal to export.
             for name in self._listed(self.require) or self._zone_defaults():
                 args += ["--require-layer", name]
             for name in self._listed(self.hide):

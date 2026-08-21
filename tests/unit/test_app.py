@@ -145,6 +145,50 @@ def test_nothing_ticked_asks_for_nothing(hidden_window: Any) -> None:
     assert hidden_window.jobs() == []
 
 
+def test_every_control_explains_itself(hidden_window: Any) -> None:
+    """Most of these settings fail quietly -- a facade study missing its slab
+    layers reports the least-lit half of the building rather than an error --
+    so a control nobody can interpret is a real defect, not a polish item.
+    A tooltip binds <Enter>, which is what this looks for."""
+    from tkinter import ttk as widgets
+
+    def controls(parent: tk.Misc) -> list[tk.Widget]:
+        found: list[tk.Widget] = []
+        for child in parent.winfo_children():
+            kinds = (
+                widgets.Combobox | widgets.Entry | widgets.Checkbutton | widgets.Button
+            )
+            if isinstance(child, kinds):
+                found.append(child)
+            found.extend(controls(child))
+        return found
+
+    bare = [
+        str(widget)
+        for widget in controls(hidden_window.root)
+        if not widget.bind("<Enter>")
+    ]
+    assert not bare, f"controls with no explanation: {bare}"
+
+
+def test_the_hover_text_appears_and_goes_away(hidden_window: Any) -> None:
+    """Without the delay, dragging across the form flashes six of these and
+    reads as a fault rather than as help."""
+    from sun_study.app.window import Tooltip
+
+    tip = Tooltip(hidden_window.apartments, "which layer the apartments are on")
+    # Captured rather than asserted in sequence: three asserts on one attribute
+    # read to mypy as a contradiction, since it cannot see that _show and _hide
+    # change it.
+    before = tip.visible
+    tip._show()
+    shown = tip.visible
+    tip._hide()
+    after = tip.visible
+
+    assert (before, shown, after) == (False, True, False)
+
+
 def test_a_project_that_will_not_answer_is_reported_not_raised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
