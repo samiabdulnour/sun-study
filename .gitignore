@@ -58,3 +58,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+dist/
+build/
+*.spec

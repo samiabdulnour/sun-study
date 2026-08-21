@@ -30,7 +30,10 @@ dependencies = [
 validation = ["pvlib>=0.10"]
 
 [dependency-groups]
+# PyInstaller is here and not in `dependencies`: it builds the window into a
+# single .exe for colleagues without Python, and nothing at runtime needs it.
 dev = [
+    "pyinstaller>=6.10",
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.11",
@@ -41,6 +44,13 @@ dev = [
 
 [project.scripts]
 sun-study = "sun_study.cli:main"
+
+# The window, for people who do not use a terminal. A gui-script on Windows is
+# launched without a console attached, which is the whole difference: the same
+# entry point as a console script would flash a black window behind it on
+# every run.
+[project.gui-scripts]
+sun-study-app = "sun_study.app.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

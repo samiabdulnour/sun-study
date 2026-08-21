@@ -1780,12 +1780,72 @@ def report_assessment(
             typer.echo(f"  wrote {write_json(json_out, result.assessment, header)}")
 
 
+def _export_for_massing(
+    *,
+    port: int,
+    combination: str | None,
+    require: Sequence[str],
+    hide: Sequence[str],
+) -> Path:
+    """Export the open project, and return where it landed.
+
+    So the facade study is one command. Doing it by hand is two, and the
+    second one silently measures the wrong thing when the first is forgotten:
+    the layers a massing counts are usually switched off on a working plan, so
+    a plain export contains no slabs and the study reports the least-lit half
+    of a building without saying anything is missing.
+
+    Which is why ``require`` matters more here than anywhere else. The subject
+    layers are forced on because they *are* the thing being measured, and the
+    zone layers have to be named too -- without an ``IfcSpace`` there is
+    nothing to fit the coloured skin onto the building against, and neither of
+    a project's own IFC combinations shows them (D52).
+
+    The file is left behind rather than cleaned up. It is the evidence for
+    every number that follows, it takes a minute to make, and a second run
+    against the same export is how a change of grid or threshold is compared
+    honestly.
+    """
+    connection = _connect(port)
+    destination = Path(tempfile.gettempdir()) / "sun-study"
+    destination.mkdir(parents=True, exist_ok=True)
+    name = str(
+        (connection.run_tapir("GetProjectInfo", {}) or {}).get("projectName") or "archicad"
+    )
+    out = destination / f"{name}.ifc"
+
+    cleared = clear_selection(connection)
+    if cleared:
+        typer.secho(
+            f"  cleared a selection of {cleared} element(s) first: with one in "
+            f"place the translator exports the selection alone",
+            fg=typer.colors.YELLOW,
+        )
+    typer.echo(f"  exporting the open project to {out} ...")
+    with export_state(
+        connection, combination=combination, require=tuple(require), hide=tuple(hide)
+    ) as plan:
+        typer.echo(plan.describe())
+        written = export_ifc(connection, out)
+    typer.echo(f"  exported {written.stat().st_size / 1e6:.1f} MB")
+    return written
+
+
 @app.command()
 def massing(
-    ifc: Annotated[Path, typer.Argument(help="IFC file of the massing.")],
+    ifc: Annotated[
+        Path | None,
+        typer.Argument(
+            help=(
+                "IFC file of the massing. Leave it out to export the open "
+                "Archicad project first, which is what a colleague wants: the "
+                "study then takes one command instead of an export by hand."
+            ),
+        ),
+    ] = None,
     timezone: Annotated[
         str, typer.Option("--timezone", "-z", help="IANA timezone, e.g. Australia/Sydney.")
-    ],
+    ] = "",
     area: Annotated[
         str,
         typer.Option("--area", help="Which threshold applies: sydney_metro (2h) or other (3h)."),
@@ -1947,6 +2007,30 @@ def massing(
         ),
     ] = None,
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    layer_combination: Annotated[
+        str | None,
+        typer.Option(
+            "--layer-combination",
+            help=(
+                "The project's own layer combination to base the export on, "
+                "usually its IFC export one. Only read when the IFC is exported "
+                "from Archicad rather than given."
+            ),
+        ),
+    ] = None,
+    require_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--require-layer",
+            help=(
+                "Layer forced visible for the export whatever the combination "
+                "says. Repeatable. The zone layers belong here: without an "
+                "IfcSpace there is nothing to fit the skin onto the building "
+                "against, and neither of a project's IFC combinations shows "
+                "them."
+            ),
+        ),
+    ] = None,
     pen: Annotated[
         list[str] | None,
         typer.Option("--pen", help="Override one band's pen, as 'label=index'. Repeatable."),
@@ -1966,6 +2050,22 @@ def massing(
     once the model has Zones and windows.
     """
     banner()
+
+    if not timezone:
+        typer.secho(
+            "--timezone is required, e.g. --timezone Australia/Sydney.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if ifc is None:
+        ifc = _export_for_massing(
+            port=port,
+            combination=layer_combination,
+            require=[*(subject_layer or []), *(require_layer or [])],
+            hide=tuple(hide_layer or ()),
+        )
 
     config = MassingConfig(
         timezone=timezone,
