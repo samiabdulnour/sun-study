@@ -35,6 +35,7 @@ __all__ = [
     "DrawingPlacement",
     "SheetReport",
     "TableRow",
+    "draw_statistics",
     "draw_table",
     "measure_drawings",
     "straighten_and_tile",
@@ -389,6 +390,68 @@ class TableRow:
     share: float
     fill_pen: int | None = None
     background_pen: int = 19
+
+
+def draw_statistics(
+    connection: ArchicadConnection,
+    layout_database_id: str,
+    *,
+    title: str,
+    rows: Sequence[tuple[str, str]],
+    height_mm: float = 2.6,
+    step_m: float = 0.011,
+    left_m: float = 0.030,
+    top_m: float = 0.240,
+) -> int:
+    """Write a sheet of label-and-number lines. Returns the lines written.
+
+    A sheet of its own rather than a corner of a drawing, because the numbers
+    are what somebody quotes and a figure read off a plan at 1:300 beside a
+    coloured patch is a figure nobody can check. Here they are typed out, one
+    per line, with the settings that produced them beside the results they
+    produced -- a page that answers "what does this study say" without anybody
+    having to open the model.
+
+    An empty label draws nothing but still steps the cursor, so a caller can
+    group lines without this needing to know what the groups mean.
+
+    The layout is cleared first. Everything on a study sheet is this tool's
+    own, and a rerun that appended would print the new numbers over the old.
+    """
+    activate(connection, layout_database_id, "Layout")
+    for kind in ("Text", "Hatch"):
+        found = connection.run_tapir("GetElementsByType", {"elementType": kind})
+        elements = found.get("elements") if isinstance(found, dict) else None
+        if isinstance(elements, list) and elements:
+            connection.run_tapir("DeleteElements", {"elements": elements})
+
+    texts: list[dict[str, Any]] = [
+        {
+            "coordinate": {"x": left_m, "y": top_m + step_m * 2, "z": 0.0},
+            "text": title,
+            "height": height_mm * 1.5,
+            "justification": "Left",
+        }
+    ]
+    written = 0
+    for index, (label, value) in enumerate(rows):
+        if not label and not value:
+            continue
+        texts.append(
+            {
+                "coordinate": {"x": left_m, "y": top_m - index * step_m, "z": 0.0},
+                # Two columns from one string: a Text is placed at a point and
+                # carries no tab stops, so a second column means a second
+                # element and twice the clutter on the layer.
+                "text": f"{label:<34}{value}",
+                "height": height_mm,
+                "justification": "Left",
+            }
+        )
+        written += 1
+
+    connection.run_tapir("CreateTexts", {"textsData": texts})
+    return written
 
 
 def draw_table(

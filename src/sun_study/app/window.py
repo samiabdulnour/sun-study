@@ -28,6 +28,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from tkinter import scrolledtext, ttk
 
+from sun_study import AUTHOR, PRODUCT, __version__
 from sun_study.app import probe
 from sun_study.app.runner import Run
 from sun_study.disclaimer import STATUS
@@ -557,6 +558,12 @@ class Window:
         ttk.Label(frame, text=STATUS, foreground="#a33", wraplength=760).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
+        row += 1
+        ttk.Label(
+            frame,
+            text=f"{PRODUCT} {__version__}  ·  created by {AUTHOR}",
+            foreground=HINT,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
         self._sync()
 
     def _hint(self, parent: ttk.Frame, row: int, text: str) -> None:

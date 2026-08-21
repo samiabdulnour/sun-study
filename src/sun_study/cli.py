@@ -21,7 +21,7 @@ from typing import Annotated, Any
 import numpy as np
 import typer
 
-from sun_study import __version__
+from sun_study import AUTHOR, PRODUCT, __version__
 from sun_study.archicad import naming
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
@@ -48,10 +48,14 @@ from sun_study.archicad.draw import (
 from sun_study.archicad.layers import export_state
 from sun_study.archicad.layout import (
     DEFAULT_LAYOUT_SCALE,
+    _create_layout,
+    _layout_named,
+    choose_master,
     file_under_subset,
     layout_from_views,
     layout_results,
     layout_sheet,
+    master_layouts,
     project_map,
 )
 from sun_study.archicad.model_bands import draw_model_bands, fit_to_project
@@ -95,7 +99,12 @@ from sun_study.archicad.series import (
     find_worksheet,
     restore_after,
 )
-from sun_study.archicad.sheets import TableRow, draw_table, straighten_and_tile
+from sun_study.archicad.sheets import (
+    TableRow,
+    draw_statistics,
+    draw_table,
+    straighten_and_tile,
+)
 from sun_study.archicad.views import (
     VIEW_PREFIX,
     ModelSource,
@@ -170,6 +179,7 @@ _CLOCK = re.compile(r"\d{1,2}:\d{2}")
 #: own numbering. One prefix, set in sun_study.archicad.naming.
 FACADE_LAYER = naming.layer("Facade")
 SHEET_NAME = naming.named("Sun Study")
+STATS_SHEET_NAME = naming.named("Sun Study Summary")
 LAYER_GROUP = naming.LAYER_GROUP
 
 app = typer.Typer(
@@ -1540,6 +1550,92 @@ def _sheet_per_instant(
             fg=typer.colors.YELLOW if filed.no_such_subset else None,
         )
 
+    ensure_model_database(connection)
+    connection.run_tapir("SaveProject", {})
+
+
+def statistics_rows(result: PipelineResult) -> list[tuple[str, str]]:
+    """The numbers a statistics sheet carries, as label-and-value lines.
+
+    Separated from the drawing so the interesting part -- deciding what is
+    worth quoting -- is testable without an Archicad.
+
+    The settings sit beside the results on purpose. A share of apartments
+    means nothing without the threshold it was measured against, the date it
+    was measured on and which zones were counted, and a sheet that gives the
+    answer without them invites somebody to quote it as though it were the
+    consultant's.
+    """
+    found = result.assessment
+    counted = [flat for flat in found.apartments if flat.counted]
+    living = sorted(flat.living_room_minutes for flat in counted)
+    outside = sorted(
+        flat.open_space_minutes for flat in counted if flat.open_space_minutes is not None
+    )
+
+    def span(minutes: Sequence[float]) -> str:
+        if not minutes:
+            return "none"
+        middle = minutes[len(minutes) // 2]
+        return f"{minutes[0]:.0f} - {minutes[-1]:.0f} min   (median {middle:.0f})"
+
+    verdict = "COMPLIES" if found.complies else "DOES NOT COMPLY"
+    return [
+        ("Assessed on", f"{result.assessment_date:%d %B %Y}"),
+        ("Ruleset", found.ruleset_identifier),
+        ("Area", f"{found.area_label}"),
+        ("Minimum per apartment", f"{found.minimum_minutes:.0f} min"),
+        ("Target share", f"{found.required_share:.0%} of apartments"),
+        ("No-sunlight cap", f"{found.maximum_no_sunlight_share:.0%} of apartments"),
+        ("", ""),
+        ("Apartments assessed", f"{found.counted_total}"),
+        ("Meeting the minimum", f"{found.meeting_minimum}  ({found.compliant_share:.1%})"),
+        ("Receiving no sunlight", f"{found.with_no_sunlight}  ({found.no_sunlight_share:.1%})"),
+        ("", ""),
+        ("Living room, range", span(living)),
+        ("Private open space, range", span(outside)),
+        ("Apartments without open space", f"{len(counted) - len(outside)}"),
+        ("", ""),
+        ("Result", f"{verdict}"),
+        ("", ""),
+        (STATUS, ""),
+        (f"{PRODUCT} {__version__} by {AUTHOR}", ""),
+    ]
+
+
+def report_statistics(
+    connection: ArchicadConnection,
+    result: PipelineResult,
+    *,
+    master_layout: str | None,
+    sheet_name: str,
+    subset: str = "",
+) -> None:
+    """Put the study's numbers on a sheet of their own.
+
+    Reused by name like every other layout this tool makes, so a rerun
+    rewrites the sheet somebody has already placed in a set rather than
+    leaving a second one beside it.
+    """
+    # No drawings on this sheet, so no scale to honour: a summary is text.
+    master = choose_master(master_layouts(connection), master_layout, DEFAULT_LAYOUT_SCALE)
+    database = _layout_named(connection, sheet_name)
+    if database is None:
+        database = _create_layout(connection, sheet_name, master)
+        # A layout is only readable, and only drawable, once it has been saved.
+        connection.run_tapir("SaveProject", {})
+
+    rows = statistics_rows(result)
+    written = draw_statistics(
+        connection, database, title="Solar access -- summary", rows=rows
+    )
+    typer.echo(f"  statistics sheet {sheet_name!r}: {written} lines on master {master.name!r}")
+
+    if subset:
+        try:
+            typer.echo(file_under_subset(connection, [sheet_name], subset).describe())
+        except ArchicadError as error:
+            typer.secho(f"  {error}", fg=typer.colors.YELLOW, err=True)
     ensure_model_database(connection)
     connection.run_tapir("SaveProject", {})
 
@@ -3474,6 +3570,18 @@ def archicad_run(
         str,
         typer.Option("--sheet-name", help="Name for the Layout that --sheet creates."),
     ] = SHEET_NAME,
+    stats: Annotated[
+        bool,
+        typer.Option(
+            "--stats/--no-stats",
+            help=(
+                "Write the study's numbers onto a sheet of their own: the "
+                "settings that produced them beside the results, so the "
+                "figures somebody quotes can be checked without opening the "
+                "model. Reused by name, like every other layout."
+            ),
+        ),
+    ] = True,
     layout_subset: Annotated[
         str,
         typer.Option(
@@ -3950,6 +4058,22 @@ def archicad_run(
                 )
                 or partial
             )
+
+        # Last, so the sheet carries the run that actually happened rather
+        # than the one that was asked for.
+        if stats:
+            typer.echo("")
+            try:
+                report_statistics(
+                    connection,
+                    result,
+                    master_layout=master_layout,
+                    sheet_name=STATS_SHEET_NAME,
+                    subset=adg_subset,
+                )
+            except ArchicadError as error:
+                typer.secho(f"  statistics sheet: {error}", fg=typer.colors.YELLOW, err=True)
+                partial = True
 
     typer.echo("")
     typer.secho(DISCLAIMER, fg=typer.colors.YELLOW)

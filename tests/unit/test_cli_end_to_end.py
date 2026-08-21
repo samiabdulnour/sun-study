@@ -935,3 +935,89 @@ def test_a_write_failure_does_not_cancel_the_drawing() -> None:
         "the write's error path must check whether a drawing was also asked for"
     )
     assert "Continuing to the drawing" in between
+
+
+# -- the statistics sheet -------------------------------------------------
+# The numbers a reader quotes. Worth testing apart from the drawing, because
+# deciding what belongs on the page is the interesting half and it needs no
+# Archicad to check.
+
+
+def _summary(monkeypatch: Any) -> list[tuple[str, str]]:
+    import datetime as dt
+    from types import SimpleNamespace
+
+    from sun_study.cli import statistics_rows
+    from sun_study.rules.assessment import ApartmentResult, BuildingAssessment
+    from sun_study.rules.ruleset import Continuity
+
+    def flat(name: str, living: float, outside: float | None) -> ApartmentResult:
+        return ApartmentResult(
+            apartment_id=name,
+            apartment_name=name,
+            living_room_minutes=living,
+            open_space_minutes=outside,
+            governing_minutes=living,
+            meets_minimum=living >= 120,
+            receives_no_sunlight=living <= 0,
+            counted=True,
+        )
+
+    found = BuildingAssessment(
+        ruleset_name="nsw_adg",
+        ruleset_version="1.0.0",
+        area_key="sydney_metro",
+        area_label="Sydney Metropolitan Area",
+        minimum_minutes=120.0,
+        continuity=Continuity.CUMULATIVE,
+        apartments=(flat("a", 30.0, 220.0), flat("b", 90.0, None), flat("c", 150.0, 10.0)),
+        counted_total=3,
+        meeting_minimum=1,
+        with_no_sunlight=0,
+        compliant_share=1 / 3,
+        no_sunlight_share=0.0,
+        required_share=0.7,
+        maximum_no_sunlight_share=0.15,
+    )
+    result = SimpleNamespace(assessment=found, assessment_date=dt.date(2024, 6, 21))
+    return statistics_rows(result)  # type: ignore[arg-type]
+
+
+def test_the_summary_carries_the_settings_beside_the_result(monkeypatch: Any) -> None:
+    """A share of apartments means nothing without the threshold, the date and
+    the ruleset it was measured against. A sheet giving the answer alone
+    invites somebody to quote it as though it were the consultant's."""
+    said = dict(_summary(monkeypatch))
+
+    assert said["Assessed on"] == "21 June 2024"
+    assert said["Ruleset"] == "nsw_adg@1.0.0"
+    assert said["Minimum per apartment"] == "120 min"
+    assert said["Target share"] == "70% of apartments"
+
+
+def test_the_summary_reports_the_verdict_and_the_counts(monkeypatch: Any) -> None:
+    said = dict(_summary(monkeypatch))
+
+    assert said["Apartments assessed"] == "3"
+    assert said["Meeting the minimum"].startswith("1")
+    assert said["Result"] == "DOES NOT COMPLY"
+
+
+def test_the_summary_counts_apartments_with_no_open_space(monkeypatch: Any) -> None:
+    """They are assessed on the living-room limb alone, which is a weaker
+    result than it looks, so the count belongs on the page."""
+    said = dict(_summary(monkeypatch))
+
+    assert said["Apartments without open space"] == "1"
+    assert said["Living room, range"].startswith("30 - 150")
+    assert said["Private open space, range"].startswith("10 - 220")
+
+
+def test_the_summary_signs_itself(monkeypatch: Any) -> None:
+    """Whose tool produced the numbers, and the disclaimer, on the sheet
+    itself -- a page of figures outlives the session that made it."""
+    from sun_study import AUTHOR
+
+    labels = [label for label, _ in _summary(monkeypatch)]
+    assert any(AUTHOR in label for label in labels)
+    assert any("PROTOTYPE" in label for label in labels)

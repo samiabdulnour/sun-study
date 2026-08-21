@@ -25,8 +25,43 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from sun_study import AUTHOR, PRODUCT, __version__
+
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "Sun Study"
+
+#: Windows reads this out of the .exe for its Properties > Details tab, and
+#: shows it in the UAC prompt and the task manager. Without it the file claims
+#: nothing at all: no author, no version, no description -- which is how a
+#: 66 MB executable arriving by email looks like something to delete.
+#:
+#: The shape is PyInstaller's, which is a Python literal rather than a file
+#: format, and the four-part version numbers must be integers.
+VERSION_INFO = f"""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(0, 0, 1, 0), prodvers=(0, 0, 1, 0),
+    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', {AUTHOR!r}),
+        StringStruct('FileDescription',
+                     'Direct sunlight hours from an Archicad model'),
+        StringStruct('FileVersion', {__version__!r}),
+        StringStruct('InternalName', {PRODUCT!r}),
+        StringStruct('LegalCopyright', 'Created by {AUTHOR}'),
+        StringStruct('OriginalFilename', 'Sun Study.exe'),
+        StringStruct('ProductName', {PRODUCT!r}),
+        StringStruct('ProductVersion', {__version__!r}),
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
 
 
 def main() -> int:
@@ -41,10 +76,16 @@ def main() -> int:
         )
         return 2
 
+    version_file = ROOT / "build" / "version_info.txt"
+    version_file.parent.mkdir(parents=True, exist_ok=True)
+    version_file.write_text(VERSION_INFO, encoding="utf-8")
+
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
+        "--version-file",
+        str(version_file),
         "--noconfirm",
         "--clean",
         "--onefile",
