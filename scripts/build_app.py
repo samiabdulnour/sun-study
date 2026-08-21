@@ -51,15 +51,23 @@ def main() -> int:
         "--windowed",
         "--name",
         NAME,
-        # ifcopenshell loads its schema data at import time and PyInstaller
-        # cannot see a data file nobody imports, so it is named here. Without
-        # it the packaged app starts and fails on the first IFC it reads.
-        "--collect-data",
+        # Everything of ifcopenshell: submodules, data and binaries. Not
+        # --collect-data, which was the first guess and is not enough --
+        # ifcopenshell imports its schema rules by name at read time, so a
+        # static scan never sees ifcopenshell.express.rules, and the packaged
+        # app got as far as opening an IFC before dying on a missing
+        # ifc2x3.exp. Measured, twice.
+        "--collect-all",
         "ifcopenshell",
         # Likewise the tz database. Windows ships no system one, which is why
         # tzdata is a runtime dependency rather than a nicety.
         "--collect-data",
         "tzdata",
+        # The rulesets. --collect-submodules gathers code; a YAML file is not
+        # code, and nothing imports it, so without this the packaged app
+        # builds cleanly and dies on the first run with "No ruleset at ...".
+        "--collect-data",
+        "sun_study",
         # Typer's runtime lives behind lazy imports that a static scan misses.
         "--collect-submodules",
         "typer",
