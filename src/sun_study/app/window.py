@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import queue
 import tkinter as tk
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from tkinter import scrolledtext, ttk
 
@@ -97,6 +98,153 @@ class Tooltip:
         if self._window is not None:
             self._window.destroy()
             self._window = None
+
+
+def pickable(names: Sequence[str]) -> list[str]:
+    """Layers worth offering, without the palette's own dividers.
+
+    A practice organises its layer list with separator layers --
+    ``06 ------------------------------ ZONES`` -- which are real layers and
+    hold nothing. They matter because they sort to the top: a colleague
+    searching "zone" is offered the divider first and it is the likeliest
+    thing to tick, which measures nothing.
+
+    Detected by the run of dashes rather than by position, so a project that
+    does not use them loses nothing.
+    """
+    return [name for name in names if "-----" not in name and name.strip()]
+
+
+def matching(names: Sequence[str], query: str) -> list[str]:
+    """Layers matching a search box, in the order the project lists them.
+
+    Every word has to appear, in any order and anywhere in the name, so
+    "floor str" finds ``01 | Floor.Structural`` without anybody having to
+    remember whether the group number or the dot comes first. Case is ignored
+    because layer naming is nobody's memory test.
+    """
+    words = query.casefold().split()
+    if not words:
+        return list(names)
+    return [name for name in names if all(word in name.casefold() for word in words)]
+
+
+class LayerChooser(tk.Toplevel):
+    """Tick the layers, rather than typing their names.
+
+    A project has a hundred and fifty layers whose names carry a group number,
+    a dot and a space -- ``05 | Dims/Notes.DA`` -- and a study that silently
+    measures nothing is what a typo in one buys. So the names come from the
+    project and the only input is a tick.
+
+    Modal, and it answers with ``None`` when cancelled rather than with the
+    list it started from, so a caller can tell "unchanged" from "emptied".
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        title: str,
+        hint: str,
+        available: Sequence[str],
+        chosen: Sequence[str],
+    ) -> None:
+        super().__init__(parent)
+        self.title(title)
+        self.transient(parent.winfo_toplevel())
+        self.minsize(520, 460)
+        self.result: list[str] | None = None
+
+        self._available = list(available)
+        #: Ticked, kept as a set across filtering: narrowing the list must not
+        #: quietly untick what has scrolled out of sight.
+        self._ticked: set[str] = {name for name in chosen if name in set(available)}
+        self._boxes: dict[str, tk.BooleanVar] = {}
+
+        outer = ttk.Frame(self, padding=PAD)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(2, weight=1)
+
+        ttk.Label(outer, text=hint, foreground=HINT, wraplength=470).grid(
+            row=0, column=0, sticky="w", pady=(0, 6)
+        )
+
+        search = ttk.Frame(outer)
+        search.grid(row=1, column=0, sticky="ew")
+        search.columnconfigure(1, weight=1)
+        ttk.Label(search, text="Find").grid(row=0, column=0, padx=(0, 6))
+        self.query = ttk.Entry(search)
+        self.query.grid(row=0, column=1, sticky="ew")
+        self.query.bind("<KeyRelease>", lambda _event: self._repaint())
+
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        canvas.grid(row=2, column=0, sticky="nsew", pady=6)
+        bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        bar.grid(row=2, column=1, sticky="ns", pady=6)
+        canvas.configure(yscrollcommand=bar.set)
+        self._list = ttk.Frame(canvas)
+        self._window_id = canvas.create_window((0, 0), window=self._list, anchor="nw")
+        self._canvas = canvas
+        self._list.bind(
+            "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.bind(
+            "<Configure>", lambda e: canvas.itemconfigure(self._window_id, width=e.width)
+        )
+        canvas.bind_all("<MouseWheel>", self._wheel)
+
+        self.count = ttk.Label(outer, text="", foreground=HINT)
+        self.count.grid(row=3, column=0, sticky="w")
+
+        buttons = ttk.Frame(outer)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Clear all", command=self._clear).grid(row=0, column=0, sticky="w")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=1, padx=6)
+        ttk.Button(buttons, text="Use these", command=self._accept).grid(row=0, column=2)
+
+        self._repaint()
+        self.query.focus_set()
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.grab_set()
+
+    def _wheel(self, event: tk.Event[tk.Misc]) -> None:
+        self._canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+    def _repaint(self) -> None:
+        for child in self._list.winfo_children():
+            child.destroy()
+        self._boxes.clear()
+        for index, name in enumerate(matching(self._available, self.query.get())):
+            state = tk.BooleanVar(value=name in self._ticked)
+            self._boxes[name] = state
+            ttk.Checkbutton(
+                self._list,
+                text=name,
+                variable=state,
+                command=lambda n=name: self._toggle(n),  # type: ignore[misc]
+            ).grid(row=index, column=0, sticky="w")
+        self.count.config(text=f"{len(self._ticked)} of {len(self._available)} chosen")
+
+    def _toggle(self, name: str) -> None:
+        if self._boxes[name].get():
+            self._ticked.add(name)
+        else:
+            self._ticked.discard(name)
+        self.count.config(text=f"{len(self._ticked)} of {len(self._available)} chosen")
+
+    def _clear(self) -> None:
+        self._ticked.clear()
+        self._repaint()
+
+    def _accept(self) -> None:
+        # Back in the project's own order, not tick order: a list a person can
+        # scan against the layer palette is worth more than one recording the
+        # sequence somebody happened to click in.
+        self.result = [name for name in self._available if name in self._ticked]
+        self.destroy()
 
 
 @dataclass
@@ -302,33 +450,30 @@ class Window:
             "puts every layer back afterwards — so the answer does not depend "
             "on what happened to be on screen.",
         )
-        self.subject, inner = self._entry(
+        self.subject, inner = self._picker(
             self.advanced,
             inner,
             "Facade layers",
-            "",
             "The layers that are the building being measured. Comma separated.",
             "Everything else in the model still casts shade but is not counted "
             "in the area. Without this, the facade area on a developed model "
             "includes every internal partition and balustrade. The slab layers "
             "belong here too, or there are no floors to colour.",
         )
-        self.require, inner = self._entry(
+        self.require, inner = self._picker(
             self.advanced,
             inner,
             "Also export",
-            "",
             "Layers forced into the export whatever the combination says.",
             "The zone layers must be in the export or the 3D skin cannot be "
             "placed on the building — the study needs a Zone to line the IFC "
             "up against, and neither of this project's IFC combinations shows "
             "them. Left empty, the zone layers are added automatically.",
         )
-        self.hide, inner = self._entry(
+        self.hide, inner = self._picker(
             self.advanced,
             inner,
             "Keep off drawings",
-            "",
             "Layers switched off on the study drawings and in the export.",
             "Grids and dimension layers usually: they are the practice's own "
             "annotation and clutter a sun study without adding to it. What "
@@ -443,6 +588,55 @@ class Window:
         for target in (name, box):
             Tooltip(target, detail)
         return box, row + 2
+
+    def _picker(
+        self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
+    ) -> tuple[ttk.Entry, int]:
+        """A layer list: ticked from the project, still typeable.
+
+        The entry stays because it is the honest record of what will be
+        passed, and because somebody setting up a new project may want to
+        paste a list. The button is what makes it usable: a hundred and fifty
+        layer names carrying a group number, a dot and a space are not
+        something to retype, and a typo here measures nothing and says so
+        several minutes later.
+        """
+        name = ttk.Label(parent, text=label)
+        name.grid(row=row, column=0, sticky="w", pady=(2, 0))
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=1, sticky="ew", pady=(2, 0))
+        holder.columnconfigure(0, weight=1)
+        box = ttk.Entry(holder)
+        box.grid(row=0, column=0, sticky="ew")
+        button = ttk.Button(
+            holder,
+            text="Choose ...",
+            width=11,
+            command=lambda: self._choose(box, label, hint),
+        )
+        button.grid(row=0, column=1, padx=(6, 0))
+        self._hint(parent, row + 1, hint)
+        for target in (name, box, button):
+            Tooltip(target, detail)
+        return box, row + 2
+
+    def _choose(self, box: ttk.Entry, label: str, hint: str) -> None:
+        """Tick layers into an entry. Leaves it alone if nothing was chosen."""
+        if not pickable(self.options.layers):
+            self._write("No project read yet, so there are no layers to choose from.")
+            return
+        dialog = LayerChooser(
+            self.root,
+            title=label,
+            hint=hint,
+            available=pickable(self.options.layers),
+            chosen=self._listed(box),
+        )
+        self.root.wait_window(dialog)
+        if dialog.result is None:
+            return
+        box.delete(0, "end")
+        box.insert(0, ", ".join(dialog.result))
 
     def _toggle_advanced(self) -> None:
         opening = not self.advanced_open.get()

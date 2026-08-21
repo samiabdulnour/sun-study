@@ -189,6 +189,112 @@ def test_the_hover_text_appears_and_goes_away(hidden_window: Any) -> None:
     assert (before, shown, after) == (False, True, False)
 
 
+# -- picking layers instead of typing them --------------------------------
+
+LAYERS = (
+    "01 ------------------------------ STRUCTURAL/MODEL",
+    "01 | Wall.External",
+    "01 | Floor.Structural",
+    "06 ------------------------------ ZONES",
+    "06 | Zone.Units",
+)
+
+
+def test_the_palettes_own_dividers_are_not_offered_as_layers() -> None:
+    """They sort to the top of a search, hold nothing, and are the likeliest
+    thing to tick: searching "zone" offered the divider before the zones."""
+    from sun_study.app.window import pickable
+
+    assert pickable(LAYERS) == [
+        "01 | Wall.External",
+        "01 | Floor.Structural",
+        "06 | Zone.Units",
+    ]
+
+
+def test_a_project_without_dividers_loses_nothing() -> None:
+    from sun_study.app.window import pickable
+
+    plain = ("Walls", "Floors")
+    assert pickable(plain) == list(plain)
+
+
+def test_every_word_matches_anywhere_so_nobody_has_to_recall_the_format() -> None:
+    """Layer names carry a group number, a bar, a dot and a space. Making
+    somebody reproduce that order is a memory test, not a search."""
+    from sun_study.app.window import matching, pickable
+
+    names = pickable(LAYERS)
+    assert matching(names, "floor str") == ["01 | Floor.Structural"]
+    assert matching(names, "STRUCTURAL floor") == ["01 | Floor.Structural"]
+    assert matching(names, "") == names
+    assert matching(names, "nothing here") == []
+
+
+def test_a_tick_survives_the_search_that_hides_it(hidden_window: Any) -> None:
+    """Narrowing the list must not quietly untick what scrolled out of sight,
+    which is how a facade study loses a slab layer nobody noticed choosing."""
+    from sun_study.app.window import LayerChooser
+
+    chooser = LayerChooser(
+        hidden_window.root,
+        title="Facade layers",
+        hint="pick them",
+        available=["01 | Wall.External", "01 | Floor.Structural"],
+        chosen=["01 | Wall.External"],
+    )
+    chooser.query.insert(0, "floor")
+    chooser._repaint()
+    assert list(chooser._boxes) == ["01 | Floor.Structural"], "the wall is filtered out"
+
+    chooser._accept()
+    assert chooser.result == ["01 | Wall.External"], "and still chosen"
+    chooser.destroy()
+
+
+def test_cancelling_is_told_apart_from_choosing_nothing(hidden_window: Any) -> None:
+    """Both leave an empty list. Only one of them should overwrite the field."""
+    from sun_study.app.window import LayerChooser
+
+    cancelled = LayerChooser(
+        hidden_window.root,
+        title="Facade layers",
+        hint="pick them",
+        available=["01 | Wall.External"],
+        chosen=["01 | Wall.External"],
+    )
+    cancelled.destroy()
+    assert cancelled.result is None
+
+    emptied = LayerChooser(
+        hidden_window.root,
+        title="Facade layers",
+        hint="pick them",
+        available=["01 | Wall.External"],
+        chosen=["01 | Wall.External"],
+    )
+    emptied._clear()
+    emptied._accept()
+    assert emptied.result == []
+
+
+def test_the_chosen_come_back_in_the_projects_order(hidden_window: Any) -> None:
+    """Not in the order somebody happened to click, so the field can be read
+    against the layer palette."""
+    from sun_study.app.window import LayerChooser
+
+    chooser = LayerChooser(
+        hidden_window.root,
+        title="Facade layers",
+        hint="pick them",
+        available=["01 | Wall.External", "01 | Floor.Structural", "06 | Zone.Units"],
+        chosen=["06 | Zone.Units", "01 | Wall.External"],
+    )
+    chooser._accept()
+    assert chooser.result == ["01 | Wall.External", "06 | Zone.Units"]
+    chooser.destroy()
+
+
 def test_a_project_that_will_not_answer_is_reported_not_raised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
