@@ -39,6 +39,7 @@ def hidden_window(monkeypatch: pytest.MonkeyPatch) -> Any:
         "options",
         lambda port: probe.ProjectOptions(
             project="SAMPLE",
+            tapir="1.5.7",
             layers=(
                 "01 | Wall.External",
                 "01 | Floor.Structural",
@@ -187,6 +188,54 @@ def test_the_hover_text_appears_and_goes_away(hidden_window: Any) -> None:
     after = tip.visible
 
     assert (before, shown, after) == (False, True, False)
+
+
+# -- the add-on everything depends on -------------------------------------
+
+
+def test_a_missing_add_on_is_told_apart_from_a_dead_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Archicad answering with no add-on is a different thing from nothing
+    listening, and needs a different sentence: one is "open a project", the
+    other is "install this"."""
+    from sun_study.archicad.connection import TapirUnavailableError
+
+    class NoAddOn:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        @property
+        def tapir_version(self) -> str:
+            raise TapirUnavailableError("no add-on response")
+
+    monkeypatch.setattr(probe, "ArchicadConnection", NoAddOn)
+    found = probe.options(19723)
+
+    assert found.tapir_missing is True
+    assert found.reachable is False
+    assert "Tapir" in found.problems[0]
+
+
+def test_run_is_switched_off_when_the_add_on_is_absent(
+    hidden_window: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """116 of the tool's 124 Archicad calls are Tapir commands, so this is not
+    a degraded run, it is no run at all. Better refused here than failed
+    several steps in."""
+    monkeypatch.setattr(
+        probe, "options", lambda port: probe.ProjectOptions(tapir_missing=True)
+    )
+    hidden_window.refresh()
+
+    assert str(hidden_window.go.cget("state")) == "disabled"
+    assert "not installed" in hidden_window.status.cget("text")
+
+
+def test_the_add_on_version_is_shown_because_support_always_asks(
+    hidden_window: Any,
+) -> None:
+    assert "Tapir" in hidden_window.status.cget("text")
 
 
 # -- picking layers instead of typing them --------------------------------

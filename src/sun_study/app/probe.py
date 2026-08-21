@@ -14,6 +14,7 @@ from sun_study.archicad.connection import (
     ArchicadError,
     HttpTransport,
     Instance,
+    TapirUnavailableError,
     find_instances,
 )
 from sun_study.archicad.layers import read_layers
@@ -36,6 +37,19 @@ class ProjectOptions:
     """Layout Book subsets, where the sheets can be filed."""
 
     storeys: tuple[int, ...] = ()
+
+    tapir: str = ""
+    """The add-on's version, when it answered."""
+
+    tapir_missing: bool = False
+    """Archicad is there and the add-on is not.
+
+    Worth its own flag rather than a line in ``problems``. Nothing in this
+    tool works without it -- 116 of its 124 Archicad calls are Tapir commands
+    -- so it is not a degraded run, it is no run at all, and the window says
+    so instead of offering a Run button that cannot work.
+    """
+
     problems: tuple[str, ...] = field(default_factory=tuple)
     """What could not be read. Shown rather than raised: a project missing one
     list is still worth offering the other five for."""
@@ -95,8 +109,19 @@ def options(port: int) -> ProjectOptions:
 
     try:
         connection = ArchicadConnection(HttpTransport(port=port))
+        version = connection.tapir_version
         info = connection.run_tapir("GetProjectInfo", {}) or {}
         project = str(info.get("projectName") or "")
+    except TapirUnavailableError:
+        # Archicad answered; the add-on did not. A different failure from a
+        # port with nothing on it, and a different thing to tell somebody.
+        return ProjectOptions(
+            tapir_missing=True,
+            problems=(
+                "Archicad is running but the Tapir add-on is not installed. "
+                "The study cannot read or draw anything without it.",
+            ),
+        )
     except ArchicadError as error:
         return ProjectOptions(problems=(f"cannot reach Archicad on port {port}: {error}",))
 
@@ -119,6 +144,7 @@ def options(port: int) -> ProjectOptions:
 
     return ProjectOptions(
         project=project,
+        tapir=version,
         layers=tuple(sorted(state.name for state in layers if state.name.strip())),
         zone_layers=tuple(zones),
         combinations=tuple(

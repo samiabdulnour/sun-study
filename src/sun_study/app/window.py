@@ -319,7 +319,7 @@ class Window:
                 "after opening or closing a project.",
             )
 
-        self.status = ttk.Label(frame, text="", foreground=HINT)
+        self.status = ttk.Label(frame, text="", foreground=HINT, wraplength=620, justify="left")
         self.status.grid(row=row, column=1, sticky="w", pady=(0, PAD))
         row += 1
 
@@ -671,14 +671,34 @@ class Window:
 
     def _offer(self) -> None:
         found = self.options
+        # Nothing here works without the add-on: 116 of the tool's 124
+        # Archicad calls are Tapir commands. So it is said plainly, and Run is
+        # switched off rather than left to fail several steps later.
+        self.go.config(state="disabled" if found.tapir_missing else "normal")
+        if found.tapir_missing:
+            self.status.config(
+                text=(
+                    "Archicad is running but the Tapir add-on is not installed, and "
+                    "nothing here works without it. Install the Archicad 26 build "
+                    "from github.com/ENZYME-APD/tapir-archicad-automation/releases, "
+                    "restart Archicad, then press Refresh."
+                ),
+                foreground="#a33",
+            )
+            return
         if not found.reachable:
-            self.status.config(text="; ".join(found.problems) or "could not read the project")
+            self.status.config(
+                text="; ".join(found.problems) or "could not read the project",
+                foreground="#a33",
+            )
             return
         self.status.config(
+            foreground=HINT,
             text=(
-                f"{len(found.layers)} layers · {len(found.zone_layers)} carry zones · "
-                f"{len(found.masters)} masters · {len(found.subsets)} subsets"
-            )
+                f"Tapir {found.tapir} · {len(found.layers)} layers · "
+                f"{len(found.zone_layers)} carry zones · {len(found.masters)} masters · "
+                f"{len(found.subsets)} subsets"
+            ),
         )
         self._fill(self.apartments, found.zone_layers, ("Zone.Unit", "Zone."))
         # "VERTICAL - No Scale" before "COVER/NO SCALE": both say no scale and
@@ -794,6 +814,9 @@ class Window:
             return
         if not self.ports:
             self._write("No Archicad to run against. Open a project, then Refresh.")
+            return
+        if self.options.tapir_missing:
+            self._write("The Tapir add-on is not installed in this Archicad.")
             return
         queued = self.jobs()
         if not queued:
