@@ -1974,6 +1974,49 @@ def test_each_band_takes_the_closest_pen_by_colour() -> None:
     assert [band.label for band in matched] == ["cold", "hot"], "only the pen changes"
 
 
+def test_no_sun_never_lands_on_a_green_when_the_palette_has_blues() -> None:
+    """The bug, from the reference project. The 0-hour band asks for navy and
+    that pen table has no dark blue at all -- its deepest is val 0.84 -- so
+    under Euclidean RGB every blue sat 136 away on lightness while a mid teal
+    sat 110 away on nothing in particular, and the teal won. The plan showed
+    "no sun" in green beside "under an hour" in blue.
+    """
+    bands = (BandStyle("0 hrs", 1e-9, fill_pen=1, rgb=(8, 48, 107)),)
+    pens = (
+        Pen(index=89, rgb=(64, 142, 114)),   # a teal, nearer in RGB
+        Pen(index=31, rgb=(42, 42, 255)),    # a blue, further in RGB
+    )
+    (matched,), _ = match_pens(bands, pens)
+
+    assert matched.fill_pen == 31, "hue decides; lightness is the forgivable error"
+
+
+def test_no_sun_takes_the_deeper_blue_so_the_cold_end_runs_the_right_way() -> None:
+    """Both are blue, so either satisfies the hue rule and the legend still
+    has to read correctly: none must not be paler than under-an-hour."""
+    bands = (
+        BandStyle("0 hrs", 1e-9, fill_pen=1, rgb=(8, 48, 107)),
+        BandStyle("0-1 hrs", 60.0, fill_pen=1, rgb=(43, 122, 191)),
+    )
+    pens = (
+        Pen(index=112, rgb=(79, 120, 222)),  # paler, less saturated
+        Pen(index=31, rgb=(42, 42, 255)),    # deeper, vivid
+    )
+    matched, _ = match_pens(bands, pens)
+
+    assert [band.fill_pen for band in matched] == [31, 112]
+
+
+def test_a_grey_is_matched_on_lightness_because_hue_means_nothing_there() -> None:
+    """Hue is noise below a tenth of saturation, and a scale with a grey in it
+    would otherwise match that grey to whatever hue the noise pointed at."""
+    bands = (BandStyle("none", 1e-9, fill_pen=1, rgb=(128, 128, 128)),)
+    pens = (Pen(index=7, rgb=(132, 130, 129)), Pen(index=8, rgb=(255, 0, 0)))
+    (matched,), _ = match_pens(bands, pens)
+
+    assert matched.fill_pen == 7
+
+
 def test_two_bands_never_share_a_pen() -> None:
     """The bug this fixes, seen on a real office pen table.
 

@@ -28,6 +28,7 @@ underneath are the ones that print if the top layer is ever hidden.
 
 from __future__ import annotations
 
+import colorsys
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -291,14 +292,53 @@ def _first_pen_table(response: Any) -> dict[str, Any] | None:
 
 
 def _distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
-    """How far apart two colours are.
+    """How far apart two colours are, in RGB.
 
-    Plain Euclidean in RGB. A perceptual metric would rank near-misses better,
-    but the job here is picking the obvious match out of a palette of a few
-    hundred, and the distance is reported so a poor one is visible rather than
-    silently accepted.
+    Used for "will a reader tell these two fills apart", where a plain
+    Euclidean gap is the right question and the threshold beside it was
+    measured in the same units. *Not* used to choose a pen -- see
+    ``_looks_like``, and the reason there.
     """
     return math.dist(left, right)
+
+
+def _looks_like(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
+    """How far apart two colours are *to a reader*. Lower is closer.
+
+    Hue dominates, and it has to. Euclidean RGB was the first version and it
+    put the 0-hour band on a green: the band asks for navy ``rgb(8,48,107)``
+    and this office's pen table has no dark blue at all -- its deepest is
+    ``val 0.84`` -- so every blue sat 136 away on lightness while a mid teal
+    sat 110 away on nothing in particular, and the teal won. The plan then
+    showed "no sun" in green beside "under an hour" in blue, which is not a
+    near miss. It is the wrong answer.
+
+    Lightness is the cheapest thing for a palette to be wrong about and the
+    easiest for a reader to forgive: a blue that is too light still reads as
+    the cold end of a scale. A hue that is wrong reads as a different
+    category. So hue is weighted well above the other two.
+
+    Saturation outranks lightness for the same reason, and it is what keeps
+    the ramp in order. The 0-hour band asks for the deepest colour on the
+    scale; weighted the other way it took a pale blue and left the vivid one
+    to 0-1 hours, so "none" was lighter than "under an hour" and the legend
+    ran backwards at its cold end.
+
+    Grey is the exception, because hue means nothing without saturation:
+    below a tenth of it, the comparison falls back to lightness.
+    """
+    left_hue, left_sat, left_val = colorsys.rgb_to_hsv(*[channel / 255 for channel in left])
+    right_hue, right_sat, right_val = colorsys.rgb_to_hsv(*[channel / 255 for channel in right])
+    if left_sat < 0.12 or right_sat < 0.12:
+        return abs(left_val - right_val) * 255 + abs(left_sat - right_sat) * 60
+
+    apart = abs(left_hue - right_hue)
+    apart = min(apart, 1.0 - apart) * 2  # the hue wheel is circular
+    return math.sqrt(
+        (apart * 200.0) ** 2
+        + ((left_sat - right_sat) * 140.0) ** 2
+        + ((left_val - right_val) * 30.0) ** 2
+    )
 
 
 #: Two fills closer than this in RGB read as the same colour on a printed
@@ -344,7 +384,7 @@ def match_pens(
     # identical pens in the table, which happens -- resolves the same way
     # every run rather than by dict ordering.
     pairings = sorted(
-        (_distance(band.rgb, pen.rgb), position, pen.index, pen)
+        (_looks_like(band.rgb, pen.rgb), position, pen.index, pen)
         for position, band in enumerate(bands)
         for pen in pens
     )
@@ -369,7 +409,7 @@ def match_pens(
             matched.append(band)
             continue
         matched.append(replace(band, fill_pen=assigned.index))
-        distances[band.label] = _distance(band.rgb, assigned.rgb)
+        distances[band.label] = _looks_like(band.rgb, assigned.rgb)
     return tuple(matched), distances
 
 

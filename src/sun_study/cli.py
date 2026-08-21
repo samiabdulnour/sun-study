@@ -406,12 +406,12 @@ def resolve_bands(
     typer.echo(f"  matched band colours against {len(pens)} pens in the project's pen table:")
     for band in styles:
         gap = distances.get(band.label, 0.0)
-        quality = "exact" if gap < 12 else ("close" if gap < 60 else "POOR MATCH")
+        quality = "exact" if gap < 8 else ("close" if gap < 30 else "POOR MATCH")
         typer.echo(
             f"    {band.label:<8} rgb{band.rgb} -> pen {band.fill_pen:<4} {quality}"
             + (f" (off by {gap:.0f})" if gap >= 12 else "")
         )
-    if any(value >= 60 for value in distances.values()):
+    if any(value >= 30 for value in distances.values()):
         typer.secho(
             "  A poor match means the pen table has no pen near that colour. "
             "Override it with --pen 'label=index'.",
@@ -1605,7 +1605,7 @@ def series_styles(connection: ArchicadConnection) -> tuple[BandStyle, ...]:
     styles, distances = match_pens(wanted, pens)
     for style in styles:
         gap = distances.get(style.label, 0.0)
-        quality = "exact" if gap < 12 else ("close" if gap < 60 else "POOR MATCH")
+        quality = "exact" if gap < 8 else ("close" if gap < 30 else "POOR MATCH")
         typer.echo(f"  {style.label:<7} rgb{style.rgb} -> pen {style.fill_pen:<4} {quality}")
     return styles
 
