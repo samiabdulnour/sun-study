@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
     MINIMUM_TAPIR_VERSION,
@@ -44,10 +45,10 @@ from sun_study.archicad.connection import (
 )
 from sun_study.archicad.draw import (
     DEFAULT_BANDS,
-    DEFAULT_LAYER_NAME,
     BandStyle,
     Pen,
     band_for,
+    default_layer_name,
     draw_assessment,
     hidden_layers,
     indistinguishable_bands,
@@ -65,7 +66,6 @@ from sun_study.archicad.layout import (
     project_map,
     storey_items,
 )
-from sun_study.archicad.naming import TOOL_PREFIX
 from sun_study.archicad.read import (
     GeoreferencingMismatchError,
     classification_items_of,
@@ -178,7 +178,7 @@ class FakeTransport:
 #: The prefix the tool leads its own layers, views and layouts with. Tests
 #: build names from it rather than spelling one out: the prefix files the
 #: output inside an office's numbering and is expected to differ per office.
-SS = TOOL_PREFIX
+SS = naming.prefix()
 
 
 def connect(responses: dict[str, Any]) -> tuple[ArchicadConnection, FakeTransport]:
@@ -1512,7 +1512,7 @@ def _draw_responses(*, layer_index: int = 7, **overrides: Any) -> dict[str, Any]
     responses: dict[str, Any] = {
         "GetAttributesByType": {
             "attributes": [
-                {"attributeId": {"guid": "l"}, "index": layer_index, "name": DEFAULT_LAYER_NAME}
+                {"attributeId": {"guid": "l"}, "index": layer_index, "name": default_layer_name()}
             ]
         },
         "GetLayers": {
@@ -1520,7 +1520,7 @@ def _draw_responses(*, layer_index: int = 7, **overrides: Any) -> dict[str, Any]
                 {
                     "attributeId": {"guid": "l"},
                     "index": layer_index,
-                    "name": DEFAULT_LAYER_NAME,
+                    "name": default_layer_name(),
                     "isHidden": False,
                     "isLocked": False,
                 }
@@ -2341,7 +2341,7 @@ def test_a_hidden_results_layer_is_called_out() -> None:
             {
                 "attributeId": {"guid": "l"},
                 "index": 7,
-                "name": DEFAULT_LAYER_NAME,
+                "name": default_layer_name(),
                 "isHidden": True,
                 "isLocked": False,
             }
@@ -4240,13 +4240,13 @@ def test_legend_labels_are_moved_onto_the_studys_own_layer() -> None:
             "GetAttributesByType": {
                 "attributes": [
                     {"attributeId": {"guid": "a"}, "index": 42, "name": "05 | Dims/Notes.DA"},
-                    {"attributeId": {"guid": "b"}, "index": 7, "name": DEFAULT_LAYER_NAME},
+                    {"attributeId": {"guid": "b"}, "index": 7, "name": default_layer_name()},
                 ]
             },
             "GetLayers": {
                 "layers": [
                     {"name": "05 | Dims/Notes.DA", "isHidden": True, "isLocked": False},
-                    {"name": DEFAULT_LAYER_NAME, "isHidden": False, "isLocked": False},
+                    {"name": default_layer_name(), "isHidden": False, "isLocked": False},
                 ]
             },
             "CreateLayers": {"attributeIds": [{"attributeId": {"guid": "a"}}]},

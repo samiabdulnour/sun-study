@@ -160,6 +160,12 @@ area take-off on `10 | Calc.*` — all of them Zones, and in one real file all n
 hold the same number, which is what a duplicated set looks like. Passing both would
 count every apartment twice.
 
+Where one layer carries dwellings *and* balconies — 15 units named `G08` beside 20
+balconies named `BY`, which is the ordinary case — add `--apartment-zone-name` and
+`--open-space-zone-name`. Without them every zone on the layer is an apartment, and a
+balcony assessed as one is a flat with no living room: it fails, silently, and takes the
+percentage down with it. The window offers both, read from the project.
+
 `--livable-suffix` matches windows **and** doors, so balcony sliders count. The layer
 names must be typed exactly as Archicad holds them — a filter that matches nothing stops
 the run and prints the layers the file does contain, rather than reporting a building
@@ -167,8 +173,15 @@ with no apartments.
 
 `--draw` puts the answer on the floor plan: one coloured fill per apartment, taken from
 the Zone's own outline and placed on the Zone's own storey, plus a legend. It all goes on
-one layer (`Sun Study.Results` by default), and re-running deletes the previous set
+one layer (`14 | Sun Study.Results` by default), and re-running deletes the previous set
 before drawing the new one.
+
+`--layer-prefix` is the `14 |` in that name, and leads every layer, layer combination,
+surface, view and layout the run creates, so the output files itself inside the office's
+own numbering — `14` because the reference project's layer groups end at `13`. It is
+also how a rerun finds its own sheets to replace, so a run given a different prefix from
+the last one leaves the last one's behind to be deleted by hand, and an empty one is
+refused rather than accepted.
 
 Colours are **pen indices**, because that is what `CreateHatches` takes — so the run
 reads the project's own pen table and gives each band the pen closest to the reference

@@ -51,10 +51,10 @@ from typing import Any
 
 import numpy as np
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import BandStyle, LayerState, ensure_layer
 from sun_study.archicad.layers import borrowed
-from sun_study.archicad.naming import TOOL_PREFIX
 from sun_study.archicad.penetration import MAX_FIT_RESIDUAL_M, box_centre
 from sun_study.archicad.read import elements_by_ifc_ids, zones
 from sun_study.archicad.series import ensure_model_database
@@ -73,8 +73,9 @@ __all__ = [
 ]
 
 #: Prefix on every attribute this module creates, so a project's own surfaces
-#: and building materials are never at risk of being overwritten by name.
-ATTRIBUTE_PREFIX = TOOL_PREFIX
+#: and building materials are never at risk of being overwritten by name. Read
+#: through ``naming.prefix()`` at the moment of use, because it is chosen per
+#: run and a constant here would freeze the default at import.
 
 #: How thick the skin is, and how far its centreline stands off the real face.
 #: Thin enough to read as a coat of paint at any scale the facade is drawn at,
@@ -154,7 +155,7 @@ def ensure_band_materials(
     if not bands:
         return ()
 
-    names = [f"{ATTRIBUTE_PREFIX} {band.label}" for band in bands]
+    names = [naming.named(band.label) for band in bands]
     connection.run_tapir(
         "CreateSurfaces",
         {
@@ -207,7 +208,7 @@ def ensure_band_materials(
             "buildingMaterialDataArray": [
                 {
                     "name": name,
-                    "id": ATTRIBUTE_PREFIX,
+                    "id": naming.prefix(),
                     "cutSurfaceIndex": indices[name],
                     "cutFillPen": band.fill_pen,
                     "cutFillBackgroundPen": band.background_pen,

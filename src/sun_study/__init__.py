@@ -11,7 +11,7 @@ Archicad lives in the ``archicad`` package and nowhere else.
 
 from sun_study.disclaimer import DISCLAIMER, STATUS
 
-__all__ = ["AUTHOR", "DISCLAIMER", "PRODUCT", "STATUS", "__version__"]
+__all__ = ["AUTHOR", "DISCLAIMER", "PRODUCT", "STATUS", "STOP_FILE_VAR", "__version__"]
 __version__ = "0.0.1"
 
 #: Who wrote it. Carried into the window, the packaged executable's file
@@ -19,3 +19,16 @@ __version__ = "0.0.1"
 #: drift apart -- the same reason the disclaimer has a module of its own.
 AUTHOR = "Sami Abdulnour"
 PRODUCT = "Sun Study"
+
+#: Where a run is told to look for its stop request. The window writes the
+#: file; the run watches for it and raises, so its ``finally`` blocks put the
+#: project's layer state back.
+#:
+#: A file rather than a signal because the packaged app has no console, and a
+#: console control event -- the only thing a Windows process can be *asked* to
+#: stop with -- cannot be sent by a process that has none. The alternative is
+#: ``TerminateProcess``, which runs nothing and leaves somebody's project
+#: showing the export's layers. It lives here because the two halves that need
+#: the name must not import each other: the window would pull in the whole
+#: command line, numpy and all, to start up.
+STOP_FILE_VAR = "SUN_STUDY_STOP_FILE"

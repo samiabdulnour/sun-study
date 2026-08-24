@@ -1728,3 +1728,115 @@ belongs, and a plan of a floor with a smaller balcony is exactly where a patch
 overhanging the outline is visible. Every other suspect checked out: 48 of 48
 spaces matched a zone on the correct floor, all 35 zones sat within 0.0 m of
 the storey they claimed, and the plan transform fitted to 0.29 m.
+
+### D68 — The prefix is a setting, so nothing may hold it as a constant
+
+``14 |`` leads the name of everything this tool creates (D65), and ``14`` is
+right for a project whose layer groups end at 13. The next office numbers
+differently, so it became ``--layer-prefix`` and a field in the window.
+
+The interesting half is not the flag. It is that six modules held a name
+*derived* from the prefix at module level -- ``DEFAULT_LAYER_NAME =
+layer("Results")``, ``EXPORT_COMBINATION = named("Sun Study Export")``,
+``VIEW_PREFIX``, ``ATTRIBUTE_PREFIX``, and four more in ``cli`` of which two
+were Typer option defaults. Every one of those is evaluated at import, before
+a command line has been read, so a run told to use another prefix would have
+drawn on ``ZZ | Sun Study.Results`` while ``remove_previous`` searched for
+``14 |``, and cleaned up neither. Both names look correct on their own; the
+only symptom is a project that quietly accumulates every run it has ever had.
+
+So they are functions now, called at the point of use, and the two Typer
+defaults take ``None`` and resolve in the body after the prefix is set. A test
+walks the package's AST and fails on any module-level call to ``layer``,
+``named``, ``group`` or ``prefix``, because this is not a mistake anybody
+would catch by reading -- the wrong version is shorter and looks tidier.
+
+The prefix is process-wide state set once before any work, rather than an
+argument threaded through forty call sites. That is the shape of the thing: a
+run measures one project with one prefix.
+
+An empty prefix is refused rather than accepted as a tidier name. ``remove_previous``
+deletes navigator items whose name starts with it, so an empty one matches
+every view and every layout in the project -- the practice's drawings deleted
+by a sun study's clean-up. And a prefix *changed* between runs orphans the
+last run's sheets, which is stated in the flag's help rather than worked
+around: finding them would mean searching by something looser than the prefix,
+which is the same danger by another route.
+
+### D69 — A layer says where the apartments are; a name says which of them are apartments
+
+The window was passing ``--apartment-zone-layer`` and nothing else. On the
+reference project that layer, ``06 | Zone.Units``, carries 15 dwellings named
+``G08``, 20 balconies named ``BY`` and the storage cupboards -- so every run
+from the window assessed 41 apartments, two thirds of which have no living
+room and cannot have one. It also passed no ``--open-space-zone-layer``, which
+falls back to slabs named ``Balcony*``; this project has none, so no balcony
+was assessed at all and every apartment was judged on its living-room limb
+alone. Both failures are silent and both push the result the same way, which
+is why a percentage that came out too low looked like the building's fault.
+
+The command line has had the flags for these since D50. The window did not
+offer them, and a setting that exists only on a command line does not exist
+for the person the window was built for.
+
+They are offered rather than typed, like every other project property here:
+the probe reads the zones once and answers with what they are *called* on each
+layer, how many carry each name, and the median floor area of each.
+
+Which of them are dwellings is guessed from area, and the guess is shown. The
+names are an office's own codes and mean nothing outside it, while a dwelling
+is tens of square metres and a balcony is a few, on every project there has
+ever been. The cuts are the ADG's own figures -- 30 m2, under the smallest
+35 m2 studio, and a 4 m2 floor under the smallest balcony -- so a storage
+cupboard is neither and is left out of both. The line under each field says
+what the layer turned out to carry and what was taken, and the chooser lists
+every name with its size beside it, because a guess nobody can see is the
+thing this window exists to avoid.
+
+Both of Archicad's name fields are offered. The IFC export puts one in
+``Name`` and the other in ``LongName``, which is which varies by translator,
+and the assessment matches either -- so a person picking from the list is
+right whichever way round their project has it.
+
+One case is refused rather than passed on: the open-space layer is only sent
+when something narrows it. Naming the apartments' own layer as the open space
+with no names to narrow it would take every apartment for a balcony and leave
+the assessment with no apartments in it, which is a worse answer than the one
+this whole entry is about.
+
+### D70 — A windowed app cannot ask a Windows process to stop, so it leaves a note
+
+Found by pressing Stop during an export. The button's own docstring said
+"terminate, not kill: the study restores the project's layer state in a
+``finally``". On Windows ``Popen.terminate()`` *is* ``TerminateProcess``,
+which runs no ``finally`` at all, so the one thing this tool guarantees about
+somebody else's file -- that it puts the layers back -- was being dropped in
+precisely the situation the guarantee was written for. On POSIX the default
+``SIGTERM`` disposition ends the process without unwinding either. The comment
+described an intention that neither platform honours.
+
+The obvious fix does not work here. The only way to *ask* a Windows process to
+stop is a console control event, and the packaged app is ``--windowed``: it has
+no console, so it cannot send one. Measured, with ``CREATE_NEW_PROCESS_GROUP``
+and ``CTRL_BREAK_EVENT``: nothing arrived, and the run was killed at the
+twenty-second deadline with the layers as the export had left them.
+
+So the window writes a file and the run watches for it, on a thread whose only
+job is to call ``interrupt_main`` when it appears. That raises
+``KeyboardInterrupt`` in the main thread, which every ``with`` in this package
+is already correct about -- Ctrl-C at a terminal has always been able to
+interrupt a run -- and it behaves the same packaged or not, console or none.
+The file is never created up front: the run stops when it *appears*, so one
+lying about would stop the next run before it began.
+
+Two things are worth knowing about the delay. A pending interrupt is delivered
+between bytecodes, so it lands at the end of whatever call is in flight:
+immediate during the ray-casting, one Archicad round trip during the drawing,
+and not until the translator returns during the export. And a single long
+``time.sleep`` swallows it entirely on Windows -- measured at 10 s of 10, against
+1.01 s for a main thread doing work. The first version of the test slept, and
+failed for that reason rather than for the one it was written to catch.
+
+Terminate and then kill are still there, in that order, behind a twenty-second
+deadline. A run too wedged to notice a file is worse than one stopped roughly.
+

@@ -1021,3 +1021,25 @@ def test_the_summary_signs_itself(monkeypatch: Any) -> None:
     labels = [label for label, _ in _summary(monkeypatch)]
     assert any(AUTHOR in label for label in labels)
     assert any("PROTOTYPE" in label for label in labels)
+
+
+def test_the_layer_prefix_is_offered_by_the_commands_that_create_things() -> None:
+    """The two a colleague runs. Both leave layers, combinations and layouts
+    in somebody's project, and ``14`` is right for one office's numbering."""
+    for command in ("massing", "archicad-run"):
+        invocation = runner.invoke(app, [command, "--help"])
+        assert invocation.exit_code == 0
+        assert "--layer-prefix" in invocation.output
+
+
+def test_an_empty_layer_prefix_is_a_usage_error_before_anything_is_touched() -> None:
+    """Refused at the door rather than four minutes in, and refused at all:
+    the prefix is how a rerun finds its own sheets to delete, so an empty one
+    matches every layout in the project."""
+    invocation = runner.invoke(
+        app,
+        ["archicad-run", "--timezone", "Australia/Sydney", "--layer-prefix", "  "],
+    )
+
+    assert invocation.exit_code == 2
+    assert "--layer-prefix" in invocation.output

@@ -29,14 +29,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.layers import read_layers
 from sun_study.archicad.layout import NavigatorItem, _walk
-from sun_study.archicad.naming import TOOL_PREFIX
 from sun_study.archicad.series import ensure_model_database
 
 __all__ = [
-    "VIEW_PREFIX",
     "ModelSource",
     "StoreyView",
     "ensure_layer_combination",
@@ -49,7 +48,10 @@ __all__ = [
 #: carries hundreds of navigator items and the ones a study adds have to be
 #: obvious at a glance -- and sortable together -- rather than reading as
 #: somebody's stray copy of a storey.
-VIEW_PREFIX = TOOL_PREFIX
+#:
+#: Read through ``naming.prefix()`` at the moment of use and never captured:
+#: it is chosen per run, so every default argument below takes ``None`` and
+#: asks, rather than holding the default from import time.
 
 
 @dataclass(frozen=True)
@@ -156,13 +158,18 @@ def ensure_layer_combination(
     return name
 
 
-def remove_previous(connection: ArchicadConnection, prefix: str = VIEW_PREFIX) -> tuple[int, int]:
+def remove_previous(
+    connection: ArchicadConnection, prefix: str | None = None
+) -> tuple[int, int]:
     """Delete the views and layouts an earlier run made. ``(gone, left)``.
 
     Every run makes a fresh set, so without this a project collects a layout
     and six views per instant per run and nobody can tell which is current.
     Only items whose name starts with the tool's own prefix are touched, which
-    is what the prefix is for.
+    is what the prefix is for. A run given a different ``--layer-prefix`` from
+    the last one therefore leaves the last one's sheets alone: they are no
+    longer this tool's work as far as the search can tell, and deleting by any
+    looser rule is how a clean-up reaches the practice's drawings.
 
     **Layouts first, then views, and the outcome is counted.** A View that a
     placed Drawing still points at cannot be deleted, and Archicad does not
@@ -179,6 +186,7 @@ def remove_previous(connection: ArchicadConnection, prefix: str = VIEW_PREFIX) -
     after the first warned about views it could not remove that were folders
     it was never going to.
     """
+    prefix = prefix or naming.prefix()
     gone = 0
     for map_id in ("LayoutBook", "PublicViewMap"):
         doomed = _named(connection, map_id, prefix)
@@ -230,7 +238,7 @@ def _named(connection: ArchicadConnection, map_id: str, prefix: str) -> list[str
     ]
 
 
-def next_view_folder(connection: ArchicadConnection, stem: str = f"{VIEW_PREFIX} Sun Study") -> str:
+def next_view_folder(connection: ArchicadConnection, stem: str | None = None) -> str:
     """The name for this run's folder: ``stem fix 01``, then ``fix 02``.
 
     A new one each run rather than a reused one, because neither a folder nor
@@ -239,6 +247,7 @@ def next_view_folder(connection: ArchicadConnection, stem: str = f"{VIEW_PREFIX}
     ones. Numbering them makes the current set obvious and the stale ones easy
     to delete by hand, which is the only way they can go.
     """
+    stem = stem or f"{naming.prefix()} {naming.GROUP_WORD}"
     used = set()
     for name in _by_name(connection, "PublicViewMap"):
         if name.startswith(f"{stem} fix "):
@@ -280,7 +289,7 @@ def views_for_storeys(
     drawing_scale: float,
     zoom: tuple[float, float, float, float] | None = None,
     folder: str | None = None,
-    prefix: str = VIEW_PREFIX,
+    prefix: str | None = None,
 ) -> list[StoreyView]:
     """One independent View per storey, pinned to a layer combination.
 
@@ -290,6 +299,7 @@ def views_for_storeys(
     """
     if not storeys:
         return []
+    prefix = prefix or naming.prefix()
 
     # Reused only *within this run's folder*. A View cannot be deleted --
     # ``DeleteNavigatorItems`` reports success and leaves it -- so reuse is

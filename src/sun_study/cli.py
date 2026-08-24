@@ -7,12 +7,17 @@ threshold before reading a result rather than after quoting one.
 
 from __future__ import annotations
 
+import _thread
 import collections
 import contextlib
 import datetime as dt
+import os
 import re
+import signal
 import sys
 import tempfile
+import threading
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -21,7 +26,7 @@ from typing import Annotated, Any
 import numpy as np
 import typer
 
-from sun_study import AUTHOR, PRODUCT, __version__
+from sun_study import AUTHOR, PRODUCT, STOP_FILE_VAR, __version__
 from sun_study.archicad import naming
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
@@ -36,9 +41,9 @@ from sun_study.archicad.connection import (
 )
 from sun_study.archicad.draw import (
     DEFAULT_BANDS,
-    DEFAULT_LAYER_NAME,
     BandStyle,
     Pen,
+    default_layer_name,
     draw_assessment,
     hidden_layers,
     indistinguishable_bands,
@@ -106,7 +111,6 @@ from sun_study.archicad.sheets import (
     straighten_and_tile,
 )
 from sun_study.archicad.views import (
-    VIEW_PREFIX,
     ModelSource,
     ensure_layer_combination,
     ensure_view_folder,
@@ -176,11 +180,13 @@ from sun_study.rules.ruleset import BUILTIN_RULESETS, RulesetError, load_ruleset
 _CLOCK = re.compile(r"\d{1,2}:\d{2}")
 
 #: What a run leaves behind, named so it files itself inside the office's
-#: own numbering. One prefix, set in sun_study.archicad.naming.
-FACADE_LAYER = naming.layer("Facade")
-SHEET_NAME = naming.named("Sun Study")
-STATS_SHEET_NAME = naming.named("Sun Study Summary")
-LAYER_GROUP = naming.LAYER_GROUP
+#: own numbering. One prefix, chosen per run with --layer-prefix and held in
+#: sun_study.archicad.naming.
+#:
+#: Read through a call at the moment of use, never as a module constant: a
+#: name built at import is the *default* prefix, fixed before any command line
+#: has been read, and a run told to use another would then draw on one layer
+#: and clean up another.
 
 app = typer.Typer(
     add_completion=False,
@@ -769,9 +775,9 @@ def report_model_views(
 
     wanted: list[tuple[ModelSource, str]] = []
     if live is not None:
-        wanted.append((live, f"{VIEW_PREFIX} Solar Model 3D"))
+        wanted.append((live, naming.named("Solar Model 3D")))
     if document is not None:
-        wanted.append((document, f"{VIEW_PREFIX} Solar Model Document"))
+        wanted.append((document, naming.named("Solar Model Document")))
     if not wanted:
         return True
 
@@ -780,7 +786,7 @@ def report_model_views(
     # model view if they were ever drawn in 3D.
     combination = ensure_layer_combination(
         connection,
-        f"{VIEW_PREFIX} Solar Model",
+        naming.named("Solar Model"),
         show=[skin_layer],
         hide=[
             *(name for name in tool_layers(connection, layer_prefix) if name != skin_layer),
@@ -788,14 +794,14 @@ def report_model_views(
         ],
     )
 
-    folder = ensure_view_folder(connection, f"{VIEW_PREFIX} Solar Model")
-    typer.echo(f"  views go in the {VIEW_PREFIX} Solar Model folder ({folder[:8]})")
+    folder = ensure_view_folder(connection, naming.named("Solar Model"))
+    typer.echo(f"  views go in the {naming.named('Solar Model')} folder ({folder[:8]})")
     try:
         views = views_for_sources(
             connection,
             wanted,
             combination=combination,
-            folder=f"{VIEW_PREFIX} Solar Model",
+            folder=naming.named("Solar Model"),
             drawing_scale=scale,
         )
     except ArchicadError as error:
@@ -809,7 +815,7 @@ def report_model_views(
         placed = layout_from_views(
             connection,
             [(view.navigator_id, view.name) for view in views],
-            layout_name=f"{VIEW_PREFIX} Solar Model",
+            layout_name=naming.named("Solar Model"),
             scale=scale,
             master_layout=master_layout,
         )
@@ -1475,7 +1481,7 @@ def _sheet_per_instant(
         try:
             combination = ensure_layer_combination(
                 connection,
-                f"{VIEW_PREFIX} Sun Study {label}",
+                naming.named(f"Sun Study {label}"),
                 show=[mine],
                 hide=[*sorted(mine_all - {mine}), *extra_hidden],
             )
@@ -1491,7 +1497,7 @@ def _sheet_per_instant(
             placed = layout_from_views(
                 connection,
                 [(view.navigator_id, view.name) for view in views],
-                layout_name=f"{VIEW_PREFIX} Sun Study {label}",
+                layout_name=naming.named(f"Sun Study {label}"),
                 scale=scale,
                 master_layout=master_layout,
             )
@@ -1540,7 +1546,7 @@ def _sheet_per_instant(
             continue
         try:
             filed = file_under_subset(
-                connection, [f"{VIEW_PREFIX} Sun Study {label}" for label in chosen], subset
+                connection, [naming.named(f"Sun Study {label}") for label in chosen], subset
             )
         except ArchicadError as error:
             typer.secho(f"  {error}", fg=typer.colors.YELLOW, err=True)
@@ -2028,9 +2034,30 @@ def massing(
             ),
         ),
     ] = 0.5,
+    layer_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--layer-prefix",
+            help=(
+                "Leads the name of every layer, layer combination, surface, "
+                "view and layout this run creates, so the output files itself "
+                "inside the office's own numbering: '14 |' gives "
+                "'14 | Sun Study.Results'. It is also how a rerun finds its own "
+                "sheets to replace, so changing it leaves the last run's behind "
+                "for you to delete by hand, and an empty one is refused."
+            ),
+        ),
+    ] = None,
     model_layer: Annotated[
-        str, typer.Option("--model-layer", help="Layer the facade skin is drawn on.")
-    ] = FACADE_LAYER,
+        str | None,
+        typer.Option(
+            "--model-layer",
+            help=(
+                "Layer the facade skin is drawn on. Defaults to this tool's "
+                "own, under --layer-prefix."
+            ),
+        ),
+    ] = None,
     model_flat: Annotated[
         bool,
         typer.Option(
@@ -2147,6 +2174,17 @@ def massing(
     """
     banner()
 
+    # Before anything is named. Every layer, combination, surface, view and
+    # layout below is built from this prefix at the moment it is made, so it
+    # has to be settled before the first of them -- and a bad one is a usage
+    # error, not a traceback four minutes into a run.
+    try:
+        naming.set_prefix(layer_prefix)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--layer-prefix") from error
+
+    model_layer = model_layer or naming.layer("Facade")
+
     if not timezone:
         typer.secho(
             "--timezone is required, e.g. --timezone Australia/Sydney.",
@@ -2227,7 +2265,7 @@ def massing(
         connection = _connect(port)
         if report_model_views(
             connection,
-            layer_prefix=LAYER_GROUP,
+            layer_prefix=naming.group(),
             skin_layer=model_layer,
             document_name=model_document,
             scale=model_scale,
@@ -3262,8 +3300,12 @@ def archicad_selftest(
         ),
     ] = None,
     layer: Annotated[
-        str, typer.Option("--layer", help="Archicad layer to draw on.")
-    ] = DEFAULT_LAYER_NAME,
+        str | None,
+        typer.Option(
+            "--layer",
+            help="Archicad layer to draw on. Defaults to this tool's own.",
+        ),
+    ] = None,
     pen: Annotated[
         list[str] | None,
         typer.Option("--pen", help="Override a band's fill pen as 'label=index'. Repeatable."),
@@ -3551,10 +3593,30 @@ def archicad_run(
             ),
         ),
     ] = False,
+    layer_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--layer-prefix",
+            help=(
+                "Leads the name of every layer, layer combination, surface, "
+                "view and layout this run creates, so the output files itself "
+                "inside the office's own numbering: '14 |' gives "
+                "'14 | Sun Study.Results'. It is also how a rerun finds its own "
+                "sheets to replace, so changing it leaves the last run's behind "
+                "for you to delete by hand, and an empty one is refused."
+            ),
+        ),
+    ] = None,
     layer: Annotated[
-        str,
-        typer.Option("--layer", help="Archicad layer to draw the result on."),
-    ] = DEFAULT_LAYER_NAME,
+        str | None,
+        typer.Option(
+            "--layer",
+            help=(
+                "Archicad layer to draw the result on. Defaults to this tool's "
+                "own, under --layer-prefix."
+            ),
+        ),
+    ] = None,
     sheet: Annotated[
         bool,
         typer.Option(
@@ -3567,9 +3629,15 @@ def archicad_run(
         ),
     ] = False,
     sheet_name: Annotated[
-        str,
-        typer.Option("--sheet-name", help="Name for the Layout that --sheet creates."),
-    ] = SHEET_NAME,
+        str | None,
+        typer.Option(
+            "--sheet-name",
+            help=(
+                "Name for the Layout that --sheet creates. Defaults to the "
+                "tool's own name under --layer-prefix."
+            ),
+        ),
+    ] = None,
     stats: Annotated[
         bool,
         typer.Option(
@@ -3772,6 +3840,19 @@ def archicad_run(
     printed, so a lost or re-interpreted georeference stops the run.
     """
     banner()
+
+    # Before anything is named. Every layer, combination, surface, view and
+    # layout below is built from this prefix at the moment it is made, so it
+    # has to be settled before the first of them -- and a bad one is a usage
+    # error, not a traceback four minutes into a run.
+    try:
+        naming.set_prefix(layer_prefix)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--layer-prefix") from error
+
+    layer = layer or default_layer_name()
+    sheet_name = sheet_name or naming.named("Sun Study")
+
     connection = _connect(port)
     typer.echo(describe_connection(connection))
     typer.echo("")
@@ -4068,7 +4149,7 @@ def archicad_run(
                     connection,
                     result,
                     master_layout=master_layout,
-                    sheet_name=STATS_SHEET_NAME,
+                    sheet_name=naming.named("Sun Study Summary"),
                     subset=adg_subset,
                 )
             except ArchicadError as error:
@@ -4080,6 +4161,77 @@ def archicad_run(
     if partial:
         # A non-zero exit so a partial write cannot pass unnoticed in a script.
         raise typer.Exit(code=3)
+
+
+#: How often a run looks to see whether it has been asked to stop. Idle cost
+#: is one ``stat`` a quarter second against a study measured in minutes, and
+#: the delay a person feels after pressing Stop is this plus whatever Archicad
+#: call is in flight.
+STOP_POLL_SECONDS = 0.25
+
+
+def listen_for_stop() -> None:
+    """Turn a stop request into an exception, so the ``finally`` blocks run.
+
+    The window's Stop button exists to get somebody out of a six-minute run,
+    and a run holds the project's layer state open: ``export_state`` forces on
+    what the export needs and puts every layer back in a ``finally``. A
+    process that is simply killed never reaches it, and the project is left
+    showing the export's layers with nothing to say so -- the tool's one
+    guarantee about somebody else's file, lost in exactly the situation it was
+    written for.
+
+    No default does the right thing, and neither does the obvious fix. On
+    Windows ``terminate()`` is ``TerminateProcess``, which runs nothing at
+    all; on POSIX the default ``SIGTERM`` disposition ends the process without
+    unwinding. The Windows way to *ask* is a console control event -- and the
+    packaged app is windowed, has no console, and so cannot send one. Measured:
+    the run was killed at the twenty-second deadline, layers as the export had
+    left them.
+
+    So the window writes a file and the run watches for it, on a thread whose
+    only job is to call ``interrupt_main`` when it appears. That raises
+    ``KeyboardInterrupt`` in the main thread -- the one exception every ``with``
+    in this package is already correct about, because Ctrl-C at a terminal has
+    always been able to interrupt a run this way -- and works the same
+    packaged or not, console or none.
+
+    The signal handlers are kept for the terminal case, where a stop can also
+    arrive as ``SIGTERM`` from something that is not this window.
+
+    What it costs is a delay, and where the delay comes from is worth knowing.
+    A pending interrupt is delivered between bytecodes, so it lands at the end
+    of whatever call is in flight -- immediately during the ray-casting,
+    within an Archicad round trip during the drawing, and not until the
+    translator returns during the IFC export, which is the minutes-long one.
+    Measured on Windows: a main thread inside a single ``time.sleep(10)`` does
+    not see it until all ten seconds are up, while one doing work takes it in
+    1.01. Hence the deadline in ``runner``, and the escalation behind it.
+    """
+
+    def interrupted(number: int, frame: object) -> None:
+        raise KeyboardInterrupt(f"stopped by signal {number}")
+
+    for name in ("SIGTERM", "SIGBREAK", "SIGINT"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            signal.signal(number, interrupted)
+        except (OSError, ValueError):  # pragma: no cover - not on the main thread
+            pass
+
+    asked = os.environ.get(STOP_FILE_VAR)
+    if not asked:
+        return
+    stop_file = Path(asked)
+
+    def watch() -> None:
+        while not stop_file.exists():
+            time.sleep(STOP_POLL_SECONDS)
+        _thread.interrupt_main()
+
+    threading.Thread(target=watch, daemon=True, name="sun-study-stop").start()
 
 
 def main() -> None:
@@ -4100,6 +4252,7 @@ def main() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:  # pragma: no branch - always present on 3.11+
             reconfigure(errors="replace")
+    listen_for_stop()
     app()
 
 

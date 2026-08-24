@@ -47,6 +47,15 @@ def hidden_window(monkeypatch: pytest.MonkeyPatch) -> Any:
                 "06 | Zone.Units",
             ),
             zone_layers=("05 | Dims/Notes.DA", "06 | Zone.Balcony", "06 | Zone.Units"),
+            # The reference project's own shape: dwellings, balconies and
+            # storage cupboards, all Zones, all on one layer, told apart only
+            # by a name and a size.
+            zone_kinds=(
+                probe.ZoneKind(layer="06 | Zone.Units", label="G08", count=15, area_m2=74.0),
+                probe.ZoneKind(layer="06 | Zone.Units", label="BY", count=20, area_m2=11.0),
+                probe.ZoneKind(layer="06 | Zone.Units", label="SC", count=6, area_m2=2.5),
+                probe.ZoneKind(layer="05 | Dims/Notes.DA", label="GFA", count=37, area_m2=310.0),
+            ),
             combinations=("01 | Plans - DA", "12 | IFC ARCH. EXPORT"),
             masters=("A4", "DA A1 - VERTICAL COVER/NO SCALE", "DA A1 - VERTICAL - No Scale"),
             subsets=("ADG DIAGRAMS", "PLANS", "SHADOW DIAGRAMS"),
@@ -379,3 +388,262 @@ def test_unpackaged_runs_the_module_and_packaged_runs_itself(
 
     monkeypatch.setattr("sys.frozen", True, raising=False)
     assert len(command_prefix()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Which zones are apartments, and which are somebody's balcony.
+# ---------------------------------------------------------------------------
+def test_the_dwellings_and_the_balconies_are_told_apart_by_size(hidden_window: Any) -> None:
+    """The names are an office's own codes and mean nothing outside it. The
+    sizes mean the same thing everywhere: a flat is tens of square metres, a
+    balcony is a few, a storage cupboard is less."""
+    assert hidden_window.apartment_names.get() == "G08"
+    assert hidden_window.balconies.get() == "06 | Zone.Units"
+    assert hidden_window.balcony_names.get() == "BY"
+
+
+def test_the_zones_that_are_neither_are_left_out(hidden_window: Any) -> None:
+    """A 2.5 m2 storage cupboard is not a dwelling and not private open space,
+    and counted as either it is a wrong number rather than a missing one."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_plans.set(True)
+    (plans,) = hidden_window.jobs()
+
+    assert "SC" not in flag(plans.args, "--apartment-zone-name")
+    assert "SC" not in flag(plans.args, "--open-space-zone-name")
+
+
+def test_the_plans_run_says_which_zones_are_apartments(hidden_window: Any) -> None:
+    """Without this the layer alone decides, and this layer carries 15
+    dwellings, 20 balconies and the storage. Two thirds of what it would
+    assess has no living room, so the building fails on zones nobody lives
+    in."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_plans.set(True)
+    (plans,) = hidden_window.jobs()
+
+    assert flag(plans.args, "--apartment-zone-layer") == ["06 | Zone.Units"]
+    assert flag(plans.args, "--apartment-zone-name") == ["G08"]
+
+
+def test_the_plans_run_says_which_zones_are_the_open_space(hidden_window: Any) -> None:
+    """The other half of the ADG test. With none named, every apartment is
+    assessed on its living room alone and the result is worse than the
+    building is."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_plans.set(True)
+    (plans,) = hidden_window.jobs()
+
+    assert flag(plans.args, "--open-space-zone-layer") == ["06 | Zone.Units"]
+    assert flag(plans.args, "--open-space-zone-name") == ["BY"]
+
+
+def test_an_unnarrowed_balcony_layer_is_not_passed_at_all(hidden_window: Any) -> None:
+    """Naming the apartments' own layer as the open space, with no names to
+    narrow it, would take every apartment for a balcony and leave the
+    assessment with no apartments in it."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_plans.set(True)
+    hidden_window.balcony_names.delete(0, "end")
+    (plans,) = hidden_window.jobs()
+
+    assert flag(plans.args, "--open-space-zone-layer") == []
+
+
+def test_a_balcony_layer_of_its_own_needs_no_names(hidden_window: Any) -> None:
+    """Where the practice keeps its balconies on a layer of their own, the
+    layer is the whole answer."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_plans.set(True)
+    hidden_window.balconies.set("06 | Zone.Balcony")
+    hidden_window.balcony_names.delete(0, "end")
+    (plans,) = hidden_window.jobs()
+
+    assert flag(plans.args, "--open-space-zone-layer") == ["06 | Zone.Balcony"]
+
+
+def test_the_living_room_glazing_is_only_named_when_it_is_set(hidden_window: Any) -> None:
+    """It replaces the room-name route rather than narrowing it, so passing an
+    empty one would be a different study, not a tidier command line."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_plans.set(True)
+    assert flag(hidden_window.jobs()[0].args, "--livable-suffix") == []
+
+    hidden_window.livable.insert(0, "_L")
+    assert flag(hidden_window.jobs()[0].args, "--livable-suffix") == ["_L"]
+
+
+# ---------------------------------------------------------------------------
+# The prefix everything created is named with.
+# ---------------------------------------------------------------------------
+def test_both_runs_are_told_the_same_layer_prefix(hidden_window: Any) -> None:
+    """One field, and every layer, view and sheet either run leaves behind
+    carries it -- so all of it can be found, and deleted, in one search."""
+    hidden_window.do_plans.set(True)
+    facade, plans = hidden_window.jobs()
+
+    assert flag(facade.args, "--layer-prefix") == ["14 |"]
+    assert flag(plans.args, "--layer-prefix") == ["14 |"]
+
+
+def test_another_offices_numbering_reaches_the_command_line(hidden_window: Any) -> None:
+    """``14`` is right for a project whose layer groups end at 13. The next
+    office numbers differently, which is the whole reason for the field."""
+    hidden_window.prefix.delete(0, "end")
+    hidden_window.prefix.insert(0, "ZZ |")
+    (facade,) = hidden_window.jobs()
+
+    assert flag(facade.args, "--layer-prefix") == ["ZZ |"]
+
+
+def test_a_zone_is_offered_under_both_of_the_names_archicad_gives_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The IFC export puts one of them in ``Name`` and the other in
+    ``LongName``, and which is which varies by translator. The assessment
+    matches either, so offering both means a person picking from the list is
+    right whichever way round their project has it."""
+    from sun_study.archicad import read
+    from sun_study.archicad.read import ArchicadZone
+
+    def square(side: float) -> tuple[tuple[float, float], ...]:
+        return ((0.0, 0.0), (side, 0.0), (side, side), (0.0, side))
+
+    monkeypatch.setattr(read, "layer_names", lambda _c: {4: "06 | Zone.Units"})
+    monkeypatch.setattr(
+        read,
+        "zones",
+        lambda _c: (
+            ArchicadZone(guid="a", name="3B", number="G08", outline=square(8.0), layer_index=4),
+            ArchicadZone(guid="b", name="3B", number="G08", outline=square(9.0), layer_index=4),
+            ArchicadZone(guid="c", name="BALC", number="BY", outline=square(3.0), layer_index=4),
+            # No layer, so it cannot be attributed and is not offered.
+            ArchicadZone(guid="d", name="LOOSE", number="", outline=square(9.0)),
+        ),
+    )
+
+    layers, kinds = probe._zones_by_layer(object())  # type: ignore[arg-type]
+    by_label = {kind.label: kind for kind in kinds}
+
+    assert layers == ("06 | Zone.Units",)
+    assert set(by_label) == {"3B", "G08", "BALC", "BY"}
+    assert by_label["G08"].count == 2
+    assert by_label["G08"].area_m2 == pytest.approx(72.5)  # the median of 64 and 81
+    assert by_label["G08"].dwelling and not by_label["G08"].open_space
+    assert by_label["BY"].open_space and not by_label["BY"].dwelling
+    assert "LOOSE" not in by_label
+
+
+def test_the_biggest_zones_are_listed_first_because_they_are_what_is_wanted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Somebody opening the list is looking for the apartments, and they are
+    the largest thing a zone layer holds."""
+    from sun_study.archicad import read
+    from sun_study.archicad.read import ArchicadZone
+
+    def square(side: float) -> tuple[tuple[float, float], ...]:
+        return ((0.0, 0.0), (side, 0.0), (side, side), (0.0, side))
+
+    monkeypatch.setattr(read, "layer_names", lambda _c: {1: "06 | Zone.Units"})
+    monkeypatch.setattr(
+        read,
+        "zones",
+        lambda _c: (
+            ArchicadZone(guid="a", name="SC", number="", outline=square(1.5), layer_index=1),
+            ArchicadZone(guid="b", name="G08", number="", outline=square(8.0), layer_index=1),
+            ArchicadZone(guid="c", name="BY", number="", outline=square(3.0), layer_index=1),
+        ),
+    )
+
+    _, kinds = probe._zones_by_layer(object())  # type: ignore[arg-type]
+
+    assert [kind.label for kind in kinds] == ["G08", "BY", "SC"]
+
+
+# ---------------------------------------------------------------------------
+# Stopping a run, and what it owes the project on the way out.
+# ---------------------------------------------------------------------------
+#: A stand-in for a run: it holds something it must give back, and it is
+#: *executing* while it waits rather than sleeping in one call. That is not
+#: incidental. On Windows a pending interrupt is delivered between bytecodes,
+#: so a single long ``time.sleep`` swallows it until the sleep is over --
+#: measured at 10 s of 10 -- while a run doing work takes it at the next call
+#: boundary, measured at 1.01 s of a 10 s wait.
+HOLDS_THE_LAYERS = """
+import time
+from sun_study.cli import listen_for_stop
+
+listen_for_stop()
+print("holding the layer state", flush=True)
+try:
+    for _ in range(1200):
+        time.sleep(0.05)
+except KeyboardInterrupt:
+    print("put the layers back", flush=True)
+"""
+
+
+def test_a_stopped_run_puts_the_project_back_before_it_goes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of the Stop button. A run holds the project at the
+    export's layer state and restores it in a ``finally``; a process that is
+    merely killed never reaches it, and Windows ``terminate()`` is
+    ``TerminateProcess``, which kills. So the stop arrives as a signal the run
+    can unwind from, and this is the proof it does.
+    """
+    import sys
+    import time
+
+    from sun_study.app import runner
+
+    monkeypatch.setattr(runner, "command_prefix", lambda: [sys.executable, "-u"])
+    said: list[str] = []
+    ended: list[int] = []
+    run = runner.Run(
+        ["-c", HOLDS_THE_LAYERS], on_line=said.append, on_done=ended.append
+    )
+    run.start()
+
+    deadline = time.monotonic() + 30.0
+    while "holding the layer state" not in said and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert "holding the layer state" in said, said
+
+    asked_at = time.monotonic()
+    run.stop()
+    while run.running and time.monotonic() < deadline:
+        time.sleep(0.05)
+    took = time.monotonic() - asked_at
+
+    assert "put the layers back" in said, said
+    assert ended, "the run never reported that it had finished"
+    # Comfortably inside the grace period, which is what says the run stopped
+    # because it was asked rather than because it was killed at the deadline.
+    assert took < runner.GRACE_SECONDS / 2, f"took {took:.1f}s to come back"
+
+
+def test_the_stop_signal_becomes_an_exception_the_finally_blocks_answer_to() -> None:
+    """Installed rather than relied on: neither signal's default disposition
+    unwinds, so without this the handlers are the operating system's and the
+    layer state is lost whichever way the run is stopped."""
+    import signal
+
+    from sun_study.cli import listen_for_stop
+
+    before = {
+        name: signal.getsignal(getattr(signal, name))
+        for name in ("SIGTERM", "SIGBREAK", "SIGINT")
+        if hasattr(signal, name)
+    }
+    try:
+        listen_for_stop()
+        for name in before:
+            handler = signal.getsignal(getattr(signal, name))
+            assert callable(handler), f"{name} left at its default"
+            with pytest.raises(KeyboardInterrupt):
+                handler(getattr(signal, name), None)
+    finally:
+        for name, handler in before.items():
+            signal.signal(getattr(signal, name), handler)

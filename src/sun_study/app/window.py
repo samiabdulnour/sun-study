@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import queue
 import tkinter as tk
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from tkinter import scrolledtext, ttk
 
 from sun_study import AUTHOR, PRODUCT, __version__
 from sun_study.app import probe
 from sun_study.app.runner import Run
+from sun_study.archicad import naming
 from sun_study.disclaimer import STATUS
 
 PAD = 8
@@ -116,6 +117,20 @@ def pickable(names: Sequence[str]) -> list[str]:
     return [name for name in names if "-----" not in name and name.strip()]
 
 
+def _some(entries: Iterable[str], most: int = 5) -> str:
+    """A readable list of what a layer holds, and how much was left out.
+
+    One project's zone layer carries thirteen distinct names. Printed in full
+    they wrap to three lines under a field and stop being read, which loses
+    the first five as well as the last eight -- and the whole point of the
+    line is that somebody glances at it. The full list, with sizes, is one
+    click away in the chooser.
+    """
+    listed = list(entries)
+    shown = ", ".join(listed[:most])
+    return shown if len(listed) <= most else f"{shown} and {len(listed) - most} more"
+
+
 def matching(names: Sequence[str], query: str) -> list[str]:
     """Layers matching a search box, in the order the project lists them.
 
@@ -131,7 +146,7 @@ def matching(names: Sequence[str], query: str) -> list[str]:
 
 
 class LayerChooser(tk.Toplevel):
-    """Tick the layers, rather than typing their names.
+    """Tick the names, rather than typing them. Layers, or a layer's zones.
 
     A project has a hundred and fifty layers whose names carry a group number,
     a dot and a space -- ``05 | Dims/Notes.DA`` -- and a study that silently
@@ -150,7 +165,13 @@ class LayerChooser(tk.Toplevel):
         hint: str,
         available: Sequence[str],
         chosen: Sequence[str],
+        describe: Mapping[str, str] | None = None,
     ) -> None:
+        """``describe`` is what a row *reads* as, where the name alone does not
+        say enough -- a zone name means little without its size, and ``BY``
+        beside ``12 zones, 11 m2`` is a balcony to anybody. The value ticked is
+        still the name, so what the caller gets back is what the study takes.
+        """
         super().__init__(parent)
         self.title(title)
         self.transient(parent.winfo_toplevel())
@@ -158,6 +179,7 @@ class LayerChooser(tk.Toplevel):
         self.result: list[str] | None = None
 
         self._available = list(available)
+        self._describe = dict(describe or {})
         #: Ticked, kept as a set across filtering: narrowing the list must not
         #: quietly untick what has scrolled out of sight.
         self._ticked: set[str] = {name for name in chosen if name in set(available)}
@@ -223,7 +245,7 @@ class LayerChooser(tk.Toplevel):
             self._boxes[name] = state
             ttk.Checkbutton(
                 self._list,
-                text=name,
+                text=self._describe.get(name, name),
                 variable=state,
                 command=lambda n=name: self._toggle(n),  # type: ignore[misc]
             ).grid(row=index, column=0, sticky="w")
@@ -374,16 +396,29 @@ class Window:
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
         row += 1
 
-        self.apartments, row = self._combo(
+        self.apartments, self.apartment_names, self.apartment_hint, row = self._zone_row(
             frame,
             row,
             "Apartment zones",
-            "The layer your apartment Zones sit on.",
+            "The layer, then which Zones on it are the dwellings.",
             "Only layers that actually carry Zones are listed, found by asking "
             "the Zones rather than by reading layer names — on this project "
             "three layers are named for zones and hold none, while an "
-            "annotation layer holds 37. This decides which Zones become "
-            "apartments in the assessment.",
+            "annotation layer holds 37. The names matter as much: one layer "
+            "carries 15 apartments, 20 balconies and the storage cupboards, "
+            "and a balcony assessed as an apartment is a flat with no living "
+            "room, which fails silently and drags the percentage down.",
+        )
+        self.balconies, self.balcony_names, self.balcony_hint, row = self._zone_row(
+            frame,
+            row,
+            "Balcony zones",
+            "The Zones that are private open space. Usually the same layer.",
+            "Half of the ADG test. Each apartment is judged on its living room "
+            "and on its private open space, and the better of the two governs "
+            "— so with no balconies named, every apartment is assessed on its "
+            "living room alone and the result is worse than the building is. "
+            "Left empty, no Zone is treated as open space at all.",
         )
         self.master, row = self._combo(
             frame,
@@ -481,6 +516,20 @@ class Window:
             "counts as clutter is a decision about the drawing, so it is named "
             "here rather than guessed from layer names.",
         )
+        self.livable, inner = self._entry(
+            self.advanced,
+            inner,
+            "Living-room glazing",
+            "",
+            "Suffix marking the windows and doors of a living room, e.g. _L.",
+            "The ADG counts sun into living rooms, not into bedrooms, and a "
+            "Zone drawn per apartment cannot say which room is which. Where "
+            "the office marks its living-room glazing with a suffix on the "
+            "opening ID, that is the better answer and it is used instead of "
+            "the room names. Left empty, rooms named 'Living Room' are looked "
+            "for — and a project that names none is assessed on every opening, "
+            "which reads as a pass it has not earned.",
+        )
         self.instants, inner = self._entry(
             self.advanced,
             inner,
@@ -509,6 +558,20 @@ class Window:
             "The banded plan and the two-hour plan. Same rule: the subset must "
             "exist, and a missing one is reported rather than invented, with "
             "the sheets left at the root of the book.",
+        )
+        self.prefix, inner = self._entry(
+            self.advanced,
+            inner,
+            "Layer prefix",
+            naming.DEFAULT_PREFIX,
+            "Leads the name of every layer, view and sheet the study creates.",
+            "So the output files itself inside the office's own numbering: on "
+            "a project whose layer groups run 00 to 13, '14 |' gives "
+            "'14 | Sun Study.Results' and it sorts where a reader expects. It "
+            "is also how a rerun finds its own sheets to replace, so changing "
+            "it leaves the last run's behind to be deleted by hand, and it "
+            "cannot be emptied — an empty prefix matches every layout in the "
+            "project.",
         )
         self.grid_m, inner = self._entry(
             self.advanced,
@@ -566,10 +629,13 @@ class Window:
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
         self._sync()
 
-    def _hint(self, parent: ttk.Frame, row: int, text: str) -> None:
-        ttk.Label(parent, text=text, foreground=HINT, wraplength=560).grid(
-            row=row, column=1, sticky="w", pady=(0, 4)
-        )
+    def _hint(self, parent: ttk.Frame, row: int, text: str) -> ttk.Label:
+        """The line under a control. Returned so it can be rewritten: the
+        useful thing to say under a zone field is what the project turned out
+        to hold, which is not known until it has been read."""
+        made = ttk.Label(parent, text=text, foreground=HINT, wraplength=560)
+        made.grid(row=row, column=1, sticky="w", pady=(0, 4))
+        return made
 
     def _combo(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
@@ -595,6 +661,53 @@ class Window:
         for target in (name, box):
             Tooltip(target, detail)
         return box, row + 2
+
+    def _zone_row(
+        self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
+    ) -> tuple[ttk.Combobox, ttk.Entry, ttk.Label, int]:
+        """A layer and, beside it, which of the Zones on it are meant.
+
+        One row for the two halves of one question, because they are not
+        separable: a layer says where to look and the names say what is there,
+        and a project that keeps its apartments, its balconies and its storage
+        on one layer -- which is the ordinary case, not an odd one -- is
+        measured wrongly by either half alone.
+
+        The names are ticked from the project like the layers are, and the
+        line underneath says what was found, so a guess can be checked without
+        opening the Zone settings in Archicad.
+        """
+        name = ttk.Label(parent, text=label)
+        name.grid(row=row, column=0, sticky="w", pady=(2, 0))
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=1, sticky="ew", pady=(2, 0))
+        holder.columnconfigure(0, weight=2)
+        holder.columnconfigure(1, weight=3)
+
+        layer = ttk.Combobox(holder, values=[])
+        layer.grid(row=0, column=0, sticky="ew")
+        names = ttk.Entry(holder)
+        names.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        button = ttk.Button(
+            holder,
+            text="Choose ...",
+            width=11,
+            command=lambda: self._choose(
+                names,
+                f"{label}: which names",
+                "Zones on the chosen layer. The size beside each name is what "
+                "says what it is: a dwelling is tens of square metres, a "
+                "balcony is a few, a storage cupboard is less.",
+                [kind.label for kind in self._kinds_on(layer.get())],
+                {kind.label: kind.described() for kind in self._kinds_on(layer.get())},
+            ),
+        )
+        button.grid(row=0, column=2, padx=(6, 0))
+        line = self._hint(parent, row + 1, hint)
+        layer.bind("<<ComboboxSelected>>", lambda _event: self._offer_zone_names())
+        for target in (name, layer, names, button):
+            Tooltip(target, detail)
+        return layer, names, line, row + 2
 
     def _picker(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
@@ -627,17 +740,30 @@ class Window:
             Tooltip(target, detail)
         return box, row + 2
 
-    def _choose(self, box: ttk.Entry, label: str, hint: str) -> None:
-        """Tick layers into an entry. Leaves it alone if nothing was chosen."""
-        if not pickable(self.options.layers):
-            self._write("No project read yet, so there are no layers to choose from.")
+    def _choose(
+        self,
+        box: ttk.Entry,
+        label: str,
+        hint: str,
+        available: Sequence[str] | None = None,
+        describe: Mapping[str, str] | None = None,
+    ) -> None:
+        """Tick names into an entry. Leaves it alone if nothing was chosen.
+
+        ``available`` defaults to the project's layers, which is what most of
+        these are; a zone row passes the names its layer carries instead.
+        """
+        offered = list(available) if available is not None else pickable(self.options.layers)
+        if not offered:
+            self._write(f"Nothing to choose from for {label}. Read a project first.")
             return
         dialog = LayerChooser(
             self.root,
             title=label,
             hint=hint,
-            available=pickable(self.options.layers),
+            available=offered,
             chosen=self._listed(box),
+            describe=describe,
         )
         self.root.wait_window(dialog)
         if dialog.result is None:
@@ -708,6 +834,16 @@ class Window:
             ),
         )
         self._fill(self.apartments, found.zone_layers, ("Zone.Unit", "Zone."))
+        # The balconies are usually on the apartments' own layer -- one
+        # project keeps 15 units, 20 balconies and the storage on
+        # "06 | Zone.Units" -- so that is the first candidate, and a layer
+        # carrying open-space-sized zones is the next.
+        self._fill(
+            self.balconies,
+            found.zone_layers,
+            (self.apartments.get(), *(kind.layer for kind in found.zone_kinds if kind.open_space)),
+        )
+        self._offer_zone_names()
         # "VERTICAL - No Scale" before "COVER/NO SCALE": both say no scale and
         # one of them is a cover sheet.
         self._fill(
@@ -741,6 +877,44 @@ class Window:
         box.set(values[0])
 
     # -- running ---------------------------------------------------------------
+    def _kinds_on(self, layer: str) -> list[probe.ZoneKind]:
+        """What the zones on one layer are called, biggest first."""
+        wanted = " ".join(layer.split()).casefold()
+        return [
+            kind
+            for kind in self.options.zone_kinds
+            if " ".join(kind.layer.split()).casefold() == wanted
+        ]
+
+    def _offer_zone_names(self) -> None:
+        """Fill in which zones are dwellings and which are open space.
+
+        Guessed from floor area, and *shown* rather than applied quietly: the
+        line under each field says what was found and what was taken, and the
+        chooser lists every name with its size. A guess nobody can see is the
+        thing this window exists to avoid.
+
+        Area because nothing else in the model separates them. The names are
+        an office's own codes -- ``G08``, ``BY``, ``SC`` -- and mean nothing
+        outside it, while an apartment is tens of square metres and a balcony
+        is a few, on every project there has ever been. The cuts are the ADG's
+        own figures, in ``probe``.
+        """
+        for layer_box, names_box, line, wanted, what in (
+            (self.apartments, self.apartment_names, self.apartment_hint, "dwelling", "dwellings"),
+            (self.balconies, self.balcony_names, self.balcony_hint, "open_space", "open space"),
+        ):
+            kinds = self._kinds_on(layer_box.get())
+            if not kinds:
+                line.config(text=f"No Zones read on that layer, so nothing is taken as {what}.")
+                continue
+            fits = [kind for kind in kinds if getattr(kind, wanted)]
+            if not self._listed(names_box):
+                names_box.delete(0, "end")
+                names_box.insert(0, ", ".join(kind.label for kind in fits))
+            taken = f" — taken as {what}: {_some(k.label for k in fits)}" if fits else ""
+            line.config(text=f"carries {_some(kind.described() for kind in kinds)}{taken}")
+
     def _zone_defaults(self) -> list[str]:
         """Zone layers worth forcing into the export, narrowest first.
 
@@ -759,6 +933,8 @@ class Window:
         this is the part worth testing without a window on screen."""
         port = str(self.ports[max(self.instance.current(), 0)]) if self.ports else ""
         common = ["--port", port]
+        if self.prefix.get().strip():
+            common += ["--layer-prefix", self.prefix.get().strip()]
         made: list[Job] = []
 
         if self.do_facade.get():
@@ -797,6 +973,25 @@ class Window:
             ]
             if self.apartments.get():
                 args += ["--apartment-zone-layer", self.apartments.get()]
+            # Without these the layer alone decides, and a layer that mixes
+            # dwellings with balconies and storage -- the ordinary case --
+            # assesses all three as apartments. Two thirds of them have no
+            # living room, so the building fails on zones nobody lives in.
+            for name in self._listed(self.apartment_names):
+                args += ["--apartment-zone-name", name]
+            # The balcony layer is only named when something narrows it. On its
+            # own, with the apartments' own layer chosen, it would take every
+            # apartment for open space and leave the assessment with no
+            # apartments at all.
+            balcony_names = self._listed(self.balcony_names)
+            if self.balconies.get() and (
+                balcony_names or self.balconies.get() != self.apartments.get()
+            ):
+                args += ["--open-space-zone-layer", self.balconies.get()]
+                for name in balcony_names:
+                    args += ["--open-space-zone-name", name]
+            if self.livable.get().strip():
+                args += ["--livable-suffix", self.livable.get().strip()]
             if self.combination.get():
                 args += ["--layer-combination", self.combination.get()]
             for name in self._listed(self.hide):

@@ -34,15 +34,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.layers import LayerState, borrowed
-from sun_study.archicad.naming import layer
 from sun_study.archicad.read import ArchicadZone, disambiguated
 from sun_study.rules.assessment import BuildingAssessment
 
 __all__ = [
     "DEFAULT_BANDS",
-    "DEFAULT_LAYER_NAME",
     "INDISTINGUISHABLE_RGB",
     "BandStyle",
     "DrawReport",
@@ -50,6 +49,7 @@ __all__ = [
     "Pen",
     "band_for",
     "clear_layer",
+    "default_layer_name",
     "draw_assessment",
     "ensure_layer",
     "hidden_layers",
@@ -58,10 +58,14 @@ __all__ = [
     "pen_table",
 ]
 
-#: Everything this tool draws goes here, and nothing else does. That is what
-#: makes deleting the previous run safe, and what lets the whole diagram be
-#: switched off in a layer combination.
-DEFAULT_LAYER_NAME = layer("Results")
+def default_layer_name() -> str:
+    """Everything this tool draws goes here, and nothing else does.
+
+    That is what makes deleting the previous run safe, and what lets the whole
+    diagram be switched off in a layer combination. A call rather than a
+    constant because the prefix it is built from is chosen per run.
+    """
+    return naming.layer("Results")
 
 #: The add-on version ``CreateHatches`` arrived in. Higher than the rest of
 #: this package needs, so drawing is gated separately rather than raising the
@@ -754,7 +758,7 @@ def draw_assessment(
     *,
     zone_by_apartment: dict[str, str],
     bands: Sequence[BandStyle] = DEFAULT_BANDS,
-    layer_name: str = DEFAULT_LAYER_NAME,
+    layer_name: str | None = None,
     legend_origin: tuple[float, float] | None = None,
     title: str | None = None,
 ) -> DrawReport:
@@ -770,7 +774,7 @@ def draw_assessment(
         "CreateHatches, which draws the result fills,",
     )
 
-    layer = ensure_layer(connection, layer_name)
+    layer = ensure_layer(connection, layer_name or default_layer_name())
     layer_index = layer.index
     removed = clear_layer(connection, layer_index)
 

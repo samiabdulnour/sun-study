@@ -66,25 +66,31 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.naming import named
 
 __all__ = [
-    "EXPORT_COMBINATION",
     "LayerPlan",
     "LayerState",
     "borrowed",
     "combination_states",
     "ensure_combination",
+    "export_combination",
     "export_state",
     "read_layers",
     "shown_for_export",
 ]
 
-#: The combination the tool makes when it is not pointed at one of the
-#: project's own. Prefixed like everything else this tool leaves behind, so a
-#: person can find all of it in one search.
-EXPORT_COMBINATION = named("Sun Study Export")
+def export_combination() -> str:
+    """The combination the tool makes when it is not pointed at one of the
+    project's own.
+
+    Prefixed like everything else this tool leaves behind, so a person can
+    find all of it in one search -- and read through a call rather than held
+    as a constant, because the prefix is chosen per run and a name captured at
+    import would be the default whatever the run was told.
+    """
+    return naming.named("Sun Study Export")
 
 
 @dataclass(frozen=True)
@@ -484,7 +490,7 @@ def export_state(
     combination: str | None = None,
     require: Sequence[str] = (),
     hide: Sequence[str] = (),
-    record_as: str = EXPORT_COMBINATION,
+    record_as: str | None = None,
 ) -> Iterator[LayerPlan]:
     """Hold the project at the export's layer state, then put it back.
 
@@ -506,6 +512,9 @@ def export_state(
     spent three sessions re-selecting a combination it had itself clobbered.
     """
     before = read_layers(connection)
+    # Resolved here rather than in the signature: the name is built from the
+    # run's layer prefix, which a default argument would have frozen at import.
+    record_as = record_as or export_combination()
     source = record_as
 
     if combination:
