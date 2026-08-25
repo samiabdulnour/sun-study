@@ -1,21 +1,65 @@
-MIT License
+Copyright (c) 2026 Sami Abdulnour <hi@samiabdulnour.com>
+All rights reserved.
 
-Copyright (c) 2026 sun-study contributors
+SOURCE-AVAILABLE LICENCE
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software is source-available, not open source. The source may be read by
+anyone. No rights are granted beyond those stated below, and all rights not
+expressly granted are reserved by the copyright holder.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. GRANT — INTERNAL USE AT FUSE ARCHITECTS
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   Fuse Architects and its employees and contractors may, at no charge and for
+   as long as this notice remains in place:
+
+   a. install, run and use this software internally, including on the firm's
+      own client projects;
+   b. read and modify the source code for that internal use;
+   c. make such internal copies as (a) and (b) require.
+
+   This grant is for Fuse Architects' own architectural practice. It is not
+   transferable and may not be sublicensed.
+
+2. NOT PERMITTED WITHOUT PRIOR WRITTEN PERMISSION
+
+   a. Redistributing this software, in source or compiled form, in whole or in
+      part, to anyone outside Fuse Architects.
+   b. Selling, licensing, sublicensing, renting or leasing it.
+   c. Offering it as a hosted or managed service.
+   d. Using it to provide a paid service to third parties, other than as part
+      of Fuse Architects' own architectural practice under clause 1.
+   e. Removing or altering this notice, or the authorship and copyright
+      statements the software displays and writes into its output.
+
+3. EARLIER VERSIONS
+
+   Versions of this software published before 25 August 2026 were released
+   under the MIT Licence. That grant is not revoked and continues to apply to
+   those versions. This licence governs the present version and all later
+   ones.
+
+4. RESERVED RIGHTS
+
+   The copyright holder retains every right not granted above, including the
+   right to license this software to any party on any terms, commercial or
+   otherwise.
+
+5. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+   OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+   In particular, this software computes figures that bear on planning
+   compliance. It is not validated for submission, and the copyright holder
+   accepts no liability for any use of its output in a development
+   application or any other regulatory process.
+
+6. CONTACT
+
+   Requests for permission, or for a licence on other terms:
+   Sami Abdulnour <hi@samiabdulnour.com>

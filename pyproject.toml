@@ -4,7 +4,8 @@ version = "0.0.1"
 description = "Direct sunlight hours from an Archicad model, written back into Archicad as Zone properties"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
+authors = [{ name = "Sami Abdulnour", email = "hi@samiabdulnour.com" }]
 
 # Runtime dependencies are added as the code that needs them lands, not up front.
 # The approved set for this project (see docs/decisions.md) is numpy, trimesh,

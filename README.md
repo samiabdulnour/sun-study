@@ -213,4 +213,14 @@ tool, or a deliberately fictional sample building committed on purpose.
 
 ## Licence
 
-MIT. See [`LICENSE`](LICENSE).
+Copyright © 2026 Sami Abdulnour <hi@samiabdulnour.com>. All rights reserved.
+
+**Source-available, not open source.** The source may be read by anyone. Fuse Architects
+may use, modify and run it internally, including on the firm's own client projects, at no
+charge. Redistribution outside Fuse, resale, sublicensing and offering it as a service all
+need written permission. See [`LICENSE`](LICENSE) for the terms.
+
+Versions published before 25 August 2026 were released under the MIT Licence, and that
+grant still applies to those versions.
+
+For a licence on other terms, contact <hi@samiabdulnour.com>.

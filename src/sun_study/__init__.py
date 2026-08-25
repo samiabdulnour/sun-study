@@ -11,7 +11,15 @@ Archicad lives in the ``archicad`` package and nowhere else.
 
 from sun_study.disclaimer import DISCLAIMER, STATUS
 
-__all__ = ["AUTHOR", "DISCLAIMER", "PRODUCT", "STATUS", "STOP_FILE_VAR", "__version__"]
+__all__ = [
+    "AUTHOR",
+    "COPYRIGHT",
+    "DISCLAIMER",
+    "PRODUCT",
+    "STATUS",
+    "STOP_FILE_VAR",
+    "__version__",
+]
 __version__ = "0.0.1"
 
 #: Who wrote it. Carried into the window, the packaged executable's file
@@ -19,6 +27,12 @@ __version__ = "0.0.1"
 #: drift apart -- the same reason the disclaimer has a module of its own.
 AUTHOR = "Sami Abdulnour"
 PRODUCT = "Sun Study"
+
+#: The copyright line, kept beside the author for the same reason: the window,
+#: the executable's file properties and every sheet must say the same thing.
+#: Clause 2(e) of the licence requires that it not be removed from either the
+#: software or its output.
+COPYRIGHT = "Copyright (c) 2026 Sami Abdulnour. All rights reserved."
 
 #: Where a run is told to look for its stop request. The window writes the
 #: file; the run watches for it and raises, so its ``finally`` blocks put the
