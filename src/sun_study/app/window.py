@@ -210,12 +210,8 @@ class LayerChooser(tk.Toplevel):
         self._list = ttk.Frame(canvas)
         self._window_id = canvas.create_window((0, 0), window=self._list, anchor="nw")
         self._canvas = canvas
-        self._list.bind(
-            "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        canvas.bind(
-            "<Configure>", lambda e: canvas.itemconfigure(self._window_id, width=e.width)
-        )
+        self._list.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(self._window_id, width=e.width))
         canvas.bind_all("<MouseWheel>", self._wheel)
 
         self.count = ttk.Label(outer, text="", foreground=HINT)
@@ -858,9 +854,7 @@ class Window:
             skin = [name for name in found.layers if any(w in name for w in SKIN_WORDS)]
             self.subject.insert(0, ", ".join(skin))
 
-    def _fill(
-        self, box: ttk.Combobox, values: tuple[str, ...], prefer: tuple[str, ...]
-    ) -> None:
+    def _fill(self, box: ttk.Combobox, values: tuple[str, ...], prefer: tuple[str, ...]) -> None:
         """Offer these, and pick the likeliest -- without overriding a choice.
 
         Preferences are ordered fragments rather than exact names, because the

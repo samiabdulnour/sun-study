@@ -225,11 +225,7 @@ class LayoutReport:
         lines = [
             f"placed {self.drawings_placed} drawings at 1:{self.scale:g} on layout "
             f"{self.layout_name!r}"
-            + (
-                f", on master {self.master_name!r}"
-                if self.master_name and not self.reused
-                else ""
-            )
+            + (f", on master {self.master_name!r}" if self.master_name and not self.reused else "")
         ]
         if self.reused:
             lines.append(
@@ -375,9 +371,7 @@ def _master_named(masters: Sequence[NavigatorItem], wanted: str) -> NavigatorIte
         )
 
     available = "\n    ".join(master.name for master in masters)
-    raise ArchicadError(
-        f"No master layout is called {wanted!r}. The project has:\n    {available}"
-    )
+    raise ArchicadError(f"No master layout is called {wanted!r}. The project has:\n    {available}")
 
 
 def project_map(connection: ArchicadConnection) -> tuple[NavigatorItem, ...]:
@@ -598,8 +592,7 @@ def _pin_view(
             "SetViewSettings",
             {
                 "navigatorItemIdsWithViewSettings": [
-                    {"navigatorItemId": {"guid": view}, "viewSettings": settings}
-                    for view in views
+                    {"navigatorItemId": {"guid": view}, "viewSettings": settings} for view in views
                 ]
             },
         )
@@ -869,9 +862,7 @@ def _parents(root: dict[str, Any]) -> dict[str, tuple[str, str]]:
     return found
 
 
-def file_under_subset(
-    connection: ArchicadConnection, names: Sequence[str], subset: str
-) -> Filing:
+def file_under_subset(connection: ArchicadConnection, names: Sequence[str], subset: str) -> Filing:
     """Move these Layouts into a named subset of the Layout Book.
 
     Two commands, because the obvious one does not work. ``CreateLayout``
@@ -911,9 +902,7 @@ def file_under_subset(
     by_name = {name: guid for guid, (name, _) in before.items() if name in set(wanted)}
     missing = tuple(name for name in wanted if name not in by_name)
     already = tuple(
-        name
-        for name in wanted
-        if before.get(by_name.get(name, ""), ("", ""))[1] == subset
+        name for name in wanted if before.get(by_name.get(name, ""), ("", ""))[1] == subset
     )
 
     for name in wanted:
@@ -952,9 +941,7 @@ def file_under_subset(
 def _layout_named(connection: ArchicadConnection, name: str) -> str | None:
     """The database of an existing Layout with this name, if there is one."""
     try:
-        response = connection.run_tapir(
-            "GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"}
-        )
+        response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})
     except ArchicadError:
         return None
     root = response.get("navigatorItemTree") if isinstance(response, dict) else None

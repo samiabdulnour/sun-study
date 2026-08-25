@@ -688,9 +688,7 @@ def report_model_bands(
         chosen = [
             rectangle
             for panel, durations in zip(panels, per_panel, strict=True)
-            for rectangle in panel.rectangles(
-                _band_mask(durations, lower, style.upper_minutes)
-            )
+            for rectangle in panel.rectangles(_band_mask(durations, lower, style.upper_minutes))
         ]
         grouped.append(chosen)
 
@@ -698,9 +696,7 @@ def report_model_bands(
         # The export's frame is not the project's, and geometry created from
         # one and placed in the other lands beside the building and turned.
         transform = fit_to_project(connection, result.model)
-        typer.echo(
-            f"  fitted the export onto the project: {transform.rmse_m:.3f} m residual"
-        )
+        typer.echo(f"  fitted the export onto the project: {transform.rmse_m:.3f} m residual")
         drawn = draw_model_bands(
             connection,
             bands=styles,
@@ -1632,9 +1628,7 @@ def report_statistics(
         connection.run_tapir("SaveProject", {})
 
     rows = statistics_rows(result)
-    written = draw_statistics(
-        connection, database, title="Solar access -- summary", rows=rows
-    )
+    written = draw_statistics(connection, database, title="Solar access -- summary", rows=rows)
     typer.echo(f"  statistics sheet {sheet_name!r}: {written} lines on master {master.name!r}")
 
     if subset:
@@ -1911,9 +1905,7 @@ def _export_for_massing(
     connection = _connect(port)
     destination = Path(tempfile.gettempdir()) / "sun-study"
     destination.mkdir(parents=True, exist_ok=True)
-    name = str(
-        (connection.run_tapir("GetProjectInfo", {}) or {}).get("projectName") or "archicad"
-    )
+    name = str((connection.run_tapir("GetProjectInfo", {}) or {}).get("projectName") or "archicad")
     out = destination / f"{name}.ifc"
 
     cleared = clear_selection(connection)
@@ -2398,8 +2390,7 @@ def _warn_if_zone_layers_hidden(
 
     listed = ", ".join(repr(name) for name in hidden)
     typer.secho(
-        f"  {len(hidden)} of the {role} this run needs are hidden in "
-        f"Archicad right now: {listed}",
+        f"  {len(hidden)} of the {role} this run needs are hidden in Archicad right now: {listed}",
         fg=typer.colors.RED,
         err=True,
     )

@@ -132,9 +132,7 @@ class ModelBandReport:
             lines.append(f"    {label:<9} {area:9.2f} m²   {share:6.2%}")
         lines.append(f"    {'total':<9} {total:9.2f} m²")
         if self.borrowed_layers:
-            lines.append(
-                f"    unhidden and restored: {', '.join(self.borrowed_layers)}"
-            )
+            lines.append(f"    unhidden and restored: {', '.join(self.borrowed_layers)}")
         return "\n".join(lines)
 
 

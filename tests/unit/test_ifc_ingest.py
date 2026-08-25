@@ -1153,12 +1153,7 @@ def _box(x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) -> An
     from sun_study.core.geometry import TriangleMesh
 
     corners = np.array(
-        [
-            (x, y, z)
-            for x in (x0, x1)
-            for y in (y0, y1)
-            for z in (z0, z1)
-        ],
+        [(x, y, z) for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)],
         dtype=np.float64,
     )
     # Only the extent matters here: ownership is decided from bounds and

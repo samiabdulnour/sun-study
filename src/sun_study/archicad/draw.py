@@ -58,6 +58,7 @@ __all__ = [
     "pen_table",
 ]
 
+
 def default_layer_name() -> str:
     """Everything this tool draws goes here, and nothing else does.
 
@@ -66,6 +67,7 @@ def default_layer_name() -> str:
     constant because the prefix it is built from is chosen per run.
     """
     return naming.layer("Results")
+
 
 #: The add-on version ``CreateHatches`` arrived in. Higher than the rest of
 #: this package needs, so drawing is gated separately rather than raising the
@@ -454,7 +456,6 @@ def band_for(minutes: float, bands: Sequence[BandStyle]) -> BandStyle:
     return bands[-1]
 
 
-
 def ensure_layer(connection: ArchicadConnection, name: str) -> LayerState:
     """Find or create the results layer, and report whether it is visible.
 
@@ -564,7 +565,7 @@ def _find_layer(connection: ArchicadConnection, name: str) -> LayerState | None:
         if not isinstance(index, (int, float)) or not identifier:
             continue
         return _layer_visibility(
-            connection, int(index), str(identifier), str(attribute.get('name', name))
+            connection, int(index), str(identifier), str(attribute.get("name", name))
         )
     return None
 

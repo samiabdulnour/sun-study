@@ -1983,8 +1983,8 @@ def test_no_sun_never_lands_on_a_green_when_the_palette_has_blues() -> None:
     """
     bands = (BandStyle("0 hrs", 1e-9, fill_pen=1, rgb=(8, 48, 107)),)
     pens = (
-        Pen(index=89, rgb=(64, 142, 114)),   # a teal, nearer in RGB
-        Pen(index=31, rgb=(42, 42, 255)),    # a blue, further in RGB
+        Pen(index=89, rgb=(64, 142, 114)),  # a teal, nearer in RGB
+        Pen(index=31, rgb=(42, 42, 255)),  # a blue, further in RGB
     )
     (matched,), _ = match_pens(bands, pens)
 
@@ -2000,7 +2000,7 @@ def test_no_sun_takes_the_deeper_blue_so_the_cold_end_runs_the_right_way() -> No
     )
     pens = (
         Pen(index=112, rgb=(79, 120, 222)),  # paler, less saturated
-        Pen(index=31, rgb=(42, 42, 255)),    # deeper, vivid
+        Pen(index=31, rgb=(42, 42, 255)),  # deeper, vivid
     )
     matched, _ = match_pens(bands, pens)
 
@@ -2698,7 +2698,9 @@ def test_drawings_are_tiled_inside_the_sheet_not_run_off_it() -> None:
     assert len({y for _, y in positions}) > 1, "six drawings do not fit on one row"
 
 
-def _drawing(width: float, height: float, *, ratio: float = 1.0, angle: float = 0.0) -> dict[str, Any]:
+def _drawing(
+    width: float, height: float, *, ratio: float = 1.0, angle: float = 0.0
+) -> dict[str, Any]:
     return {
         "details": {
             "angle": angle,
@@ -2723,9 +2725,8 @@ def _tilted(width: float, height: float, radians: float) -> dict[str, Any]:
                 "xMax": max(x for x, _ in turned),
                 "yMax": max(y for _, y in turned),
             },
-            "clipPolygon": [{"x": x, "y": y} for x, y in turned] + [
-                {"x": turned[0][0], "y": turned[0][1]}
-            ],
+            "clipPolygon": [{"x": x, "y": y} for x, y in turned]
+            + [{"x": turned[0][0], "y": turned[0][1]}],
         }
     }
 
@@ -3271,12 +3272,12 @@ def test_the_export_switches_on_what_the_study_needs_and_puts_it_back() -> None:
 
     applied, restored = transport.all_parameters_for("CreateLayers")
     assert applied["overwriteExisting"] is True
-    assert applied["layerDataArray"] == [
-        written("Context", hidden=False, locked=False)
-    ], "only the layer that was off, and only switched on"
-    assert restored["layerDataArray"] == [
-        written("Context", hidden=True, locked=True)
-    ], "put back exactly as it was, lock included"
+    assert applied["layerDataArray"] == [written("Context", hidden=False, locked=False)], (
+        "only the layer that was off, and only switched on"
+    )
+    assert restored["layerDataArray"] == [written("Context", hidden=True, locked=True)], (
+        "put back exactly as it was, lock included"
+    )
     assert plan.shown == ("Context",)
     assert plan.changed == 1
 
@@ -3290,9 +3291,7 @@ def test_the_layers_are_put_back_even_when_the_export_fails() -> None:
         raise RuntimeError("the translator fell over")
 
     _, restored = transport.all_parameters_for("CreateLayers")
-    assert restored["layerDataArray"] == [
-        written("Context", hidden=True, locked=True)
-    ]
+    assert restored["layerDataArray"] == [written("Context", hidden=True, locked=True)]
 
 
 def test_a_named_layer_is_switched_off_for_the_export() -> None:
@@ -3679,9 +3678,7 @@ def _one_layer(*, hidden: bool, locked: bool = False, **rest: Any) -> dict[str, 
     }
     return {
         "GetAttributesByType": {
-            "attributes": [
-                {"attributeId": {"guid": "g"}, "index": 12, "name": "Sun Study.Results"}
-            ]
+            "attributes": [{"attributeId": {"guid": "g"}, "index": 12, "name": "Sun Study.Results"}]
         },
         "GetLayers": {"layers": [{"layerAttribute": attribute}]},
         "CreateLayers": {},
@@ -3791,12 +3788,29 @@ def _combination_world(**overrides: Any) -> dict[str, Any]:
         },
         "GetLayers": {
             "layers": [
-                {"layerAttribute": {"name": "Walls", "isHidden": False, "isLocked": True,
-                                    "isWireframe": True, "intersectionGroupNr": 7}},
-                {"layerAttribute": {"name": "05 | Grids.Main Floor Plan", "isHidden": False,
-                                    "isLocked": False}},
-                {"layerAttribute": {"name": "Sun Study 09:00", "isHidden": True,
-                                    "isLocked": False}},
+                {
+                    "layerAttribute": {
+                        "name": "Walls",
+                        "isHidden": False,
+                        "isLocked": True,
+                        "isWireframe": True,
+                        "intersectionGroupNr": 7,
+                    }
+                },
+                {
+                    "layerAttribute": {
+                        "name": "05 | Grids.Main Floor Plan",
+                        "isHidden": False,
+                        "isLocked": False,
+                    }
+                },
+                {
+                    "layerAttribute": {
+                        "name": "Sun Study 09:00",
+                        "isHidden": True,
+                        "isLocked": False,
+                    }
+                },
             ]
         },
         "CreateLayerCombinations": {"attributeIds": [{"attributeId": {"guid": "C1"}}]},

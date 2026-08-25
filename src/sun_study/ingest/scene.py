@@ -913,9 +913,7 @@ def _open_space_owner(
     # where the balcony is smaller, so the patch overhung the outline and the
     # floor it belonged to came out bare.
     standing = (
-        float(slab.bounds[0][2])
-        if slab.ifc_class == "IfcSpace"
-        else float(slab.bounds[1][2])
+        float(slab.bounds[0][2]) if slab.ifc_class == "IfcSpace" else float(slab.bounds[1][2])
     )
     standing_on = [
         space

@@ -219,9 +219,7 @@ def options(port: int) -> ProjectOptions:
     )
     zoned = attempt("zones", lambda: _zones_by_layer(connection)) or ((), ())
     zones, kinds = zoned
-    storeys = attempt(
-        "storeys", lambda: connection.run_tapir("GetStories", {})
-    )
+    storeys = attempt("storeys", lambda: connection.run_tapir("GetStories", {}))
 
     return ProjectOptions(
         project=project,

@@ -158,9 +158,7 @@ def ensure_layer_combination(
     return name
 
 
-def remove_previous(
-    connection: ArchicadConnection, prefix: str | None = None
-) -> tuple[int, int]:
+def remove_previous(connection: ArchicadConnection, prefix: str | None = None) -> tuple[int, int]:
     """Delete the views and layouts an earlier run made. ``(gone, left)``.
 
     Every run makes a fresh set, so without this a project collects a layout
@@ -484,9 +482,7 @@ def three_d_sources(connection: ArchicadConnection) -> list[ModelSource]:
     for it -- so what is offered here is the ones the project already has.
     """
     try:
-        response = connection.run_tapir(
-            "GetNavigatorItemTree", {"navigatorMapId": "ProjectMap"}
-        )
+        response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "ProjectMap"})
     except ArchicadError:
         return []
     root = response.get("navigatorItemTree") if isinstance(response, dict) else None

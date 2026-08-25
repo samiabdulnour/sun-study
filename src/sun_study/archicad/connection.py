@@ -324,8 +324,7 @@ def activate(connection: ArchicadConnection, database_id: str, window_type: str)
         " A worksheet created in this session cannot be activated until the "
         "project has been reopened."
         if window_type == "Worksheet"
-        else " A layout is only readable once the project has been saved since "
-        "it was made."
+        else " A layout is only readable once the project has been saved since it was made."
         if window_type == "Layout"
         else ""
     )

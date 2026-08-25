@@ -165,19 +165,13 @@ def test_every_control_explains_itself(hidden_window: Any) -> None:
     def controls(parent: tk.Misc) -> list[tk.Widget]:
         found: list[tk.Widget] = []
         for child in parent.winfo_children():
-            kinds = (
-                widgets.Combobox | widgets.Entry | widgets.Checkbutton | widgets.Button
-            )
+            kinds = widgets.Combobox | widgets.Entry | widgets.Checkbutton | widgets.Button
             if isinstance(child, kinds):
                 found.append(child)
             found.extend(controls(child))
         return found
 
-    bare = [
-        str(widget)
-        for widget in controls(hidden_window.root)
-        if not widget.bind("<Enter>")
-    ]
+    bare = [str(widget) for widget in controls(hidden_window.root) if not widget.bind("<Enter>")]
     assert not bare, f"controls with no explanation: {bare}"
 
 
@@ -232,9 +226,7 @@ def test_run_is_switched_off_when_the_add_on_is_absent(
     """116 of the tool's 124 Archicad calls are Tapir commands, so this is not
     a degraded run, it is no run at all. Better refused here than failed
     several steps in."""
-    monkeypatch.setattr(
-        probe, "options", lambda port: probe.ProjectOptions(tapir_missing=True)
-    )
+    monkeypatch.setattr(probe, "options", lambda port: probe.ProjectOptions(tapir_missing=True))
     hidden_window.refresh()
 
     assert str(hidden_window.go.cget("state")) == "disabled"
@@ -601,9 +593,7 @@ def test_a_stopped_run_puts_the_project_back_before_it_goes(
     monkeypatch.setattr(runner, "command_prefix", lambda: [sys.executable, "-u"])
     said: list[str] = []
     ended: list[int] = []
-    run = runner.Run(
-        ["-c", HOLDS_THE_LAYERS], on_line=said.append, on_done=ended.append
-    )
+    run = runner.Run(["-c", HOLDS_THE_LAYERS], on_line=said.append, on_done=ended.append)
     run.start()
 
     deadline = time.monotonic() + 30.0

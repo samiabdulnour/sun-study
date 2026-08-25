@@ -365,10 +365,7 @@ def _panel_for(
     uv = uv[inside]
 
     positions = (
-        origin
-        + uv[:, 0, None] * axis_u
-        + uv[:, 1, None] * axis_v
-        + surface_offset_m * normal
+        origin + uv[:, 0, None] * axis_u + uv[:, 1, None] * axis_v + surface_offset_m * normal
     )
     count = len(positions)
     samples = SamplePoints(
@@ -417,6 +414,4 @@ def _on_face(
     offset = uv[:, None, :] - a[None, :, :]
     s = (offset[..., 0] * v1[None, :, 1] - offset[..., 1] * v1[None, :, 0]) / denominator
     t = (offset[..., 1] * v0[None, :, 0] - offset[..., 0] * v0[None, :, 1]) / denominator
-    return np.asarray(
-        ((s >= -1e-9) & (t >= -1e-9) & (s + t <= 1.0 + 1e-9)).any(axis=1), dtype=bool
-    )
+    return np.asarray(((s >= -1e-9) & (t >= -1e-9) & (s + t <= 1.0 + 1e-9)).any(axis=1), dtype=bool)

@@ -81,6 +81,7 @@ __all__ = [
     "shown_for_export",
 ]
 
+
 def export_combination() -> str:
     """The combination the tool makes when it is not pointed at one of the
     project's own.
@@ -258,9 +259,7 @@ def combination_states(connection: ArchicadConnection, name: str) -> dict[str, b
     Archicad being able to activate it: the states are read out of the
     combination and written onto the layers directly.
     """
-    listing = connection.run_tapir(
-        "GetAttributesByType", {"attributeType": "LayerCombination"}
-    )
+    listing = connection.run_tapir("GetAttributesByType", {"attributeType": "LayerCombination"})
     attributes = listing.get("attributes") if isinstance(listing, dict) else None
     if not isinstance(attributes, list):
         return None
@@ -295,9 +294,7 @@ def combination_states(connection: ArchicadConnection, name: str) -> dict[str, b
     }
 
 
-def shown_for_export(
-    layers: Sequence[LayerState], hide: Sequence[str] = ()
-) -> dict[str, bool]:
+def shown_for_export(layers: Sequence[LayerState], hide: Sequence[str] = ()) -> dict[str, bool]:
     """The tool's own base: everything on, except what was named off.
 
     Show-everything rather than preserve-what-is-there, because the two fail
@@ -317,9 +314,7 @@ def shown_for_export(
     They are a project's own business, so they are named rather than guessed
     at from layer names.
     """
-    return _with(
-        dict.fromkeys((layer.identifier for layer in layers), False), layers, off=hide
-    )
+    return _with(dict.fromkeys((layer.identifier for layer in layers), False), layers, off=hide)
 
 
 def _with(
@@ -335,6 +330,7 @@ def _with(
     case-folded. Archicad layer names carry trailing spaces more often than
     anyone expects, and a padded listing hides them completely.
     """
+
     def tidy(name: str) -> str:
         return " ".join(name.split()).casefold()
 
@@ -363,14 +359,11 @@ def ensure_combination(
     ``LayerCombination``, answering "Attribute not found" for an id the
     project had just reported.
     """
-    listing = connection.run_tapir(
-        "GetAttributesByType", {"attributeType": "LayerCombination"}
-    )
+    listing = connection.run_tapir("GetAttributesByType", {"attributeType": "LayerCombination"})
     attributes = listing.get("attributes") if isinstance(listing, dict) else None
     tidy = " ".join(name.split()).casefold()
     if isinstance(attributes, list) and any(
-        isinstance(entry, dict)
-        and " ".join(str(entry.get("name", "")).split()).casefold() == tidy
+        isinstance(entry, dict) and " ".join(str(entry.get("name", "")).split()).casefold() == tidy
         for entry in attributes
     ):
         return False
@@ -467,9 +460,9 @@ def borrowed(
         return
 
     shut = [
-        state for state in read_layers(connection)
-        if (state.index in wanted or state.identifier in named)
-        and (state.hidden or state.locked)
+        state
+        for state in read_layers(connection)
+        if (state.index in wanted or state.identifier in named) and (state.hidden or state.locked)
     ]
     if shut:
         _write(
@@ -546,9 +539,7 @@ def export_state(
         for old in before
     ]
     changed = [
-        (old, new)
-        for old, new in moves
-        if (new.hidden, new.locked) != (old.hidden, old.locked)
+        (old, new) for old, new in moves if (new.hidden, new.locked) != (old.hidden, old.locked)
     ]
     plan = LayerPlan(
         combination=source,
