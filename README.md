@@ -152,6 +152,14 @@ CI runs the same four commands on Ubuntu and Windows. Windows is the primary
 deployment platform — the office runs Archicad 26 on Windows — so it is a first-class
 CI target rather than an afterthought.
 
+**If you move or rename the project folder, run `uv sync --reinstall`.** On Windows every
+console script in `.venv/Scripts` is a small `.exe` shim with the absolute path to
+`.venv/Scripts/python.exe` compiled into it. Move the checkout and every one of those
+paths is stale, so `uv run <anything>` fails with `uv trampoline failed to canonicalize
+script path` — which names the trampoline rather than the move, and sends you looking in
+the wrong place. Reinstalling rewrites the shims. Deleting `.venv` and running `uv sync`
+does the same; nothing in it is precious, and `uv.lock` reproduces it exactly.
+
 ## Validation
 
 The failure mode of a tool like this is being *plausibly* wrong, which nobody catches
