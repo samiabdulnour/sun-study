@@ -26,10 +26,11 @@ from typing import Annotated, Any
 import numpy as np
 import typer
 
-from sun_study import AUTHOR, PRODUCT, STOP_FILE_VAR, __version__
+from sun_study import AUTHOR, PRODUCT, STOP_FILE_VAR, __version__, licence
 from sun_study.archicad import naming
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
+    DEFAULT_TIMEOUT_SECONDS,
     PORT_RANGE,
     ArchicadConnection,
     ArchicadError,
@@ -158,6 +159,7 @@ from sun_study.ingest.scene import (
     massing_subject,
     open_ground_grid,
 )
+from sun_study.licence import LicenceExpiredError
 from sun_study.pipeline import (
     WEIGHTING_BY_RULESET,
     MassingResult,
@@ -1879,6 +1881,7 @@ def report_assessment(
 def _export_for_massing(
     *,
     port: int,
+    timeout: float,
     combination: str | None,
     require: Sequence[str],
     hide: Sequence[str],
@@ -1902,7 +1905,7 @@ def _export_for_massing(
     against the same export is how a change of grid or threshold is compared
     honestly.
     """
-    connection = _connect(port)
+    connection = _connect(port, timeout)
     destination = Path(tempfile.gettempdir()) / "sun-study"
     destination.mkdir(parents=True, exist_ok=True)
     name = str((connection.run_tapir("GetProjectInfo", {}) or {}).get("projectName") or "archicad")
@@ -2122,6 +2125,17 @@ def massing(
         ),
     ] = None,
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     layer_combination: Annotated[
         str | None,
         typer.Option(
@@ -2188,6 +2202,7 @@ def massing(
     if ifc is None:
         ifc = _export_for_massing(
             port=port,
+            timeout=timeout,
             combination=layer_combination,
             require=[*(subject_layer or []), *(require_layer or [])],
             hide=tuple(hide_layer or ()),
@@ -2239,7 +2254,7 @@ def massing(
 
     if model_bands:
         typer.echo("")
-        connection = _connect(port)
+        connection = _connect(port, timeout)
         if report_model_bands(
             connection,
             result,
@@ -2254,7 +2269,7 @@ def massing(
 
     if model_views:
         typer.echo("")
-        connection = _connect(port)
+        connection = _connect(port, timeout)
         if report_model_views(
             connection,
             layer_prefix=naming.group(),
@@ -2294,15 +2309,15 @@ def massing(
 # everything short of Archicad actually answering.
 
 
-def _connect(port: int) -> ArchicadConnection:
-    connection = ArchicadConnection(HttpTransport(port=port))
+def _connect(port: int, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> ArchicadConnection:
+    connection = ArchicadConnection(HttpTransport(port=port, timeout_seconds=timeout))
     try:
         connection.require_tapir()
     except ArchicadNotRunningError as error:
         # Only here, and only once. The port scan is real network I/O, so it
         # belongs on the path that has already decided to tell a human --
         # not inside the transport, where every failed call would pay for it.
-        found = _the_only_archicad(port)
+        found = _the_only_archicad(port, timeout)
         if found is not None:
             return found
         typer.secho(str(error), fg=typer.colors.RED, err=True)
@@ -2329,7 +2344,9 @@ def _connect(port: int) -> ArchicadConnection:
     return connection
 
 
-def _the_only_archicad(tried: int) -> ArchicadConnection | None:
+def _the_only_archicad(
+    tried: int, timeout: float = DEFAULT_TIMEOUT_SECONDS
+) -> ArchicadConnection | None:
     """Fall through to the one running Archicad, when there is exactly one.
 
     Archicad hands each instance its own port, so the default is right only
@@ -2351,7 +2368,7 @@ def _the_only_archicad(tried: int) -> ArchicadConnection | None:
         f"  nothing on port {tried}; using the one Archicad that is running -- {only.describe()}",
         fg=typer.colors.YELLOW,
     )
-    connection = ArchicadConnection(HttpTransport(port=only.port))
+    connection = ArchicadConnection(HttpTransport(port=only.port, timeout_seconds=timeout))
     try:
         connection.require_tapir()
     except ArchicadError:
@@ -2440,6 +2457,17 @@ def archicad_ports() -> None:
 @app.command("archicad-info")
 def archicad_info(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     zone_names: Annotated[
         int,
         typer.Option(
@@ -2463,7 +2491,7 @@ def archicad_info(
     names, which is how you find out what to pass to ``--living-room``.
     """
     banner()
-    connection = _connect(port)
+    connection = _connect(port, timeout)
     typer.echo(describe_connection(connection))
 
     try:
@@ -2630,6 +2658,17 @@ def _report_zone_names(found: Sequence[ArchicadZone], *, limit: int) -> None:
 @app.command("init-properties")
 def init_properties_command(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     recreate: Annotated[
         bool,
         typer.Option(
@@ -2652,7 +2691,7 @@ def init_properties_command(
     creates only what is missing.
     """
     banner()
-    connection = _connect(port)
+    connection = _connect(port, timeout)
 
     try:
         found = read_zones(connection)
@@ -2700,6 +2739,17 @@ def init_properties_command(
 @app.command("archicad-rooms")
 def archicad_rooms(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     zone_layer: Annotated[
         list[str] | None,
         typer.Option("--zone-layer", help="Archicad layer whose zones are the apartments."),
@@ -2752,7 +2802,7 @@ def archicad_rooms(
     assessment can measure.
     """
     banner()
-    connection = _connect(port)
+    connection = _connect(port, timeout)
     try:
         names = layer_names(connection)
         found = read_zones(connection)
@@ -2834,6 +2884,17 @@ def _report_living_rooms(match: RoomMatch, living: Sequence[str], labels: Sequen
 @app.command("archicad-objects")
 def archicad_objects(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     match: Annotated[
         str | None,
         typer.Option(
@@ -2873,7 +2934,7 @@ def archicad_objects(
     office library names them differently.
     """
     banner()
-    connection = _connect(port)
+    connection = _connect(port, timeout)
     try:
         found = library_objects(connection)
         if not found:
@@ -3020,6 +3081,17 @@ def _looks_numeric(value: str) -> bool:
 @app.command("archicad-report")
 def archicad_report(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     out: Annotated[
         Path,
         typer.Option("--out", help="Where to write the report."),
@@ -3038,7 +3110,7 @@ def archicad_report(
     nothing, so it is safe on a live project someone else has open.
     """
     banner()
-    connection = _connect(port)
+    connection = _connect(port, timeout)
     with _also_writing_to(out):
         _report_everything(connection)
     typer.echo("")
@@ -3148,6 +3220,17 @@ def _report_rooms_section(connection: ArchicadConnection) -> None:
 @app.command("archicad-probe")
 def archicad_probe(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
 ) -> None:
     """Find out why Archicad is refusing to create a property, one variable at a time.
 
@@ -3167,7 +3250,7 @@ def archicad_probe(
     Manager afterwards.
     """
     banner()
-    connection = _connect(port)
+    connection = _connect(port, timeout)
 
     try:
         found = read_zones(connection)
@@ -3275,6 +3358,17 @@ def _run_probe(connection: ArchicadConnection, group_id: str, items: list[str]) 
 @app.command("archicad-selftest")
 def archicad_selftest(
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     count: Annotated[
         int, typer.Option("--zones", help="How many zones to write to. 0 for all.")
     ] = 8,
@@ -3342,7 +3436,7 @@ def archicad_selftest(
     )
     typer.echo("")
 
-    connection = _connect(port)
+    connection = _connect(port, timeout)
     try:
         found = read_zones(connection)
         if not found:
@@ -3492,6 +3586,17 @@ def archicad_run(
         str, typer.Option("--timezone", "-z", help="IANA timezone, e.g. Australia/Sydney.")
     ],
     port: Annotated[int, typer.Option("--port", help="Archicad's JSON API port.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for any one Archicad command before giving "
+                "up. Only the IFC export comes near it; raise it if a big "
+                "project stops partway with 'Archicad did not answer'."
+            ),
+        ),
+    ] = DEFAULT_TIMEOUT_SECONDS,
     area: Annotated[
         str,
         typer.Option("--area", help="Which criterion applies: sydney_metro (2h) or other (3h)."),
@@ -3844,7 +3949,7 @@ def archicad_run(
     layer = layer or default_layer_name()
     sheet_name = sheet_name or naming.named("Sun Study")
 
-    connection = _connect(port)
+    connection = _connect(port, timeout)
     typer.echo(describe_connection(connection))
     typer.echo("")
 
@@ -4243,6 +4348,15 @@ def main() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:  # pragma: no branch - always present on 3.11+
             reconfigure(errors="replace")
+
+    # Before the banner, and before anything is read or written. A build past
+    # its term should not get as far as opening somebody's project.
+    try:
+        licence.check()
+    except LicenceExpiredError as expired:
+        typer.secho(str(expired), fg=typer.colors.RED, err=True)
+        raise SystemExit(4) from expired
+
     listen_for_stop()
     app()
 

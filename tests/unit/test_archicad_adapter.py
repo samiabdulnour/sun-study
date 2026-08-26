@@ -20,6 +20,7 @@ import json
 import math
 import threading
 import time
+import urllib.request
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +31,7 @@ import pytest
 from sun_study.archicad import naming
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
+    DEFAULT_TIMEOUT_SECONDS,
     MINIMUM_TAPIR_VERSION,
     PORT_RANGE,
     TAPIR_NAMESPACE,
@@ -284,6 +286,34 @@ def test_unreachable_archicad_names_the_setting_to_check() -> None:
     transport = HttpTransport(host="http://127.0.0.1", port=1, timeout_seconds=0.5)
     with pytest.raises(ArchicadError, match="JSON"):
         transport.send({"command": "API.GetAllClassificationSystems", "parameters": {}})
+
+
+def test_a_timeout_does_not_claim_the_export_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It is the one thing the tool cannot know at that moment.
+
+    Archicad is still working or it is stuck, and the message that says which
+    -- and how to give it longer -- is the difference between raising a number
+    and re-exporting a 455 MB model by hand to see whether it comes out.
+    """
+
+    def timed_out(*_: Any, **__: Any) -> Any:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", timed_out)
+    transport = HttpTransport(port=DEFAULT_PORT, timeout_seconds=1.0)
+    with pytest.raises(ArchicadError) as raised:
+        transport.send({"command": "API.IsAlive", "parameters": {}})
+
+    said = str(raised.value)
+    assert "--timeout" in said, "the message has to name the way out of it"
+    assert "not proof" in said
+
+
+def test_the_wait_is_long_enough_for_a_real_export() -> None:
+    """Five minutes was not. It is a stuck-Archicad detector, not a budget for
+    the export -- a 455 MB mixed-use project walked straight through it and
+    took the layer restore down with it."""
+    assert DEFAULT_TIMEOUT_SECONDS >= 900.0
 
 
 def test_a_failed_send_does_not_go_scanning_for_other_instances() -> None:
@@ -3292,6 +3322,38 @@ def test_the_layers_are_put_back_even_when_the_export_fails() -> None:
 
     _, restored = transport.all_parameters_for("CreateLayers")
     assert restored["layerDataArray"] == [written("Context", hidden=True, locked=True)]
+
+
+def test_a_restore_archicad_will_not_take_says_the_layers_are_left_changed() -> None:
+    """The failure a real run hit, and the thing it did not say.
+
+    A 455 MB export ran past the wait, and the restore -- asking the same busy
+    Archicad the same question -- ran past it too. What reached the screen was
+    a timeout, so the project sat there holding the study's layer state with
+    nothing to suggest the tool had put it there.
+    """
+    from sun_study.archicad.layers import export_state
+
+    connection, transport = connect(_layer_world())
+    writes = itertools.count()
+
+    scripted = transport.send
+
+    def send(payload: dict[str, Any]) -> dict[str, Any]:
+        inner = payload.get("parameters", {}).get("addOnCommandId", {}).get("commandName")
+        if inner == "CreateLayers" and next(writes) == 1:
+            raise ArchicadError("Archicad did not answer within 1800s.")
+        return scripted(payload)
+
+    transport.send = send  # type: ignore[method-assign]
+
+    with pytest.raises(ArchicadError) as raised, export_state(connection):
+        pass
+
+    said = str(raised.value)
+    assert "not put back" in said
+    assert "1 of 3 layers" in said, "how much was left, so it can be judged"
+    assert "layer combination" in said, "and what to do about it"
 
 
 def test_a_named_layer_is_switched_off_for_the_export() -> None:

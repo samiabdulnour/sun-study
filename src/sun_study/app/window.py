@@ -32,6 +32,7 @@ from sun_study import AUTHOR, PRODUCT, __version__
 from sun_study.app import probe
 from sun_study.app.runner import Run
 from sun_study.archicad import naming
+from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS
 from sun_study.disclaimer import STATUS
 
 PAD = 8
@@ -569,6 +570,20 @@ class Window:
             "cannot be emptied — an empty prefix matches every layout in the "
             "project.",
         )
+        self.wait_min, inner = self._entry(
+            self.advanced,
+            inner,
+            "Archicad wait (min)",
+            "30",
+            "How long to let Archicad think about one command before giving up.",
+            "Only the IFC export comes anywhere near it, and on a big project "
+            "that export is minutes rather than seconds -- 455 MB on one "
+            "mixed-use job. Too short and the run stops partway with 'Archicad "
+            "did not answer', having already done the slow part, and leaves "
+            "the project holding the study's layer state. Raising it costs "
+            "nothing on a run that works; it only decides how long a genuinely "
+            "stuck Archicad is waited on.",
+        )
         self.grid_m, inner = self._entry(
             self.advanced,
             inner,
@@ -922,11 +937,29 @@ class Window:
     def _listed(self, entry: ttk.Entry) -> list[str]:
         return [part.strip() for part in entry.get().split(",") if part.strip()]
 
+    def _wait_seconds(self) -> str:
+        """The Archicad wait, in the seconds the command line wants.
+
+        Minutes on screen because that is the unit the number is thought about
+        in -- an export takes minutes -- and seconds on the command line
+        because that is what ``--timeout`` takes. Anything unreadable falls
+        back to the command line's own default rather than refusing to run: a
+        mistyped wait should not stop a study, and the default is right for
+        every project but the largest.
+        """
+        try:
+            minutes = float(self.wait_min.get().strip())
+        except ValueError:
+            return f"{DEFAULT_TIMEOUT_SECONDS:g}"
+        if minutes <= 0:
+            return f"{DEFAULT_TIMEOUT_SECONDS:g}"
+        return f"{minutes * 60.0:g}"
+
     def jobs(self) -> list[Job]:
         """The command lines the ticked boxes mean. Public, and pure, because
         this is the part worth testing without a window on screen."""
         port = str(self.ports[max(self.instance.current(), 0)]) if self.ports else ""
-        common = ["--port", port]
+        common = ["--port", port, "--timeout", self._wait_seconds()]
         if self.prefix.get().strip():
             common += ["--layer-prefix", self.prefix.get().strip()]
         made: list[Job] = []

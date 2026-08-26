@@ -20,7 +20,7 @@ import pytest
 
 from sun_study.app import probe, window
 from sun_study.app.runner import CLI_MARKER, child_environment, command_prefix
-from sun_study.archicad.connection import Instance
+from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS, Instance
 
 
 @pytest.fixture
@@ -476,6 +476,43 @@ def test_both_runs_are_told_the_same_layer_prefix(hidden_window: Any) -> None:
 
     assert flag(facade.args, "--layer-prefix") == ["14 |"]
     assert flag(plans.args, "--layer-prefix") == ["14 |"]
+
+
+def test_the_archicad_wait_reaches_both_runs_in_seconds(hidden_window: Any) -> None:
+    """Minutes on screen, seconds on the command line.
+
+    The field exists because five minutes was not enough for a 455 MB export
+    and there was no way to say so from the window -- the run stopped partway,
+    having already done the slow part.
+    """
+    hidden_window.do_plans.set(True)
+    hidden_window.wait_min.delete(0, "end")
+    hidden_window.wait_min.insert(0, "45")
+    facade, plans = hidden_window.jobs()
+
+    assert flag(facade.args, "--timeout") == ["2700"]
+    assert flag(plans.args, "--timeout") == ["2700"]
+
+
+@pytest.mark.parametrize("typed", ["", "   ", "half an hour", "0", "-5"])
+def test_a_wait_that_is_not_a_number_falls_back_rather_than_stopping_the_study(
+    hidden_window: Any, typed: str
+) -> None:
+    """A mistyped wait is not a reason to refuse a run. The command line's own
+    default is right for every project but the largest, so it is what an
+    unreadable field means."""
+    hidden_window.wait_min.delete(0, "end")
+    hidden_window.wait_min.insert(0, typed)
+    (facade,) = hidden_window.jobs()
+
+    assert flag(facade.args, "--timeout") == ["1800"]
+
+
+def test_reading_the_project_does_not_wait_the_exports_wait() -> None:
+    """The window fills its lists in while somebody watches. Inheriting the
+    half-hour meant for the export would hang it on an Archicad that is merely
+    busy, so the reads keep a wait of their own."""
+    assert probe.READING_SECONDS < DEFAULT_TIMEOUT_SECONDS
 
 
 def test_another_offices_numbering_reaches_the_command_line(hidden_window: Any) -> None:

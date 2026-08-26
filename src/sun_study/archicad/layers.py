@@ -555,4 +555,21 @@ def export_state(
         yield plan
     finally:
         # Only what was touched, and back to exactly what it was.
-        _write(connection, [old for old, _ in changed])
+        try:
+            _write(connection, [old for old, _ in changed])
+        except ArchicadError as error:
+            # Said out loud, because the alternative is silence about the one
+            # thing this block promises. A restore that fails leaves somebody
+            # looking at the study's layer state and no reason to think the
+            # tool put it there -- and the last words on screen would be about
+            # the export instead. Chained, so whatever failed inside the block
+            # is still underneath: if the export timed out, the restore was
+            # asking a busy Archicad the same question and got the same answer.
+            raise ArchicadError(
+                f"The layers were not put back: {error} "
+                f"{plan.changed} of {plan.total} layers are still as the "
+                f"export needed them rather than as they were. Reselect the "
+                f"project's own layer combination in Archicad before drawing "
+                f"from it -- nothing has been deleted, but what is shown is "
+                f"the study's answer and not the office's."
+            ) from error

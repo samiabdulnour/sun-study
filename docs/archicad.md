@@ -67,6 +67,32 @@ A third case is subtler still and is documented under [write-back](#write-back) 
 some commands report per-item outcomes *inside* a successful response, and one of those
 outcomes is an empty object.
 
+### The wait is sized for the export, and it is not proof of failure
+
+One command is slow and the rest are not. `IFCFileOperation` on a real project is
+minutes: 455 MB on `2614_Kogarah`, which walked straight through the five-minute wait
+the tool started with. The default is now **30 minutes**
+(`DEFAULT_TIMEOUT_SECONDS`), raised or lowered with `--timeout` in seconds, or from
+the window with *Archicad wait (min)* under Advanced.
+
+Two things to know when it does time out:
+
+* **It does not mean the export failed.** Archicad is either still working or stuck,
+  and nothing on this side can tell which. Give it longer before re-exporting by hand.
+* **The command that times out is often the restore, not the export.** The export
+  finishes, `export_state` asks the still-busy Archicad to put the layers back, and
+  *that* is what runs out of wait — so the message is about a timeout while the real
+  consequence is a project left holding the study's layer state. `export_state` now
+  says so in as many words. Reselect the office's own layer combination before
+  drawing from the model.
+
+If it stops again at double the wait, the thing to look at is Archicad: a dialog
+waiting to be clicked stops it answering at any timeout at all.
+
+The window's own reads — the layer, combination and master-layout lists it fills in
+at startup — keep a separate, short wait (`probe.READING_SECONDS`). They are small
+questions asked while somebody watches, and they must not inherit the export's.
+
 ---
 
 ## Commands used

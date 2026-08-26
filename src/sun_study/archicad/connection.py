@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 __all__ = [
+    "DEFAULT_TIMEOUT_SECONDS",
     "PORT_RANGE",
     "ArchicadConnection",
     "ArchicadError",
@@ -59,6 +60,12 @@ __all__ = [
 DEFAULT_HOST = "http://127.0.0.1"
 DEFAULT_PORT = 19723
 TAPIR_NAMESPACE = "TapirCommand"
+
+#: How long to let Archicad think about one command before giving up on it.
+#: Sized for the slowest thing anyone asks of it -- the IFC export -- on the
+#: biggest project seen so far, with room over. The old five minutes was sized
+#: for nothing in particular and a 455 MB export walked straight through it.
+DEFAULT_TIMEOUT_SECONDS = 1800.0
 
 #: Every port Archicad can put its JSON API on. Each running instance claims
 #: one, in order, so the second Archicad open on a machine is on 19724 and a
@@ -108,9 +115,15 @@ class HttpTransport:
 
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
-    timeout_seconds: float = 300.0
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     """Generous on purpose. An IFC export of a large model is not quick, and a
-    timeout mid-export leaves a half-written file that looks like a real one."""
+    timeout mid-export leaves a half-written file that looks like a real one.
+
+    It is a hung-Archicad detector, not a budget for the export. Five minutes
+    was neither: a 455 MB export of a real mixed-use project ran past it, and
+    the run then died putting the layers back -- leaving the project holding
+    the study's layer state, which is the one thing ``export_state`` exists to
+    prevent. Raise it with ``--timeout`` rather than trimming a model to fit."""
 
     @property
     def url(self) -> str:
@@ -140,8 +153,12 @@ class HttpTransport:
         except TimeoutError as exc:
             raise ArchicadError(
                 f"Archicad did not answer within {self.timeout_seconds:g}s. A large "
-                f"IFC export can legitimately take longer; raise the timeout rather "
-                f"than assuming the export failed."
+                f"IFC export can legitimately take longer, so this is not proof "
+                f"that the export failed: give it longer with --timeout, in "
+                f"seconds -- or, in the window, 'Archicad wait (min)' under "
+                f"Advanced. If it stops at double the wait too, the thing to "
+                f"look at is Archicad itself: a dialog waiting to be clicked "
+                f"stops it answering at any timeout."
             ) from exc
 
         try:

@@ -175,6 +175,10 @@ def _zones_by_layer(connection: ArchicadConnection) -> tuple[tuple[str, ...], tu
     return tuple(sorted(carried)), kinds
 
 
+#: How long the window waits on any one of the small reads below.
+READING_SECONDS = 60.0
+
+
 def options(port: int) -> ProjectOptions:
     """Read every list the window offers. Never raises: a project that will
     not answer one question is still worth offering the rest of."""
@@ -188,7 +192,11 @@ def options(port: int) -> ProjectOptions:
             return None
 
     try:
-        connection = ArchicadConnection(HttpTransport(port=port))
+        # Its own wait, and a short one. Every read below is a small one, and
+        # this runs while somebody watches the window fill in -- it must not
+        # inherit the export's half-hour, which would hang the window on an
+        # Archicad that is merely busy.
+        connection = ArchicadConnection(HttpTransport(port=port, timeout_seconds=READING_SECONDS))
         version = connection.tapir_version
         info = connection.run_tapir("GetProjectInfo", {}) or {}
         project = str(info.get("projectName") or "")

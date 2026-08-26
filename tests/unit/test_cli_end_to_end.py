@@ -1032,6 +1032,32 @@ def test_the_layer_prefix_is_offered_by_the_commands_that_create_things() -> Non
         assert "--layer-prefix" in invocation.output
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "massing",
+        "archicad-run",
+        "archicad-info",
+        "archicad-rooms",
+        "archicad-objects",
+        "archicad-report",
+        "archicad-probe",
+        "archicad-selftest",
+        "init-properties",
+    ],
+)
+def test_every_command_that_talks_to_archicad_can_be_told_to_wait_longer(command: str) -> None:
+    """The wait catches whichever command is in flight, not only the export.
+
+    A run that timed out did so putting the layers back, after the export had
+    already worked -- so a flag offered on the exporting commands alone would
+    have missed the one that actually failed.
+    """
+    invocation = runner.invoke(app, [command, "--help"])
+    assert invocation.exit_code == 0
+    assert "--timeout" in invocation.output
+
+
 def test_an_empty_layer_prefix_is_a_usage_error_before_anything_is_touched() -> None:
     """Refused at the door rather than four minutes in, and refused at all:
     the prefix is how a rerun finds its own sheets to delete, so an empty one
