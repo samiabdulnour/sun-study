@@ -419,10 +419,13 @@ def clear_selection(connection: ArchicadConnection) -> int:
 #: translator is a few kB; the smallest real massing seen is several hundred.
 EMPTY_EXPORT_BYTES = 100_000
 
-#: Window types an IFC export can be taken from. Anything else -- a Layout, a
-#: Section, a Worksheet -- exports its own contents, which for a sheet is
-#: nothing at all.
-EXPORTABLE_WINDOWS = ("FloorPlan", "Model3D", "3D")
+#: Window types that hold no building, so an export taken from one is empty.
+#: A deny-list and not an allow-list: the type names are an undocumented enum,
+#: and an allow-list of them refused a perfectly good export from the 3D
+#: window because that window is called "3DModel" and the list said "Model3D".
+#: The file-size check below is the real safety net; this only exists to say
+#: *why* before four minutes are spent on it.
+UNEXPORTABLE_WINDOWS = ("Layout", "MasterLayout")
 
 
 def _refuse_from_a_sheet(connection: ArchicadConnection) -> None:
@@ -444,7 +447,7 @@ def _refuse_from_a_sheet(connection: ArchicadConnection) -> None:
         # Not knowing is not a reason to refuse; the size check still runs.
         return
     where = current.get("currentWindowType") if isinstance(current, dict) else None
-    if isinstance(where, str) and where not in EXPORTABLE_WINDOWS:
+    if isinstance(where, str) and where in UNEXPORTABLE_WINDOWS:
         raise ArchicadError(
             f"Archicad is showing a {where}, and an IFC export takes whatever "
             f"the visible window holds -- which on a sheet is nothing. Click a "

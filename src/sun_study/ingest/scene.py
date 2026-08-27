@@ -712,6 +712,111 @@ def _open_space_grid(
     )
 
 
+#: How far above the ground a sample must sit to be measuring the sky rather
+#: than the ground it stands on. Small enough to be the same answer at any
+#: honest reading of "at ground level", large enough to clear a coincident
+#: terrain mesh and the floating-point noise in its triangles.
+MINIMUM_GROUND_CLEARANCE_M = 0.05
+
+
+def zone_surface_grid(
+    space: IfcElement, parent_id: str, *, spacing_m: float, height_m: float
+) -> SamplePoints | None:
+    """Grid a Zone's floor when that floor is not flat.
+
+    ``zone_floor_grid`` takes the dominant *planar* face and everything within
+    five degrees of it. That is right for a balcony, which is a slab, and
+    wrong for ground: a Zone cut against a terrain mesh has a bottom of
+    hundreds of triangles over several metres of fall, and the dominant plane
+    is whichever terrace happens to be biggest. On the reference project that
+    was 1,314 m2 of flat pieces out of 1,887 m2 of actual surface, and the
+    rest was not measured at all.
+
+    So: a regular lattice in plan, each point dropped onto whatever the Zone's
+    underside is at that x and y, then raised ``height_m`` above it.
+
+    A lattice in **plan** rather than samples on the triangles, for two
+    reasons. The drawing traces its fills on a lattice and cannot contour a
+    triangle soup. And an area on a slope is quoted as its plan area -- a
+    playground on a ramp is not more playground for being tilted -- so a cell
+    carries the area it covers on the drawing, not the area of the fabric.
+
+    Points with no surface under them are outside the Zone, which is what
+    clips the grid to the outline. Where the underside folds back on itself,
+    the highest one wins: that is the surface somebody stands on.
+    """
+    triangles = space.mesh.triangles()
+    if not len(triangles):
+        return None
+    # The site mesh is an occluder and the Zone's underside was cut against
+    # it, so the two surfaces are coincident. A sample sitting exactly on the
+    # ground starts every ray inside the ground and reads as permanent shade
+    # -- a whole playground at zero hours, confidently. Assessing "on the
+    # bottom" therefore means just clear of it.
+    height_m = max(height_m, MINIMUM_GROUND_CLEARANCE_M)
+
+    edge_a = triangles[:, 1] - triangles[:, 0]
+    edge_b = triangles[:, 2] - triangles[:, 0]
+    normals = np.cross(edge_a, edge_b)
+    lengths = np.linalg.norm(normals, axis=1)
+    # Downward-facing and not degenerate: the underside of the volume.
+    facing = (lengths > 1e-12) & (normals[:, 2] < -1e-9)
+    under = triangles[facing]
+    if not len(under):
+        return None
+
+    lower = under.reshape(-1, 3).min(axis=0)
+    upper = under.reshape(-1, 3).max(axis=0)
+    grid = horizontal_grid(
+        (float(lower[0]), float(lower[1]), 0.0),
+        float(upper[0] - lower[0]),
+        float(upper[1] - lower[1]),
+        parent_id,
+        height_m=0.0,
+        spacing_m=spacing_m,
+    )
+    if not len(grid):
+        return None
+
+    flat = np.asarray(grid.positions, dtype=np.float64)[:, :2]
+    surface = np.full(len(flat), -np.inf)
+
+    for triangle in under:
+        a, b, c = triangle[0], triangle[1], triangle[2]
+        v0, v1 = c[:2] - a[:2], b[:2] - a[:2]
+        denominator = v0[0] * v1[1] - v1[0] * v0[1]
+        if abs(denominator) < 1e-12:
+            continue
+        v2 = flat - a[:2]
+        # Barycentric, in plan. Both weights non-negative and summing to at
+        # most one is the point being inside the projected triangle.
+        u = (v2[:, 0] * v1[1] - v1[0] * v2[:, 1]) / denominator
+        v = (v0[0] * v2[:, 1] - v2[:, 0] * v0[1]) / denominator
+        inside = (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1.0 + 1e-9)
+        if not inside.any():
+            continue
+        height = a[2] + u[inside] * (c[2] - a[2]) + v[inside] * (b[2] - a[2])
+        surface[inside] = np.maximum(surface[inside], height)
+
+    covered = np.isfinite(surface)
+    if not covered.any():
+        return None
+
+    positions = grid.positions[covered].copy()
+    positions[:, 2] = surface[covered] + height_m
+    return SamplePoints(
+        positions,
+        # Straight up, not the slope's own normal. The assessment plane is a
+        # person standing on the ground; the terrain decides where they stand,
+        # not which way they face, and a normal taken from the fall would put
+        # a bank facing away from a sun that plainly reaches it.
+        np.tile(np.array([0.0, 0.0, 1.0]), (int(covered.sum()), 1)),
+        tuple(np.asarray(grid.parent_ids)[covered].tolist()),
+        grid.areas[covered],
+        surface_offset_m=height_m,
+    )
+
+
 def zone_floor_grid(
     space: IfcElement,
     parent_id: str,
@@ -1331,6 +1436,16 @@ class MassingConfig:
     zone_height_m: float = 1.0
     """Height above the Zone's floor at which it is assessed."""
 
+    zone_spacing_m: float | None = None
+    """Grid spacing for the Zone surface. ``None`` follows the ground grid.
+
+    Its own knob because the two want different numbers: the ground is the
+    whole site and is gridded to see a shadow move across it, while a Zone is
+    one courtyard whose figure is quoted to a square metre. Tying them made
+    half-metre resolution on a playground cost four times the samples over a
+    site that did not need it.
+    """
+
     def describe(self) -> str:
         ground = (
             f"{self.ground_level_m:g} m" if self.ground_level_m is not None else "auto (lowest)"
@@ -1475,10 +1590,10 @@ def _zone_surface(model: IfcModel, config: MassingConfig) -> tuple[SamplePoints,
         grid
         for space in chosen
         if (
-            grid := zone_floor_grid(
+            grid := zone_surface_grid(
                 space,
                 space.global_id,
-                spacing_m=config.ground_spacing_m,
+                spacing_m=config.zone_spacing_m or config.ground_spacing_m,
                 height_m=config.zone_height_m,
             )
         )
@@ -1546,6 +1661,7 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
         "ground_area_m2": round(ground.total_area_m2, 3),
         "ground_spacing_m": config.ground_spacing_m,
         "zones_measured": measured_zones,
+        "zone_spacing_m": config.zone_spacing_m or config.ground_spacing_m,
         "zone_samples": len(zone_surface),
         "zone_area_m2": round(zone_surface.total_area_m2, 3),
         "zone_height_m": config.zone_height_m,

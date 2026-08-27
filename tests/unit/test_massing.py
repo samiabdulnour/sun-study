@@ -41,6 +41,7 @@ from sun_study.ingest.scene import (
     SceneConfigError,
     build_massing_scene,
     zone_floor_grid,
+    zone_surface_grid,
 )
 from sun_study.pipeline import WEIGHTING_BY_RULESET, run_massing
 from sun_study.rules.ruleset import load_ruleset
@@ -652,3 +653,99 @@ def test_an_hourly_plan_is_the_same_data_as_the_banded_one() -> None:
 
     # And a sample lit at no instant is a sample with no minutes.
     assert np.allclose(result.zone_minutes[~result.zone_sunlit.any(axis=1)], 0.0)
+
+
+# ---------------------------------------------------------------------------
+# A Zone whose floor is not flat.
+#
+# Cutting a Zone against a terrain mesh gives it an underside of hundreds of
+# triangles over several metres of fall. The planar sampler takes the biggest
+# coplanar group and calls it the floor, which on the reference project left
+# a fifth of the area unmeasured and said nothing.
+# ---------------------------------------------------------------------------
+def _tilted_slab(fall_m: float, size_m: float = 10.0) -> IfcElement:
+    """A box whose underside runs downhill from one edge to the other."""
+    x = np.array([0.0, size_m])
+    y = np.array([0.0, size_m])
+    top = 10.0
+    # Four corners of the underside, two of them dropped by ``fall_m``.
+    under = [
+        (x[0], y[0], 0.0),
+        (x[1], y[0], -fall_m),
+        (x[1], y[1], -fall_m),
+        (x[0], y[1], 0.0),
+    ]
+    over = [(px, py, top) for px, py, _ in under]
+    vertices = np.array(under + over, dtype=np.float64)
+    faces = np.array(
+        [
+            # Underside, wound so its normal points down.
+            [0, 2, 1],
+            [0, 3, 2],
+            # Top, and the four sides, so the solid is closed.
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [1, 2, 6],
+            [1, 6, 5],
+            [2, 3, 7],
+            [2, 7, 6],
+            [3, 0, 4],
+            [3, 4, 7],
+        ],
+        dtype=np.int32,
+    )
+    return IfcElement(
+        global_id="tilted",
+        ifc_class="IfcSpace",
+        name="Playground",
+        long_name="",
+        predefined_type="",
+        storey=None,
+        mesh=TriangleMesh(vertices, faces),
+    )
+
+
+def test_a_sloping_floor_is_measured_over_its_whole_plan_area() -> None:
+    """The planar sampler measures a slice; the draped one measures the lot."""
+    zone = _tilted_slab(fall_m=3.0)
+    draped = zone_surface_grid(zone, "z", spacing_m=0.5, height_m=1.0)
+    assert draped is not None
+    assert draped.total_area_m2 == pytest.approx(100.0, rel=0.05)
+
+
+def test_a_sloping_floor_carries_the_slope_into_the_sample_heights() -> None:
+    """Every point one metre above the ground it actually sits on."""
+    zone = _tilted_slab(fall_m=3.0)
+    draped = zone_surface_grid(zone, "z", spacing_m=0.5, height_m=1.0)
+    assert draped is not None
+
+    # The underside falls from z 0 at x=0 to z -3 at x=10, so a sample at x
+    # should sit at 1 - 0.3x.
+    expected = 1.0 - 0.3 * draped.positions[:, 0]
+    assert np.allclose(draped.positions[:, 2], expected, atol=0.02)
+    # Facing the sky, whatever the fall.
+    assert np.allclose(draped.normals, np.array([0.0, 0.0, 1.0]))
+
+
+def test_an_area_on_a_slope_is_quoted_as_its_plan_area() -> None:
+    """A playground on a ramp is not more playground for being tilted.
+
+    It also has to match the drawing, which is a plan.
+    """
+    flat = zone_surface_grid(_tilted_slab(fall_m=0.0), "z", spacing_m=0.5, height_m=1.0)
+    steep = zone_surface_grid(_tilted_slab(fall_m=8.0), "z", spacing_m=0.5, height_m=1.0)
+    assert flat is not None and steep is not None
+    assert steep.total_area_m2 == pytest.approx(flat.total_area_m2, rel=0.02)
+
+
+def test_a_flat_zone_reads_the_same_either_way() -> None:
+    """The change must not move a number on a level site."""
+    model = read_ifc(SAMPLE)
+    space = next(s for s in model.of_class("IfcSpace") if s.name == "Apartment L00-A")
+    planar = zone_floor_grid(space, "z", spacing_m=0.5, height_m=1.0)
+    draped = zone_surface_grid(space, "z", spacing_m=0.5, height_m=1.0)
+    assert planar is not None and draped is not None
+    assert draped.total_area_m2 == pytest.approx(planar.total_area_m2, rel=0.02)
+    assert np.allclose(draped.positions[:, 2], planar.positions[0, 2], atol=0.01)

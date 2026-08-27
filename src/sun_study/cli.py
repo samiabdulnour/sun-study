@@ -156,6 +156,7 @@ from sun_study.disclaimer import DISCLAIMER, STATUS
 from sun_study.ingest.ifc import GeoreferencingError, read_ifc
 from sun_study.ingest.scene import (
     DEFAULT_MASSING_SPACING_M,
+    MINIMUM_GROUND_CLEARANCE_M,
     MassingConfig,
     SceneConfig,
     SceneConfigError,
@@ -1042,6 +1043,13 @@ def report_zone_bands(
     }
     when = f"{result.assessment_date:%d %B}, {_window_of(result)}"
 
+    # Before any drawing. Everything below this line can fail in Archicad --
+    # a layer, a sheet, a save -- and the numbers are the part of a run worth
+    # keeping. Written first, they survive whatever the project does next.
+    if csv_out is not None:
+        _write_zone_csv(csv_out, result, banded=banded, hours=hours, samples=samples)
+        typer.echo(f"  wrote {csv_out}")
+
     made: list[tuple[str, str]] = []
     tables: dict[str, Sequence[TableRow]] = {}
     titles: dict[str, str] = {}
@@ -1190,10 +1198,6 @@ def report_zone_bands(
             analysis_subset=subset,
         )
 
-    if csv_out is not None:
-        _write_zone_csv(csv_out, result, banded=banded, hours=hours, samples=samples)
-        typer.echo(f"  wrote {csv_out}")
-
     if stats:
         typer.echo("")
         problem |= _zone_statistics_sheet(
@@ -1248,6 +1252,22 @@ def _hourly(result: MassingResult) -> list[tuple[dt.datetime, Any]]:
     ]
 
 
+def _zone_plane_m(result: MassingResult) -> float:
+    """The height actually assessed at, which is not always the one asked for.
+
+    A request to measure on the ground is honoured as a small clearance above
+    it, and a header that repeated the request would be describing a run that
+    did not happen.
+    """
+    return max(result.scene.config.zone_height_m, MINIMUM_GROUND_CLEARANCE_M)
+
+
+def _zone_grid_m(result: MassingResult) -> float:
+    """The Zone's own grid, which need not be the ground's."""
+    config = result.scene.config
+    return config.zone_spacing_m or config.ground_spacing_m
+
+
 def _write_zone_csv(
     destination: Path,
     result: MassingResult,
@@ -1294,8 +1314,8 @@ def _write_zone_csv(
             f"# assessed {result.assessment_date:%Y-%m-%d}, "
             f"{window.window_start} to {window.window_end}, "
             f"{window.timestep_minutes} min step, {len(result.times)} instants",
-            f"# plane {result.scene.config.zone_height_m:g} m above the Zone floor, "
-            f"grid {result.scene.config.ground_spacing_m:g} m",
+            f"# plane {_zone_plane_m(result):g} m above the Zone floor, "
+            f"grid {_zone_grid_m(result):g} m",
             f"# zones {list(result.scene.config.zone_layers)} "
             f"{list(result.scene.config.zone_names) or '(all on the layer)'}",
             f"# {STATUS}",
@@ -1372,8 +1392,8 @@ def _zone_statistics_sheet(
             "Zones measured",
             ", ".join(named) if named else "all on the layer",
         ),
-        ("Assessment plane", f"{result.scene.config.zone_height_m:g} m above the Zone floor"),
-        ("Grid", f"{result.scene.config.ground_spacing_m:g} m"),
+        ("Assessment plane", f"{_zone_plane_m(result):g} m above the Zone floor"),
+        ("Grid", f"{_zone_grid_m(result):g} m"),
         ("Total area", f"{total:.1f} m2"),
         ("", ""),
     ]
@@ -2003,7 +2023,27 @@ def _sheet_per_instant(
 
     # Saving is what makes a layout readable, and everything below reads it:
     # a drawing's angle and size are only knowable once it exists. See D39.
-    connection.run_tapir("SaveProject", {})
+    #
+    # A project that refuses to save therefore has no readable sheets -- but
+    # it does have the fills, which are already in the model, and it has
+    # whatever was written to disk before this. So this says what is missing
+    # and returns, rather than throwing the run away at its last step.
+    try:
+        connection.run_tapir("SaveProject", {})
+    except ArchicadError as error:
+        typer.secho(
+            f"  the layouts are made and the fills are drawn, but Archicad would not save: {error}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        typer.secho(
+            "  Their drawings cannot be straightened or given their tables "
+            "until it does, because a Drawing's size is only readable once "
+            "the layout has been saved. Save in Archicad and re-run.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return
     for label, database_id in finished:
         try:
             sheet, _ = layout_sheet(connection, database_id)
@@ -2518,9 +2558,26 @@ def massing(
         float,
         typer.Option(
             "--zone-height",
-            help="Height above the Zone floor to assess, in metres.",
+            help=(
+                "Height above the Zone floor to assess, in metres. 0 means at "
+                "ground level, which is taken as 50 mm clear of it: the site "
+                "mesh is an occluder and the Zone was cut against it, so a "
+                "sample exactly on the ground starts every ray inside the "
+                "ground and reads as permanent shade."
+            ),
         ),
     ] = 1.0,
+    zone_grid: Annotated[
+        float | None,
+        typer.Option(
+            "--zone-grid",
+            help=(
+                "Grid spacing for the Zone surface, in metres. Defaults to "
+                "--ground-grid. Its own setting because a courtyard wants a "
+                "finer grid than a whole site can afford."
+            ),
+        ),
+    ] = None,
     zone_subset: Annotated[
         str,
         typer.Option(
@@ -2848,6 +2905,7 @@ def massing(
         zone_layers=tuple(zone_layer or ()),
         zone_names=tuple(zone_name or ()),
         zone_height_m=zone_height,
+        zone_spacing_m=zone_grid,
     )
 
     rules: str | Ruleset = ruleset
@@ -2949,7 +3007,7 @@ def massing(
             connection,
             result,
             layer_prefix=naming.group(),
-            spacing_m=ground_grid,
+            spacing_m=zone_grid or ground_grid,
             hours=zone_hours,
             hourly=zone_hourly,
             sheet=zone_sheet,
