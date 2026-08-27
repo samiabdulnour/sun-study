@@ -187,6 +187,60 @@ def test_the_communal_study_carries_a_second_zone_layer_for_the_fit(
     assert flag(communal.args, "--require-layer"), "nothing to fit the drawing against"
 
 
+def test_the_communal_study_carries_its_window_and_its_threshold(
+    hidden_window: Any,
+) -> None:
+    """The default is 8 to 3 with a 2 hour split, which is what was asked for."""
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.do_communal.set(True)
+    (communal,) = hidden_window.jobs()
+
+    assert flag(communal.args, "--window-start") == ["08:00"]
+    assert flag(communal.args, "--window-end") == ["15:00"]
+    assert flag(communal.args, "--zone-hours") == ["2"]
+    assert "--zone-stats" in communal.args
+
+
+def test_a_window_nobody_can_parse_is_left_to_the_ruleset(hidden_window: Any) -> None:
+    """Passing half a window would move the study by an unstated amount.
+
+    The ruleset's own hours are the safe way to be wrong, and the run says
+    which window it used either way.
+    """
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.do_communal.set(True)
+    for typed in ("", "08:00", "morning", "8-", "-15:00"):
+        hidden_window.communal_window.delete(0, "end")
+        hidden_window.communal_window.insert(0, typed)
+        (communal,) = hidden_window.jobs()
+        assert "--window-start" not in communal.args, typed
+        assert "--window-end" not in communal.args, typed
+
+
+def test_the_window_is_written_the_way_people_say_it(hidden_window: Any) -> None:
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.do_communal.set(True)
+    hidden_window.communal_window.delete(0, "end")
+    hidden_window.communal_window.insert(0, "08:00 to 15:00")
+    (communal,) = hidden_window.jobs()
+    assert flag(communal.args, "--window-start") == ["08:00"]
+    assert flag(communal.args, "--window-end") == ["15:00"]
+
+
+def test_the_apartment_study_keeps_the_adg_window(hidden_window: Any) -> None:
+    """4A-1 is 9 to 3. A communal window typed in this app must not move it."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_plans.set(True)
+    hidden_window.communal_window.delete(0, "end")
+    hidden_window.communal_window.insert(0, "06:00-18:00")
+    (plans,) = hidden_window.jobs()
+    assert "--window-start" not in plans.args
+    assert "--window-end" not in plans.args
+
+
 def test_all_three_studies_run_in_order(hidden_window: Any) -> None:
     hidden_window.do_plans.set(True)
     hidden_window.do_communal.set(True)

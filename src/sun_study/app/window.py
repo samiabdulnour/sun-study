@@ -435,6 +435,30 @@ class Window:
             "Zone outline is the extent measured, and the plane assessed is "
             "one metre above the Zone floor.",
         )
+        self.communal_window, row = self._entry(
+            frame,
+            row,
+            "Communal window",
+            "08:00-15:00",
+            "The hours assessed for the communal study, and the threshold below.",
+            "The ADG measures 09:00 to 15:00, and that is what the apartment "
+            "study uses whatever is typed here. A council DCP may ask for a "
+            "wider window for communal open space -- 08:00 to 15:00 is "
+            "common -- so this moves the communal study alone. Every drawing "
+            "and the areas sheet carry the window they were made with, and "
+            "the run says in yellow when it is not the ruleset's.",
+        )
+        self.communal_hours, row = self._entry(
+            frame,
+            row,
+            "Communal threshold",
+            "2",
+            "Hours. Draws a second plan: what clears this, and what does not.",
+            "Seven bands say how the hours spread across the space. What a "
+            "DCP asks is how much of it clears the minimum, and a banded plan "
+            "makes a reader do that sum by eye. This draws that split as two "
+            "areas on a sheet of its own. Leave it empty for the bands alone.",
+        )
         self.balconies, self.balcony_names, self.balcony_hint, row = self._zone_row(
             frame,
             row,
@@ -976,6 +1000,20 @@ class Window:
         named = [name for name in self.options.zone_layers if "Zone." in name]
         return named or list(self.options.zone_layers)
 
+    def _window(self) -> tuple[str, str]:
+        """The communal study's assessment window, as start and end.
+
+        One field because it is one thought -- "eight to three" -- and two
+        boxes invite a start with no end. Anything unparseable is passed as
+        nothing rather than guessed at: the run then uses the ruleset's own
+        window and says so, which is the safe way to be wrong.
+        """
+        typed = self.communal_window.get().strip()
+        halves = [half.strip() for half in typed.replace("to", "-").split("-")]
+        if len(halves) != 2 or not all(halves):
+            return "", ""
+        return halves[0], halves[1]
+
     def _listed(self, entry: ttk.Entry) -> list[str]:
         return [part.strip() for part in entry.get().split(",") if part.strip()]
 
@@ -1100,7 +1138,18 @@ class Window:
                 args += ["--master-layout", self.master.get()]
             if self.adg_subset.get():
                 args += ["--zone-subset", self.adg_subset.get()]
-            args += ["--zone-sheet", "--year", self.year.get().strip() or "2024"]
+            start, end = self._window()
+            if start:
+                args += ["--window-start", start]
+            if end:
+                args += ["--window-end", end]
+            if self.communal_hours.get().strip():
+                args += ["--zone-hours", self.communal_hours.get().strip()]
+            # The areas always. The plans are what a reader looks at and the
+            # areas are what they quote, and a study that draws the one
+            # without writing the other invites a figure read off a colour.
+            args += ["--zone-sheet", "--zone-stats"]
+            args += ["--year", self.year.get().strip() or "2024"]
             made.append(Job("communal open space", args))
 
         return made
