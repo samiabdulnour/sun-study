@@ -697,12 +697,33 @@ def _open_space_grid(
             surface_offset_m=config.open_space_height_m,
         )
 
-    samples = planar_face_grid(
-        element.mesh,
+    return zone_floor_grid(
+        element,
         owner_id,
-        np.array([0.0, 0.0, -1.0]),
         spacing_m=config.grid_spacing_m,
-        surface_offset_m=-config.open_space_height_m,
+        height_m=config.open_space_height_m,
+    )
+
+
+def zone_floor_grid(
+    space: IfcElement, parent_id: str, *, spacing_m: float, height_m: float
+) -> SamplePoints | None:
+    """Grid the floor of a Zone, at ``height_m`` above it.
+
+    A Zone is a void, so the face somebody stands on is the one whose normal
+    points down out of the volume; the offset runs against that normal to rise
+    off the floor, and the normals are flipped back up afterwards. A horizontal
+    surface faces the sky whichever way the face it came from pointed.
+
+    Shared by private open space and by a communal Zone measured on its own,
+    which differ in who owns the answer and not in how it is taken.
+    """
+    samples = planar_face_grid(
+        space.mesh,
+        parent_id,
+        np.array([0.0, 0.0, -1.0]),
+        spacing_m=spacing_m,
+        surface_offset_m=-height_m,
     )
     if samples is None:
         return None
@@ -1277,6 +1298,23 @@ class MassingConfig:
     which is the intended reading: that ground is covered.
     """
 
+    zone_layers: tuple[str, ...] = ()
+    zone_names: tuple[str, ...] = ()
+    """Zones to measure as a surface in their own right.
+
+    For an outdoor area that belongs to no dwelling: a playground, a communal
+    terrace, a courtyard under a roof. The ground grid cannot answer for one
+    of those, because it grids the whole site at one level and then deletes
+    every sample with something overhead -- which is what a roof is. A Zone is
+    already the outline somebody drew around the area, so it is taken as the
+    extent rather than inferred from the geometry around it.
+
+    Empty means no zone surface, which is the ordinary massing run.
+    """
+
+    zone_height_m: float = 1.0
+    """Height above the Zone's floor at which it is assessed."""
+
     def describe(self) -> str:
         ground = (
             f"{self.ground_level_m:g} m" if self.ground_level_m is not None else "auto (lowest)"
@@ -1293,6 +1331,12 @@ class MassingConfig:
             + " | "
             f"ground level {ground}, margin {self.ground_margin_m:g} m | "
             + (
+                f"zone surface on layers {list(self.zone_layers)} "
+                f"named {list(self.zone_names)} at {self.zone_height_m:g} m | "
+                if self.zone_layers or self.zone_names
+                else ""
+            )
+            + (
                 f"geometry above {self.exclude_above_m:g} m dropped | "
                 if self.exclude_above_m is not None
                 else ""
@@ -1303,16 +1347,22 @@ class MassingConfig:
 
 @dataclass(frozen=True)
 class MassingScene:
-    """Facade and ground samples for a massing study."""
+    """Facade, ground and named-Zone samples for a massing study."""
 
     orientation: SiteOrientation
     occluders: TriangleMesh
     facade_samples: SamplePoints
     ground_samples: SamplePoints
     config: MassingConfig
+    zone_samples: SamplePoints = field(default_factory=SamplePoints.empty)
     provenance: dict[str, object] = field(default_factory=dict)
 
     def describe(self) -> str:
+        zones = (
+            f" | {len(self.zone_samples)} zone samples ({self.zone_samples.total_area_m2:.1f} m2)"
+            if len(self.zone_samples)
+            else ""
+        )
         return (
             f"{self.orientation.describe()}\n"
             f"  {self.config.describe()}\n"
@@ -1320,7 +1370,7 @@ class MassingScene:
             f"{len(self.facade_samples)} facade samples "
             f"({self.facade_samples.total_area_m2:.1f} m2) | "
             f"{len(self.ground_samples)} ground samples "
-            f"({self.ground_samples.total_area_m2:.1f} m2)"
+            f"({self.ground_samples.total_area_m2:.1f} m2)" + zones
         )
 
 
@@ -1378,6 +1428,57 @@ def massing_subject(model: IfcModel, config: MassingConfig) -> MassingSubject:
     )
 
 
+def _zone_surface(model: IfcModel, config: MassingConfig) -> tuple[SamplePoints, tuple[str, ...]]:
+    """Grid the Zones named for measurement, as a surface of their own.
+
+    No owner, no dwelling, no verdict. A communal outdoor area belongs to
+    nobody in particular, and the whole reason this exists is that every other
+    route in the tool insists on an apartment behind the thing it measures.
+
+    An empty filter is the ordinary massing run, so it returns nothing rather
+    than sweeping in every Zone in the model: a developed project has one per
+    room, and gridding all of them would answer a question nobody asked.
+    """
+    if not config.zone_layers and not config.zone_names:
+        return SamplePoints.empty(), ()
+
+    chosen = [
+        space
+        for space in model.of_class("IfcSpace")
+        if (not config.zone_layers or _on_layer(space, config.zone_layers))
+        and _named_one_of(space, config.zone_names)
+    ]
+    if not chosen:
+        raise SceneConfigError(
+            f"No Zone matches layers {list(config.zone_layers)} named "
+            f"{list(config.zone_names)}. Run 'sun-study archicad-info' to see "
+            f"the zone names on each layer."
+        )
+
+    grids = [
+        grid
+        for space in chosen
+        if (
+            grid := zone_floor_grid(
+                space,
+                space.global_id,
+                spacing_m=config.ground_spacing_m,
+                height_m=config.zone_height_m,
+            )
+        )
+        is not None
+    ]
+    if not grids:
+        raise SceneConfigError(
+            f"{len(chosen)} Zone(s) matched but none could be gridded. A Zone "
+            f"needs a floor face to stand on; check the export carries Zone "
+            f"geometry and not just the label."
+        )
+    return SamplePoints.concatenate(grids), tuple(
+        space.name or space.long_name or space.global_id for space in chosen
+    )
+
+
 def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
     """Assemble a massing-stage scene: facade and ground samples, no Zones.
 
@@ -1410,6 +1511,7 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
     facade = SamplePoints.concatenate([group for group in facade_groups if len(group)])
 
     ground = open_ground_grid(subject, occluders, config)
+    zone_surface, measured_zones = _zone_surface(model, config)
 
     provenance: dict[str, object] = {
         "mode": "massing",
@@ -1427,6 +1529,10 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
         "ground_samples": len(ground),
         "ground_area_m2": round(ground.total_area_m2, 3),
         "ground_spacing_m": config.ground_spacing_m,
+        "zones_measured": measured_zones,
+        "zone_samples": len(zone_surface),
+        "zone_area_m2": round(zone_surface.total_area_m2, 3),
+        "zone_height_m": config.zone_height_m,
         "vegetation_included": False,
     }
     return MassingScene(
@@ -1434,6 +1540,7 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
         occluders=occluders,
         facade_samples=facade,
         ground_samples=ground,
+        zone_samples=zone_surface,
         config=config,
         provenance=provenance,
     )

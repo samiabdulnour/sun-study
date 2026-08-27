@@ -365,6 +365,8 @@ class MassingResult:
     ground: BandedResult
     sun_position_count: int
     assessment_date: dt.date
+    zone: BandedResult | None = None
+    """The named Zones, measured as one surface. ``None`` when none were named."""
 
     def summary(self) -> str:
         hours = self.threshold_minutes / 60.0
@@ -378,6 +380,14 @@ class MassingResult:
             f"{self.ground.at_or_above_threshold_share:.2%} "
             f"({self.ground.at_or_above_threshold_m2:.1f} of "
             f"{self.ground.total_area_m2:.1f} m2)"
+            + (
+                f"\n  named zones with >{hours:g}hrs: "
+                f"{self.zone.at_or_above_threshold_share:.2%} "
+                f"({self.zone.at_or_above_threshold_m2:.1f} of "
+                f"{self.zone.total_area_m2:.1f} m2)"
+                if self.zone is not None
+                else ""
+            )
         )
 
 
@@ -440,6 +450,7 @@ def run_massing(
         threshold_minutes=threshold,
         facade=banded(scene.facade_samples),
         ground=banded(scene.ground_samples),
+        zone=banded(scene.zone_samples) if len(scene.zone_samples) else None,
         sun_position_count=len(times),
         assessment_date=rules.assessment.date_in(year),
     )

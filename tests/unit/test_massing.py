@@ -32,7 +32,11 @@ from sun_study.core.sampling import (
     triangle_samples,
 )
 from sun_study.ingest.ifc import read_ifc
-from sun_study.ingest.scene import MassingConfig, build_massing_scene
+from sun_study.ingest.scene import (
+    MassingConfig,
+    SceneConfigError,
+    build_massing_scene,
+)
 from sun_study.pipeline import run_massing
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -487,3 +491,77 @@ def test_the_reduction_does_not_cut_when_no_height_is_given() -> None:
 
     assert reduced.elements_above_cut == 0
     assert len(reduced.solids) == len(model.occluders())
+
+
+# ---------------------------------------------------------------------------
+# A Zone measured on its own: a playground, a courtyard, a communal terrace.
+#
+# The case these exist for has no apartment anywhere in it. Every other route
+# to a number in this tool goes through a dwelling -- glazing marked as a
+# living room, or open space owned by a flat -- and an outdoor area that
+# belongs to nobody could not be measured at all.
+# ---------------------------------------------------------------------------
+SYDNEY = "Australia/Sydney"
+
+
+def test_no_zone_surface_unless_one_is_asked_for() -> None:
+    """A developed model has a Zone per room; gridding all of them by default
+    would answer a question nobody asked, and quadruple an ordinary run."""
+    model = read_ifc(SAMPLE)
+    scene = build_massing_scene(model, MassingConfig(timezone=SYDNEY))
+    assert len(scene.zone_samples) == 0
+    assert scene.provenance["zones_measured"] == ()
+
+
+def test_a_named_zone_is_gridded_on_its_floor() -> None:
+    """8.0 x 11.6 m of floor, at the assessment height above it."""
+    model = read_ifc(SAMPLE)
+    scene = build_massing_scene(
+        model,
+        MassingConfig(
+            timezone=SYDNEY,
+            zone_names=("Apartment L00-A",),
+            ground_spacing_m=0.5,
+            zone_height_m=1.0,
+        ),
+    )
+    assert scene.zone_samples.total_area_m2 == pytest.approx(8.0 * 11.6, abs=0.01)
+    # Floor sits at z 0.25, so a 1 m assessment plane is z 1.25.
+    assert np.allclose(scene.zone_samples.positions[:, 2], 1.25)
+    # Open space faces the sky, whichever way the face it came from pointed.
+    assert np.allclose(scene.zone_samples.normals[:, 2], 1.0)
+    assert scene.provenance["zones_measured"] == ("Apartment L00-A",)
+
+
+def test_the_zone_surface_needs_no_window_and_no_owner() -> None:
+    """The whole point. Nothing here marks glazing or names an apartment."""
+    result = run_massing(
+        SAMPLE,
+        timezone=SYDNEY,
+        massing_config=MassingConfig(
+            timezone=SYDNEY,
+            zone_names=("Apartment L00-A",),
+            facade_spacing_m=2.0,
+            ground_spacing_m=1.0,
+        ),
+    )
+    assert result.zone is not None
+    assert sum(band.share for band in result.zone.bands) == pytest.approx(1.0)
+    assert "named zones" in result.summary()
+
+
+def test_a_zone_filter_that_matches_nothing_stops_the_run() -> None:
+    """Matching nothing must not read as an area that gets no sun."""
+    model = read_ifc(SAMPLE)
+    with pytest.raises(SceneConfigError, match="No Zone matches"):
+        build_massing_scene(model, MassingConfig(timezone=SYDNEY, zone_names=("Playground",)))
+
+
+def test_naming_no_zone_leaves_the_result_without_one() -> None:
+    result = run_massing(
+        SAMPLE,
+        timezone=SYDNEY,
+        massing_config=MassingConfig(timezone=SYDNEY, facade_spacing_m=2.0),
+    )
+    assert result.zone is None
+    assert "named zones" not in result.summary()

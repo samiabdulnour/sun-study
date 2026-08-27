@@ -1995,6 +1995,35 @@ def massing(
             ),
         ),
     ] = None,
+    zone_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--zone-layer",
+            help=(
+                "Measure the Zones on this layer as a surface in their own "
+                "right -- a playground, a communal terrace, a courtyard under "
+                "a roof. No apartment, no glazing and no verdict: the answer "
+                "is hours of sun over the area somebody drew. Repeatable."
+            ),
+        ),
+    ] = None,
+    zone_name: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--zone-name",
+            help=(
+                "Narrow --zone-layer to Zones with these names. Repeatable. "
+                "Without it every Zone on the layer is measured."
+            ),
+        ),
+    ] = None,
+    zone_height: Annotated[
+        float,
+        typer.Option(
+            "--zone-height",
+            help="Height above the Zone floor to assess, in metres.",
+        ),
+    ] = 1.0,
     subject_layer: Annotated[
         list[str] | None,
         typer.Option(
@@ -2204,7 +2233,10 @@ def massing(
             port=port,
             timeout=timeout,
             combination=layer_combination,
-            require=[*(subject_layer or []), *(require_layer or [])],
+            # The zone layer with them: neither of a project's IFC
+            # combinations shows Zone layers, so a study of a Zone would
+            # export a model that does not contain the thing being measured.
+            require=[*(subject_layer or []), *(require_layer or []), *(zone_layer or [])],
             hide=tuple(hide_layer or ()),
         )
 
@@ -2217,6 +2249,9 @@ def massing(
         exclude_above_m=exclude_above,
         subject_layers=tuple(subject_layer or ()),
         ground_level_m=ground_level,
+        zone_layers=tuple(zone_layer or ()),
+        zone_names=tuple(zone_name or ()),
+        zone_height_m=zone_height,
     )
 
     try:
@@ -2242,6 +2277,8 @@ def massing(
     )
 
     surfaces = {"facade": result.facade, "ground": result.ground}
+    if result.zone is not None:
+        surfaces["zone"] = result.zone
     for name, banded in surfaces.items():
         typer.echo("")
         typer.secho(f"  {name.upper()}  ({banded.total_area_m2:.1f} m2)", bold=True)
