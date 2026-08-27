@@ -367,6 +367,13 @@ class MassingResult:
     assessment_date: dt.date
     zone: BandedResult | None = None
     """The named Zones, measured as one surface. ``None`` when none were named."""
+    zone_minutes: FloatArray | None = None
+    """Minutes of sun per zone sample, parallel to ``scene.zone_samples``.
+
+    Kept so a drawing bands the same numbers the table did. Recomputing them
+    at drawing time is a second chance for the picture and the figure beside
+    it to disagree.
+    """
 
     def summary(self) -> str:
         hours = self.threshold_minutes / 60.0
@@ -436,11 +443,15 @@ def run_massing(
     weights = instant_weights(len(times), timestep, weighting)
     threshold = rules.area(area).minimum_sunlight_minutes
 
-    def banded(points: SamplePoints) -> BandedResult:
+    def minutes_on(points: SamplePoints) -> FloatArray:
         if len(points) == 0:
-            return band_by_area(points, np.zeros(0), threshold_minutes=threshold)
-        minutes = cumulative_minutes(sunlit_matrix(points, occluder, sun_vectors), weights)
-        return band_by_area(points, minutes, threshold_minutes=threshold)
+            return np.zeros(0)
+        return cumulative_minutes(sunlit_matrix(points, occluder, sun_vectors), weights)
+
+    def banded(points: SamplePoints) -> BandedResult:
+        return band_by_area(points, minutes_on(points), threshold_minutes=threshold)
+
+    zone_minutes = minutes_on(scene.zone_samples) if len(scene.zone_samples) else None
 
     return MassingResult(
         model=model,
@@ -450,7 +461,12 @@ def run_massing(
         threshold_minutes=threshold,
         facade=banded(scene.facade_samples),
         ground=banded(scene.ground_samples),
-        zone=banded(scene.zone_samples) if len(scene.zone_samples) else None,
+        zone=(
+            band_by_area(scene.zone_samples, zone_minutes, threshold_minutes=threshold)
+            if zone_minutes is not None
+            else None
+        ),
+        zone_minutes=zone_minutes,
         sun_position_count=len(times),
         assessment_date=rules.assessment.date_in(year),
     )

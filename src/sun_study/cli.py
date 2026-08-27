@@ -79,6 +79,7 @@ from sun_study.archicad.read import (
     clear_selection,
     cross_check_georeferencing,
     describe_connection,
+    elements_by_ifc_ids,
     export_ifc,
     gdl_parameters,
     layer_names,
@@ -964,6 +965,100 @@ def report_ground(
         return True
 
     typer.echo(drawn.describe())
+    return not drawn.complete
+
+
+def report_zone_bands(
+    connection: ArchicadConnection,
+    result: MassingResult,
+    *,
+    layer_prefix: str,
+    spacing_m: float,
+) -> bool:
+    """Draw the measured Zones on the plan, banded by hours of sun.
+
+    The apartment diagrams fit the export's frame onto the project's from
+    matched apartments. There are none here, so the pairing is done on Zones:
+    any Zone the export carries that the project still has, joined on IFC
+    GlobalId. The study Zone is one of them, which is why one Zone alone is
+    not enough -- a single pair gives a point, and a plan transform needs two
+    to know which way round the building goes.
+    """
+    banded, minutes = result.zone, result.zone_minutes
+    samples = result.scene.zone_samples
+    if banded is None or minutes is None or not len(samples):
+        typer.secho("  no zone surface to draw", fg=typer.colors.RED, err=True)
+        return True
+
+    exported = {space.global_id: space for space in result.model.of_class("IfcSpace")}
+    found = elements_by_ifc_ids(connection, list(exported))
+    paired = {ifc_id: guids[0] for ifc_id, guids in found.items() if len(guids) == 1}
+    if len(paired) < 2:
+        typer.secho(
+            f"  the export carries {len(exported)} Zone(s) and {len(paired)} of them "
+            f"could be paired with the project, where a plan transform needs two. "
+            f"Add another zone layer to the export -- --require-layer "
+            f"'06 | Zone.Units' or whichever layer this project zones its flats "
+            f"on -- so there is something to fit against. Those Zones are not "
+            f"measured; they are only there to place the drawing.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return True
+
+    styles = resolve_bands(connection, None)
+    groups = [
+        CellGroup(
+            label=band.label,
+            mask=_band_mask(minutes, band.lower_minutes, band.upper_minutes),
+            style=style,
+            area_m2=band.area_m2,
+            share=band.share,
+        )
+        for band, style in zip(banded.bands, styles, strict=False)
+    ]
+
+    zones = read_zones(connection)
+    # The storey the study Zone is actually on, taken from the project rather
+    # than from a height: a Zone knows which storey it belongs to and the
+    # nearest-level guess does not.
+    measured = {str(parent) for parent in samples.unique_parents}
+    by_guid = {zone.guid: zone for zone in zones}
+    on_storey = next(
+        (
+            by_guid[guid].storey_index
+            for ifc_id, guid in paired.items()
+            if ifc_id in measured and guid in by_guid
+        ),
+        None,
+    )
+
+    try:
+        drawn = draw_cell_groups(
+            connection,
+            groups=groups,
+            positions=samples.positions,
+            parent_ids=samples.parent_ids,
+            spacing_m=spacing_m,
+            zone_by_apartment=paired,
+            zones=zones,
+            export_extents={
+                ifc_id: exported[ifc_id].mesh.vertices for ifc_id in paired if ifc_id in exported
+            },
+            layer_name=f"{layer_prefix} Communal",
+            title=f"Solar access to communal open space, {banded.total_area_m2:.0f} m2",
+            on_storey=on_storey,
+        )
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        return True
+
+    typer.echo(drawn.describe())
+    typer.echo(
+        f"  placed on storey {on_storey} from {len(paired)} paired zones; "
+        f"no verdict is drawn -- the ruleset carries ADG 4A-1, which is about "
+        f"apartments."
+    )
     return not drawn.complete
 
 
@@ -2024,6 +2119,18 @@ def massing(
             help="Height above the Zone floor to assess, in metres.",
         ),
     ] = 1.0,
+    zone_draw: Annotated[
+        bool,
+        typer.Option(
+            "--zone-draw/--no-zone-draw",
+            help=(
+                "Draw the measured Zones on the plan, banded by hours of sun, "
+                "with a legend carrying each band's area and share. Needs two "
+                "Zones in the export to fit the drawing onto the project, so "
+                "name a second zone layer with --require-layer."
+            ),
+        ),
+    ] = False,
     subject_layer: Annotated[
         list[str] | None,
         typer.Option(
@@ -2301,6 +2408,25 @@ def massing(
             pens=pen,
             flat_faces=model_flat,
             favorite=model_favorite,
+        ):
+            raise typer.Exit(code=1)
+
+    if zone_draw:
+        typer.echo("")
+        if result.zone is None:
+            typer.secho(
+                "  --zone-draw needs --zone-layer or --zone-name: there is no "
+                "zone surface to draw.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        connection = _connect(port, timeout)
+        if report_zone_bands(
+            connection,
+            result,
+            layer_prefix=naming.group(),
+            spacing_m=ground_grid,
         ):
             raise typer.Exit(code=1)
 
