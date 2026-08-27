@@ -31,7 +31,7 @@ from typing import Any
 
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.layers import read_layers
+from sun_study.archicad.layers import combination_states, read_layers
 from sun_study.archicad.layout import NavigatorItem, _walk
 from sun_study.archicad.series import ensure_model_database
 
@@ -116,21 +116,40 @@ def ensure_layer_combination(
     *,
     show: Iterable[str],
     hide: Iterable[str],
+    base: str = "",
 ) -> str:
     """Create or overwrite a layer combination. Returns its name.
 
-    Built from the layers as they stand, so everything the reader expects to
-    see on a plan stays as it is; only the named layers are forced. Overwrites
-    on purpose -- the combination belongs to this tool and is regenerated
-    every run, exactly like the fills it exists to reveal.
+    Only the named layers are forced; everything else keeps the state it has
+    in ``base``, or -- with no base -- the state it happens to have on the
+    plan right now. Overwrites on purpose: the combination belongs to this
+    tool and is regenerated every run, exactly like the fills it reveals.
+
+    ``base`` exists because "right now" turned out to be a poor foundation.
+    A run applies its own combinations as it opens each view, so it *ends*
+    with one of them in force; the next run then snapshots that, forces its
+    own layer on, and keeps everything the previous run had switched off. Over
+    a few runs the sheets converge on showing the study and nothing else --
+    observed at 2 layers shown of 155, with the walls and floors the diagram
+    is meant to sit on among the 153. Naming a combination makes each run
+    start from the same place instead of from its own last move.
     """
     visible = {entry.casefold() for entry in show}
     invisible = {entry.casefold() for entry in hide}
+    from_base = combination_states(connection, base) if base else None
+    if base and from_base is None:
+        raise ArchicadError(
+            f"No layer combination named {base!r} in this project, so the "
+            f"sheets have no plan to sit on. Check the name against Archicad's "
+            f"Layer Settings, or leave it out to use the plan as it stands."
+        )
 
     layers: list[dict[str, Any]] = []
     for layer in _all_layers(connection):
         key = layer["name"].casefold()
         hidden = layer["isHidden"]
+        if from_base is not None:
+            hidden = from_base.get(layer["attributeId"]["guid"], hidden)
         if key in visible:
             hidden = False
         elif key in invisible:

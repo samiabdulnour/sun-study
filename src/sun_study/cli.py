@@ -984,6 +984,7 @@ def report_zone_bands(
     sheet: bool = False,
     stats: bool = False,
     csv_out: Path | None = None,
+    view_combination: str = "",
     master_layout: str | None = None,
     subset: str = "",
     also_hide: Sequence[str] = (),
@@ -1184,6 +1185,7 @@ def report_zone_bands(
             # caption on it.
             table_beside=True,
             table_height_mm=4.5,
+            base_combination=view_combination,
             also_hide=tuple(also_hide),
             analysis_subset=subset,
         )
@@ -1918,6 +1920,7 @@ def _sheet_per_instant(
     titles: dict[str, str] | None = None,
     table_beside: bool = False,
     table_height_mm: float = 2.2,
+    base_combination: str = "",
     folder: str = "",
     also_hide: Sequence[str] = (),
     instant_subset: str = "",
@@ -1970,6 +1973,7 @@ def _sheet_per_instant(
                 naming.named(f"Sun Study {label}"),
                 show=[mine],
                 hide=[*sorted(mine_all - {mine}), *extra_hidden],
+                base=base_combination,
             )
             views = views_for_storeys(
                 connection,
@@ -2546,6 +2550,18 @@ def massing(
             ),
         ),
     ] = False,
+    zone_view_combination: Annotated[
+        str,
+        typer.Option(
+            "--zone-view-combination",
+            help=(
+                "The layer combination the communal sheets are drawn on top "
+                "of -- the plan the reader expects to see under the colours. "
+                "Defaults to --layer-combination. Without either, each run "
+                "inherits whatever the last one left on screen."
+            ),
+        ),
+    ] = "",
     zone_csv: Annotated[
         Path | None,
         typer.Option(
@@ -2939,6 +2955,10 @@ def massing(
             sheet=zone_sheet,
             stats=zone_stats,
             csv_out=zone_csv,
+            # The plan the diagrams sit on. Without it each run snapshots
+            # whatever the last one left applied, and the sheets lose the
+            # building a storey at a time.
+            view_combination=zone_view_combination or layer_combination or "",
             master_layout=master_layout,
             subset=zone_subset,
             also_hide=tuple(hide_layer or ()),
