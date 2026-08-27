@@ -151,9 +151,56 @@ def test_both_ticked_runs_both_in_order(hidden_window: Any) -> None:
     assert [job.args[0] for job in hidden_window.jobs()] == ["massing", "archicad-run"]
 
 
+def test_the_communal_study_needs_no_apartment_and_no_glazing(hidden_window: Any) -> None:
+    """The point of that study: a Zone round an outdoor area and nothing else.
+
+    None of the apartment machinery may reach the command line, or a
+    playground gets assessed as a flat with no living room.
+    """
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.communal_names.insert(0, "PLAYGROUND, COURTYARD")
+    hidden_window.do_communal.set(True)
+    (communal,) = hidden_window.jobs()
+
+    assert communal.args[0] == "massing"
+    assert flag(communal.args, "--zone-layer") == ["06 | Zone.Balcony"]
+    assert flag(communal.args, "--zone-name") == ["PLAYGROUND", "COURTYARD"]
+    assert "--zone-sheet" in communal.args
+    for unwanted in (
+        "--apartment-zone-layer",
+        "--apartment-zone-name",
+        "--open-space-zone-layer",
+        "--livable-suffix",
+    ):
+        assert unwanted not in communal.args, unwanted
+
+
+def test_the_communal_study_carries_a_second_zone_layer_for_the_fit(
+    hidden_window: Any,
+) -> None:
+    """One zone layer gives one pair, and a plan transform needs two."""
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.do_communal.set(True)
+    (communal,) = hidden_window.jobs()
+    assert flag(communal.args, "--require-layer"), "nothing to fit the drawing against"
+
+
+def test_all_three_studies_run_in_order(hidden_window: Any) -> None:
+    hidden_window.do_plans.set(True)
+    hidden_window.do_communal.set(True)
+    assert [job.args[0] for job in hidden_window.jobs()] == [
+        "massing",
+        "archicad-run",
+        "massing",
+    ]
+
+
 def test_nothing_ticked_asks_for_nothing(hidden_window: Any) -> None:
     hidden_window.do_facade.set(False)
     hidden_window.do_plans.set(False)
+    hidden_window.do_communal.set(False)
     assert hidden_window.jobs() == []
 
 

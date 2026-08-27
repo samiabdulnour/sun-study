@@ -351,6 +351,7 @@ class Window:
         self.do_facade = tk.BooleanVar(value=True)
         self.do_floors = tk.BooleanVar(value=True)
         self.do_plans = tk.BooleanVar(value=False)
+        self.do_communal = tk.BooleanVar(value=False)
 
         facade_box = ttk.Checkbutton(
             studies, text="Facade skin in 3D", variable=self.do_facade, command=self._sync
@@ -388,8 +389,22 @@ class Window:
             "Needs Zones and windows in the model, so it is off by default — "
             "the facade study works on a massing that has neither.",
         )
+        communal_box = ttk.Checkbutton(
+            studies, text="Communal open space", variable=self.do_communal, command=self._sync
+        )
+        communal_box.grid(row=3, column=0, sticky="w")
+        Tooltip(
+            communal_box,
+            "Hours of direct sun over an outdoor area that belongs to no "
+            "dwelling — a playground, a courtyard, a communal terrace — "
+            "banded and drawn on the plan with a legend. Needs only a Zone "
+            "drawn round the area: no apartment, no windows, no marked "
+            "glazing. It reports area and share and offers no verdict, "
+            "because the ruleset carries ADG 4A-1 and that is about "
+            "apartments.",
+        )
         row += 1
-        self._hint(frame, row, "What to run. Both together run one after the other.")
+        self._hint(frame, row, "What to run. Ticked studies run one after the other.")
         row += 1
 
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
@@ -407,6 +422,18 @@ class Window:
             "carries 15 apartments, 20 balconies and the storage cupboards, "
             "and a balcony assessed as an apartment is a flat with no living "
             "room, which fails silently and drags the percentage down.",
+        )
+        self.communal, self.communal_names, self.communal_hint, row = self._zone_row(
+            frame,
+            row,
+            "Communal zones",
+            "The Zones covering communal open space. Only for that study.",
+            "Nothing is guessed here. A communal area is not separable from a "
+            "dwelling by size -- a courtyard and a big flat are the same "
+            "number of square metres -- so this is left for you to name, and "
+            "the chooser lists every Zone on the layer with its area. The "
+            "Zone outline is the extent measured, and the plane assessed is "
+            "one metre above the Zone floor.",
         )
         self.balconies, self.balcony_names, self.balcony_hint, row = self._zone_row(
             frame,
@@ -856,6 +883,7 @@ class Window:
             found.zone_layers,
             (self.apartments.get(), *(kind.layer for kind in found.zone_kinds if kind.open_space)),
         )
+        self._fill(self.communal, found.zone_layers, ("Zone.", "Calc."))
         self._offer_zone_names()
         # "VERTICAL - No Scale" before "COVER/NO SCALE": both say no scale and
         # one of them is a cover sheet.
@@ -925,6 +953,18 @@ class Window:
                 names_box.insert(0, ", ".join(kind.label for kind in fits))
             taken = f" — taken as {what}: {_some(k.label for k in fits)}" if fits else ""
             line.config(text=f"carries {_some(kind.described() for kind in kinds)}{taken}")
+
+        # Communal space gets no guess. Area cannot tell a courtyard from a
+        # large flat, so the line reports what is on the layer and stops.
+        kinds = self._kinds_on(self.communal.get())
+        self.communal_hint.config(
+            text=(
+                f"carries {_some(kind.described() for kind in kinds)} — name the "
+                f"ones that are communal"
+                if kinds
+                else "No Zones read on that layer."
+            )
+        )
 
     def _zone_defaults(self) -> list[str]:
         """Zone layers worth forcing into the export, narrowest first.
@@ -1037,6 +1077,31 @@ class Window:
                 args += ["--adg-subset", self.adg_subset.get()]
             args += ["--year", self.year.get().strip() or "2024"]
             made.append(Job("apartment plans and sheets", args))
+
+        if self.do_communal.get():
+            args = ["massing", "--timezone", "Australia/Sydney", *common]
+            if self.communal.get():
+                args += ["--zone-layer", self.communal.get()]
+            for name in self._listed(self.communal_names):
+                args += ["--zone-name", name]
+            # The drawing is fitted onto the project from Zones the export
+            # carries, and the communal layer alone gives one. A second zone
+            # layer is what makes the plan placeable; those Zones are not
+            # measured.
+            for name in self._listed(self.require) or self._zone_defaults():
+                args += ["--require-layer", name]
+            if self.combination.get():
+                args += ["--layer-combination", self.combination.get()]
+            for name in self._listed(self.hide):
+                args += ["--hide-layer", name]
+            if self.exclude.get().strip():
+                args += ["--exclude-above", self.exclude.get().strip()]
+            if self.master.get():
+                args += ["--master-layout", self.master.get()]
+            if self.adg_subset.get():
+                args += ["--zone-subset", self.adg_subset.get()]
+            args += ["--zone-sheet", "--year", self.year.get().strip() or "2024"]
+            made.append(Job("communal open space", args))
 
         return made
 
