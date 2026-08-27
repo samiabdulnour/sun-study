@@ -980,6 +980,7 @@ def report_zone_bands(
     layer_prefix: str,
     spacing_m: float,
     hours: float | None = None,
+    hourly: bool = False,
     sheet: bool = False,
     stats: bool = False,
     master_layout: str | None = None,
@@ -1115,6 +1116,51 @@ def report_zone_bands(
         ]
         titles[label] = f"Communal open space receiving {hours:g} hours or more, {when}"
 
+    # 3. One plan per whole hour: where the sun actually was at that moment.
+    #    The banded plan says how much sun a piece of ground got and never
+    #    says when, and "when" is the question somebody standing in a
+    #    courtyard at nine in the morning is asking.
+    for when_at, lit in _hourly(result) if hourly else ():
+        clock = f"{when_at:%H:%M}"
+        total = float(samples.areas.sum())
+        area = float(samples.areas[lit].sum())
+        share = area / total if total else 0.0
+        typer.secho(f"  {clock}  {area:9.1f} m2 in sun   {share:6.1%}", bold=True)
+        label = f"Communal {clock}"
+        layer = f"{layer_prefix} {label}"
+        problem |= _draw_zone_groups(
+            connection,
+            [
+                CellGroup(
+                    label=f"in sun at {clock}",
+                    mask=lit,
+                    style=styles[-1],
+                    area_m2=area,
+                    share=share,
+                ),
+                CellGroup(
+                    label=f"in shade at {clock}",
+                    mask=~lit,
+                    style=styles[0],
+                    area_m2=total - area,
+                    share=1.0 - share,
+                ),
+            ],
+            shared,
+            layer_name=layer,
+            title=f"Communal open space at {clock}, {result.assessment_date:%d %b}",
+            on_storey=on_storey,
+        )
+        made.append((label, layer))
+        tables[label] = [
+            TableRow(f"in sun at {clock}", area, share, fill_pen=styles[-1].fill_pen),
+            TableRow(
+                f"in shade at {clock}", total - area, 1.0 - share, fill_pen=styles[0].fill_pen
+            ),
+            TableRow("all communal open space", total, 1.0),
+        ]
+        titles[label] = f"Communal open space in sun at {clock}, {result.assessment_date:%d %B}"
+
     if sheet and on_storey is not None:
         typer.echo("")
         _sheet_per_instant(
@@ -1153,6 +1199,24 @@ def report_zone_bands(
             subset=subset,
         )
     return problem
+
+
+def _hourly(result: MassingResult) -> list[tuple[dt.datetime, Any]]:
+    """Every whole hour in the assessed window, with what was lit at it.
+
+    Taken from the instants the study already cast rather than from a fresh
+    pass, so an hourly plan cannot disagree with the banded one beside it.
+    The window decides which hours exist: a run from 08:00 gives eight plans,
+    one from 09:00 gives seven, and neither invents an hour it did not
+    measure.
+    """
+    if result.zone_sunlit is None or not result.times:
+        return []
+    return [
+        (when_at, result.zone_sunlit[:, index])
+        for index, when_at in enumerate(result.times)
+        if when_at.minute == 0 and when_at.second == 0
+    ]
 
 
 def _draw_zone_groups(
@@ -2384,6 +2448,18 @@ def massing(
             ),
         ),
     ] = None,
+    zone_hourly: Annotated[
+        bool,
+        typer.Option(
+            "--zone-hourly/--no-zone-hourly",
+            help=(
+                "Also draw one plan per whole hour in the window -- 08:00, "
+                "09:00 and so on -- showing what is in sun at that moment. "
+                "The banded plan says how much sun a place gets and never "
+                "says when."
+            ),
+        ),
+    ] = False,
     zone_stats: Annotated[
         bool,
         typer.Option(
@@ -2762,6 +2838,7 @@ def massing(
             layer_prefix=naming.group(),
             spacing_m=ground_grid,
             hours=zone_hours,
+            hourly=zone_hourly,
             sheet=zone_sheet,
             stats=zone_stats,
             master_layout=master_layout,

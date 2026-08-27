@@ -415,6 +415,45 @@ def clear_selection(connection: ArchicadConnection) -> int:
     return len(selected)
 
 
+#: Below this an export carries no building. A header-only IFC from this
+#: translator is a few kB; the smallest real massing seen is several hundred.
+EMPTY_EXPORT_BYTES = 100_000
+
+#: Window types an IFC export can be taken from. Anything else -- a Layout, a
+#: Section, a Worksheet -- exports its own contents, which for a sheet is
+#: nothing at all.
+EXPORTABLE_WINDOWS = ("FloorPlan", "Model3D", "3D")
+
+
+def _refuse_from_a_sheet(connection: ArchicadConnection) -> None:
+    """Stop before exporting from a window that has no building in it.
+
+    The translator follows the *visible* window, and ``ChangeWindow`` moves
+    only the current database -- it will not bring a floor plan to the front.
+    So a session that has opened a Layout stays on it, every read still works
+    because reads follow the database, and the export alone comes back empty.
+
+    Checked before writing rather than after, because the failure that
+    follows an empty export is the scene builder saying the zone layer holds
+    no Zones: a true statement about a file with nothing in it, and a
+    thoroughly misleading one about the project.
+    """
+    try:
+        current = connection.run_tapir("GetCurrentWindowType", {})
+    except ArchicadError:
+        # Not knowing is not a reason to refuse; the size check still runs.
+        return
+    where = current.get("currentWindowType") if isinstance(current, dict) else None
+    if isinstance(where, str) and where not in EXPORTABLE_WINDOWS:
+        raise ArchicadError(
+            f"Archicad is showing a {where}, and an IFC export takes whatever "
+            f"the visible window holds -- which on a sheet is nothing. Click a "
+            f"floor plan or the 3D window in Archicad and run this again. "
+            f"(The tool cannot do it for you: ChangeWindow moves the current "
+            f"database, not the window on screen.)"
+        )
+
+
 def export_ifc(connection: ArchicadConnection, destination: str | Path) -> Path:
     """Save the open project to an IFC file and return the path.
 
@@ -428,7 +467,16 @@ def export_ifc(connection: ArchicadConnection, destination: str | Path) -> Path:
     ``clear_selection`` gives: with one in place the translator exports it
     alone, and a 2D fill selected by the previous run exports as nothing at
     all.
+
+    Refuses an export taken while Archicad is showing a Layout. The translator
+    answers success and writes a file with a header and no geometry, and the
+    next thing to speak is the scene builder saying the zone layer holds no
+    Zones -- which reads as a layer named wrongly rather than as an export of
+    nothing. Observed: a 29 MB model exported as 0.0 MB because a window had
+    been left on a sheet.
     """
+    _refuse_from_a_sheet(connection)
+
     path = Path(destination).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -449,6 +497,15 @@ def export_ifc(connection: ArchicadConnection, destination: str | Path) -> Path:
             f"Archicad reported a successful IFC export but {path} was not "
             f"modified. It is probably a stale file from an earlier run; "
             f"delete it and try again rather than analysing old geometry."
+        )
+    written = path.stat().st_size
+    if written < EMPTY_EXPORT_BYTES:
+        raise ArchicadError(
+            f"The IFC export is {written / 1000:.1f} kB, which is a file with "
+            f"a header and no building in it. Archicad exports what the "
+            f"current window shows, so this usually means it was showing a "
+            f"Layout or a Section rather than a floor plan or the 3D window. "
+            f"Bring a floor plan to the front and run it again."
         )
     return path
 

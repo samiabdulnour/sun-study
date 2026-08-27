@@ -392,6 +392,16 @@ class TableRow:
     background_pen: int = 19
 
 
+#: Archicad takes a Text's height in the database's own length unit, which on
+#: a layout is metres of paper. Every other number on a sheet here is already
+#: in those metres -- ``step_m``, ``swatch_m``, ``left_m`` -- and the height
+#: was the one left in millimetres, so a 2.2 mm line was created 2.2 *metres*
+#: tall on an 841 mm sheet. What that looks like is one letter filling the
+#: page and the rest of the string off the edge of it, which is exactly how it
+#: was reported.
+MM = 0.001
+
+
 def draw_statistics(
     connection: ArchicadConnection,
     layout_database_id: str,
@@ -429,7 +439,7 @@ def draw_statistics(
         {
             "coordinate": {"x": left_m, "y": top_m + step_m * 2, "z": 0.0},
             "text": title,
-            "height": height_mm * 1.5,
+            "height": height_mm * 1.5 * MM,
             "justification": "Left",
         }
     ]
@@ -444,7 +454,7 @@ def draw_statistics(
                 # carries no tab stops, so a second column means a second
                 # element and twice the clutter on the layer.
                 "text": f"{label:<34}{value}",
-                "height": height_mm,
+                "height": height_mm * MM,
                 "justification": "Left",
             }
         )
@@ -508,7 +518,7 @@ def draw_table(
         {
             "coordinate": {"x": left, "y": top + step_m * 1.6, "z": 0.0},
             "text": title,
-            "height": height_mm * 1.3,
+            "height": height_mm * 1.3 * MM,
             "justification": "Left",
         }
     ]
@@ -533,7 +543,7 @@ def draw_table(
             {
                 "coordinate": {"x": left + swatch_m * 1.6, "y": bottom, "z": 0.0},
                 "text": f"{row.label:<10} {row.area_m2:9.1f} m²   {row.share:6.1%}",
-                "height": height_mm,
+                "height": height_mm * MM,
                 "justification": "Left",
             }
         )

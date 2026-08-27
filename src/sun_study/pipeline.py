@@ -374,6 +374,15 @@ class MassingResult:
     at drawing time is a second chance for the picture and the figure beside
     it to disagree.
     """
+    zone_sunlit: BoolArray | None = None
+    """Sample by instant: was this point in the sun at that moment.
+
+    The whole-day figure is this summed and weighted, so an hourly diagram
+    drawn from it cannot disagree with the banded one beside it. A second ray
+    cast would be a second chance to differ.
+    """
+    times: tuple[dt.datetime, ...] = ()
+    """Every instant assessed, in the project's timezone."""
 
     def summary(self) -> str:
         hours = self.threshold_minutes / 60.0
@@ -451,7 +460,12 @@ def run_massing(
     def banded(points: SamplePoints) -> BandedResult:
         return band_by_area(points, minutes_on(points), threshold_minutes=threshold)
 
-    zone_minutes = minutes_on(scene.zone_samples) if len(scene.zone_samples) else None
+    zone_sunlit = (
+        sunlit_matrix(scene.zone_samples, occluder, sun_vectors)
+        if len(scene.zone_samples)
+        else None
+    )
+    zone_minutes = cumulative_minutes(zone_sunlit, weights) if zone_sunlit is not None else None
 
     return MassingResult(
         model=model,
@@ -467,6 +481,8 @@ def run_massing(
             else None
         ),
         zone_minutes=zone_minutes,
+        zone_sunlit=zone_sunlit,
+        times=tuple(times),
         sun_position_count=len(times),
         assessment_date=rules.assessment.date_in(year),
     )

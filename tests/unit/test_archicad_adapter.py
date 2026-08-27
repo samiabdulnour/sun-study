@@ -69,6 +69,7 @@ from sun_study.archicad.layout import (
     storey_items,
 )
 from sun_study.archicad.read import (
+    EMPTY_EXPORT_BYTES,
     GeoreferencingMismatchError,
     classification_items_of,
     cross_check_georeferencing,
@@ -828,10 +829,16 @@ def test_export_ifc_sends_the_save_operation_and_returns_the_path(tmp_path: Path
             if payload["command"] == "API.ExecuteAddOnCommand":
                 name = payload["parameters"]["addOnCommandId"]["commandName"]
                 if name == "IFCFileOperation":
-                    target.write_text("ISO-10303-21;")
+                    # Big enough to be a building. A header alone is refused.
+                    target.write_text("ISO-10303-21;" + "x" * EMPTY_EXPORT_BYTES)
             return super().send(payload)
 
-    transport = WritingTransport({"IFCFileOperation": {"success": True}})
+    transport = WritingTransport(
+        {
+            "IFCFileOperation": {"success": True},
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
+        }
+    )
     connection = ArchicadConnection(transport)
 
     assert export_ifc(connection, target) == target.resolve()
@@ -843,7 +850,12 @@ def test_export_ifc_sends_the_save_operation_and_returns_the_path(tmp_path: Path
 
 
 def test_export_ifc_refuses_to_report_success_when_no_file_appeared(tmp_path: Path) -> None:
-    connection, _ = connect({"IFCFileOperation": {"success": True}})
+    connection, _ = connect(
+        {
+            "IFCFileOperation": {"success": True},
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
+        }
+    )
     with pytest.raises(ArchicadError, match="does not"):
         export_ifc(connection, tmp_path / "missing.ifc")
 
@@ -853,8 +865,53 @@ def test_export_ifc_rejects_a_stale_file(tmp_path: Path) -> None:
     target = tmp_path / "stale.ifc"
     target.write_text("ISO-10303-21;")
 
-    connection, _ = connect({"IFCFileOperation": {"success": True}})
+    connection, _ = connect(
+        {
+            "IFCFileOperation": {"success": True},
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
+        }
+    )
     with pytest.raises(ArchicadError, match="was not modified"):
+        export_ifc(connection, target)
+
+
+def test_export_ifc_will_not_export_a_sheet(tmp_path: Path) -> None:
+    """The translator follows the visible window, and a Layout holds no walls.
+
+    Every read still works while this is true, because reads follow the
+    current database -- so the only symptom is an export with nothing in it,
+    and the error that follows blames the zone layer.
+    """
+    connection, _ = connect(
+        {
+            "IFCFileOperation": {"success": True},
+            "GetCurrentWindowType": {"currentWindowType": "Layout"},
+        }
+    )
+    with pytest.raises(ArchicadError, match="showing a Layout"):
+        export_ifc(connection, tmp_path / "from-a-sheet.ifc")
+
+
+def test_export_ifc_refuses_a_file_with_no_building_in_it(tmp_path: Path) -> None:
+    """5.7 kB from a 29 MB project, observed on 2549_GORDON2."""
+    target = tmp_path / "header-only.ifc"
+
+    class WritingTransport(FakeTransport):
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            if payload["command"] == "API.ExecuteAddOnCommand":
+                if payload["parameters"]["addOnCommandId"]["commandName"] == "IFCFileOperation":
+                    target.write_text("ISO-10303-21;")
+            return super().send(payload)
+
+    connection = ArchicadConnection(
+        WritingTransport(
+            {
+                "IFCFileOperation": {"success": True},
+                "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
+            }
+        )
+    )
+    with pytest.raises(ArchicadError, match="no building in it"):
         export_ifc(connection, target)
 
 

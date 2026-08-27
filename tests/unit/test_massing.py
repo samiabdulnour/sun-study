@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -22,6 +23,8 @@ import pytest
 from sun_study.core.analysis import (
     DEFAULT_BAND_EDGES_MINUTES,
     band_by_area,
+    cumulative_minutes,
+    instant_weights,
 )
 from sun_study.core.geometry import TriangleMesh, box, rectangle
 from sun_study.core.sampling import (
@@ -39,7 +42,8 @@ from sun_study.ingest.scene import (
     build_massing_scene,
     zone_floor_grid,
 )
-from sun_study.pipeline import run_massing
+from sun_study.pipeline import WEIGHTING_BY_RULESET, run_massing
+from sun_study.rules.ruleset import load_ruleset
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 SAMPLE = FIXTURES / "sample_building.ifc"
@@ -595,3 +599,56 @@ def _rotated_about_z(space: IfcElement, angle_rad: float) -> IfcElement:
     turn = np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]])
     spun = TriangleMesh(space.mesh.vertices @ turn.T, space.mesh.faces)
     return replace(space, mesh=spun)
+
+
+def _zone_run(start: str = "09:00") -> Any:
+    rules = load_ruleset("nsw_adg")
+    window = rules.assessment.model_copy(update={"window_start": start})
+    return run_massing(
+        SAMPLE,
+        timezone=SYDNEY,
+        ruleset=rules.model_copy(update={"assessment": window}),
+        massing_config=MassingConfig(
+            timezone=SYDNEY,
+            zone_names=("Apartment L00-A",),
+            facade_spacing_m=3.0,
+            ground_spacing_m=2.0,
+        ),
+    )
+
+
+def test_the_window_decides_which_hours_get_a_plan() -> None:
+    """Eight from eight o'clock, seven from nine. No hour is invented."""
+    from sun_study.cli import _hourly
+
+    assert [f"{when:%H:%M}" for when, _ in _hourly(_zone_run("08:00"))] == [
+        "08:00",
+        "09:00",
+        "10:00",
+        "11:00",
+        "12:00",
+        "13:00",
+        "14:00",
+        "15:00",
+    ]
+    assert len(_hourly(_zone_run("09:00"))) == 7
+
+
+def test_an_hourly_plan_is_the_same_data_as_the_banded_one() -> None:
+    """The hourly plans come off the instants the study already cast.
+
+    If they were cast again they could differ from the bands drawn beside
+    them, and a reader comparing the two would be comparing two studies.
+    """
+    result = _zone_run("08:00")
+    assert result.zone_sunlit is not None and result.zone_minutes is not None
+
+    weights = instant_weights(
+        result.zone_sunlit.shape[1],
+        float(result.ruleset.assessment.timestep_minutes),
+        WEIGHTING_BY_RULESET[result.ruleset.assessment.weighting],
+    )
+    assert np.allclose(cumulative_minutes(result.zone_sunlit, weights), result.zone_minutes)
+
+    # And a sample lit at no instant is a sample with no minutes.
+    assert np.allclose(result.zone_minutes[~result.zone_sunlit.any(axis=1)], 0.0)
