@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import numpy as np
+import numpy.typing as npt
 import typer
 
 from sun_study import AUTHOR, PRODUCT, STOP_FILE_VAR, __version__, licence
@@ -141,6 +142,7 @@ from sun_study.archicad.write import (
 )
 from sun_study.core.analysis import (
     ZERO_TOLERANCE_MINUTES,
+    BandedResult,
     band_by_area,
     cumulative_minutes,
     instant_weights,
@@ -176,7 +178,7 @@ from sun_study.report.bands_out import (
 from sun_study.report.csv_out import write_csv
 from sun_study.report.header import build_header
 from sun_study.report.json_out import write_json
-from sun_study.rules.ruleset import BUILTIN_RULESETS, RulesetError, load_ruleset
+from sun_study.rules.ruleset import BUILTIN_RULESETS, Ruleset, RulesetError, load_ruleset
 
 #: A sheet label that is a time of day. Those are shadow diagrams; the
 #: banded and two-hour plans are not, and the two go to different subsets.
@@ -968,15 +970,21 @@ def report_ground(
     return not drawn.complete
 
 
+FloatArray = npt.NDArray[np.float64]
+
+
 def report_zone_bands(
     connection: ArchicadConnection,
     result: MassingResult,
     *,
     layer_prefix: str,
     spacing_m: float,
+    hours: float | None = None,
     sheet: bool = False,
+    stats: bool = False,
     master_layout: str | None = None,
     subset: str = "",
+    also_hide: Sequence[str] = (),
 ) -> bool:
     """Draw the measured Zones on the plan, banded by hours of sun.
 
@@ -1010,82 +1018,266 @@ def report_zone_bands(
         return True
 
     styles = resolve_bands(connection, None)
-    groups = [
-        CellGroup(
-            label=band.label,
-            mask=_band_mask(minutes, band.lower_minutes, band.upper_minutes),
-            style=style,
-            area_m2=band.area_m2,
-            share=band.share,
-        )
-        for band, style in zip(banded.bands, styles, strict=False)
-    ]
-
     zones = read_zones(connection)
+    measured = {str(parent) for parent in samples.unique_parents}
+    by_guid = {zone.guid: zone for zone in zones}
+    mine = {guid for ifc_id, guid in paired.items() if ifc_id in measured}
     # The storey the study Zone is actually on, taken from the project rather
     # than from a height: a Zone knows which storey it belongs to and the
     # nearest-level guess does not.
-    measured = {str(parent) for parent in samples.unique_parents}
-    by_guid = {zone.guid: zone for zone in zones}
-    on_storey = next(
-        (
-            by_guid[guid].storey_index
-            for ifc_id, guid in paired.items()
-            if ifc_id in measured and guid in by_guid
-        ),
-        None,
-    )
+    on_storey = next((by_guid[guid].storey_index for guid in mine if guid in by_guid), None)
 
+    shared: dict[str, Any] = {
+        "positions": samples.positions,
+        "parent_ids": samples.parent_ids,
+        "spacing_m": spacing_m,
+        "zone_by_apartment": paired,
+        "zones": zones,
+        "export_extents": {
+            ifc_id: exported[ifc_id].mesh.vertices for ifc_id in paired if ifc_id in exported
+        },
+    }
+    when = f"{result.assessment_date:%d %B}, {_window_of(result)}"
+
+    made: list[tuple[str, str]] = []
+    tables: dict[str, Sequence[TableRow]] = {}
+    titles: dict[str, str] = {}
+    problem = False
+
+    # 1. The whole day, banded.
+    label = "Communal"
+    layer = f"{layer_prefix} {label}"
+    problem |= _draw_zone_groups(
+        connection,
+        [
+            CellGroup(
+                label=band.label,
+                mask=_band_mask(minutes, band.lower_minutes, band.upper_minutes),
+                style=style,
+                area_m2=band.area_m2,
+                share=band.share,
+            )
+            for band, style in zip(banded.bands, styles, strict=False)
+        ],
+        shared,
+        layer_name=layer,
+        title=f"Solar access to communal open space, {when}",
+        on_storey=on_storey,
+    )
+    made.append((label, layer))
+    tables[label] = _table_rows("communal open space", banded, styles)
+    titles[label] = f"Communal open space, hours of direct sun by area, {when}"
+
+    # 2. The threshold, as two areas. What a DCP asks is not how the hours
+    #    spread but how much of the space clears the minimum, and a
+    #    seven-band plan makes a reader do that sum by eye.
+    if hours:
+        achieved = minutes >= hours * 60.0
+        total = float(samples.areas.sum())
+        area = float(samples.areas[achieved].sum())
+        share = area / total if total else 0.0
+        typer.secho(
+            f"  {area:.1f} m2 of {total:.1f} receives at least {hours:g} hours ({share:.1%})",
+            bold=True,
+        )
+        label = f"Communal {hours:g}h"
+        layer = f"{layer_prefix} {label}"
+        problem |= _draw_zone_groups(
+            connection,
+            [
+                CellGroup(
+                    label=f"{hours:g} hrs or more",
+                    mask=achieved,
+                    style=styles[-1],
+                    area_m2=area,
+                    share=share,
+                ),
+                CellGroup(
+                    label=f"under {hours:g} hrs",
+                    mask=~achieved,
+                    style=styles[0],
+                    area_m2=total - area,
+                    share=1.0 - share,
+                ),
+            ],
+            shared,
+            layer_name=layer,
+            title=f"Communal open space receiving {hours:g} hours or more, {when}",
+            on_storey=on_storey,
+        )
+        made.append((label, layer))
+        tables[label] = [
+            TableRow(f"{hours:g} hrs or more", area, share, fill_pen=styles[-1].fill_pen),
+            TableRow(
+                f"under {hours:g} hrs", total - area, 1.0 - share, fill_pen=styles[0].fill_pen
+            ),
+            TableRow("all communal open space", total, 1.0),
+        ]
+        titles[label] = f"Communal open space receiving {hours:g} hours or more, {when}"
+
+    if sheet and on_storey is not None:
+        typer.echo("")
+        _sheet_per_instant(
+            connection,
+            labels=[name for name, _ in made],
+            layers=[layer for _, layer in made],
+            storeys=[on_storey],
+            layer_prefix=layer_prefix,
+            master_layout=master_layout,
+            # Framed on the Zones measured, not on the ones borrowed for the
+            # fit: those are spread across the whole building, and a view
+            # pinned to them would put the communal area in a corner of an A1.
+            zoom=_extent_of(zones, mine, margin_m=10.0),
+            scale=300.0,
+            tables=tables,
+            titles=titles,
+            also_hide=tuple(also_hide),
+            analysis_subset=subset,
+        )
+
+    if stats:
+        typer.echo("")
+        problem |= _zone_statistics_sheet(
+            connection,
+            result,
+            banded=banded,
+            hours=hours,
+            minutes=minutes,
+            samples=samples,
+            master_layout=master_layout,
+            subset=subset,
+        )
+    return problem
+
+
+def _draw_zone_groups(
+    connection: ArchicadConnection,
+    groups: Sequence[CellGroup],
+    shared: dict[str, Any],
+    *,
+    layer_name: str,
+    title: str,
+    on_storey: int | None,
+) -> bool:
+    """One banded plan of the communal Zones, on its own layer."""
     try:
         drawn = draw_cell_groups(
             connection,
             groups=groups,
-            positions=samples.positions,
-            parent_ids=samples.parent_ids,
-            spacing_m=spacing_m,
-            zone_by_apartment=paired,
-            zones=zones,
-            export_extents={
-                ifc_id: exported[ifc_id].mesh.vertices for ifc_id in paired if ifc_id in exported
-            },
-            layer_name=f"{layer_prefix} Communal",
-            title=f"Solar access to communal open space, {banded.total_area_m2:.0f} m2",
+            layer_name=layer_name,
+            title=title,
             on_storey=on_storey,
+            **shared,
         )
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         return True
-
     typer.echo(drawn.describe())
-    typer.echo(
-        f"  placed on storey {on_storey} from {len(paired)} paired zones; "
-        f"no verdict is drawn -- the ruleset carries ADG 4A-1, which is about "
-        f"apartments."
-    )
-    if not sheet:
-        return not drawn.complete
+    return not drawn.complete
 
-    typer.echo("")
-    # Zoomed to the Zones measured, not to the ones borrowed for the fit: the
-    # fitting Zones are spread over the whole building, and a view framed on
-    # them would put the communal area in a corner of the sheet.
-    report_layout(
-        connection,
-        sorted(drawn.storeys),
-        name=naming.named("Communal Open Space"),
-        master=master_layout,
-        zoom=_extent_of(zones, {guid for ifc_id, guid in paired.items() if ifc_id in measured}),
-    )
+
+def _window_of(result: MassingResult) -> str:
+    """The assessment window, in words, for a title or a sheet.
+
+    On every drawing this makes, because the window is the one setting a
+    reader cannot recover from the picture and the one most likely to have
+    been changed: 9 to 3 is the ADG's, and anything else is somebody's DCP.
+    """
+    window = result.ruleset.assessment
+    return f"{window.window_start} to {window.window_end}"
+
+
+def _zone_statistics_sheet(
+    connection: ArchicadConnection,
+    result: MassingResult,
+    *,
+    banded: BandedResult,
+    hours: float | None,
+    minutes: FloatArray,
+    samples: SamplePoints,
+    master_layout: str | None,
+    subset: str = "",
+) -> bool:
+    """The areas, typed out on a sheet of their own.
+
+    Separate from the plans on purpose. The figures are what somebody quotes,
+    and a number read off a coloured patch at 1:300 is a number nobody can
+    check. Here each band is a line, with the settings that produced it above.
+    """
+    total = float(samples.areas.sum())
+    found = result.scene.provenance.get("zones_measured")
+    named = tuple(str(zone) for zone in found) if isinstance(found, tuple) else ()
+    rows: list[tuple[str, str]] = [
+        ("Assessed on", f"{result.assessment_date:%d %B %Y}"),
+        ("Window", _window_of(result)),
+        ("Timestep", f"{result.ruleset.assessment.timestep_minutes} min"),
+        (
+            "Zones measured",
+            ", ".join(named) if named else "all on the layer",
+        ),
+        ("Assessment plane", f"{result.scene.config.zone_height_m:g} m above the Zone floor"),
+        ("Grid", f"{result.scene.config.ground_spacing_m:g} m"),
+        ("Total area", f"{total:.1f} m2"),
+        ("", ""),
+    ]
+    rows += [(band.label, f"{band.area_m2:.1f} m2    {band.share:.1%}") for band in banded.bands]
+    rows.append(("", ""))
+    if hours:
+        area = float(samples.areas[minutes >= hours * 60.0].sum())
+        rows.append(
+            (
+                f"{hours:g} hours or more",
+                f"{area:.1f} m2    {area / total if total else 0.0:.1%}",
+            )
+        )
+    rows += [
+        ("Receiving no sun at all", f"{banded.zero_m2:.1f} m2    {banded.zero_share:.1%}"),
+        ("", ""),
+        # No verdict, and said so here: a page of areas with no pass or fail
+        # on it invites a reader to supply one.
+        ("No compliance verdict is offered.", ""),
+        ("The ruleset carries ADG 4A-1, which is about apartments.", ""),
+        ("", ""),
+        (STATUS, ""),
+        (f"{PRODUCT} {__version__} by {AUTHOR}", ""),
+    ]
+
+    name = naming.named("Communal Areas")
+    try:
+        master = choose_master(master_layouts(connection), master_layout, DEFAULT_LAYOUT_SCALE)
+        database = _layout_named(connection, name)
+        if database is None:
+            database = _create_layout(connection, name, master)
+            connection.run_tapir("SaveProject", {})
+        written = draw_statistics(
+            connection, database, title="Communal open space -- areas", rows=rows
+        )
+    except ArchicadError as error:
+        typer.secho(f"  areas sheet: {error}", fg=typer.colors.YELLOW, err=True)
+        return True
+    typer.echo(f"  areas sheet {name!r}: {written} lines on master {master.name!r}")
     if subset:
         try:
-            typer.echo(
-                file_under_subset(
-                    connection, [naming.named("Communal Open Space")], subset
-                ).describe()
-            )
+            typer.echo(file_under_subset(connection, [name], subset).describe())
         except ArchicadError as error:
             typer.secho(f"  {error}", fg=typer.colors.YELLOW, err=True)
-    return not drawn.complete
+    return False
+
+
+def _check_window(rules: Ruleset) -> None:
+    """Refuse a window that runs backwards or has no length.
+
+    A start after the end gives zero sun positions, and every area then reads
+    as receiving nothing -- a full set of plausible zeroes rather than an
+    error.
+    """
+    window = rules.assessment
+    if window.window_minutes <= 0:
+        raise ValueError(
+            f"the window {window.window_start} to {window.window_end} is "
+            f"{window.window_minutes:g} minutes long. Every area would report "
+            f"no sun at all."
+        )
 
 
 def _extent_of(
@@ -2167,8 +2359,43 @@ def massing(
         str,
         typer.Option(
             "--zone-subset",
-            help="File the communal layout under this Layout Book subset.",
+            help="File the communal layouts under this Layout Book subset.",
         ),
+    ] = "",
+    zone_hours: Annotated[
+        float | None,
+        typer.Option(
+            "--zone-hours",
+            help=(
+                "Also draw the Zones as two areas: what receives this many "
+                "hours or more, and what does not. The question a DCP asks."
+            ),
+        ),
+    ] = None,
+    zone_stats: Annotated[
+        bool,
+        typer.Option(
+            "--zone-stats/--no-zone-stats",
+            help=(
+                "Write the areas onto a sheet of their own, one line per "
+                "band, with the settings that produced them."
+            ),
+        ),
+    ] = False,
+    window_start: Annotated[
+        str,
+        typer.Option(
+            "--window-start",
+            help=(
+                "Override the ruleset's assessment window start, e.g. '08:00'. "
+                "The ADG's own window is 09:00 to 15:00; anything else is a "
+                "DCP's, and the figures are then not ADG 4A-1's."
+            ),
+        ),
+    ] = "",
+    window_end: Annotated[
+        str,
+        typer.Option("--window-end", help="Override the ruleset's window end, e.g. '15:00'."),
     ] = "",
     zone_sheet: Annotated[
         bool,
@@ -2422,9 +2649,43 @@ def massing(
         zone_height_m=zone_height,
     )
 
+    rules: str | Ruleset = ruleset
+    if window_start or window_end:
+        try:
+            loaded = load_ruleset(ruleset)
+        except RulesetError as error:
+            typer.secho(f"Ruleset error: {error}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from error
+        window = loaded.assessment
+        rules = loaded.model_copy(
+            update={
+                "assessment": window.model_copy(
+                    update={
+                        "window_start": window_start or window.window_start,
+                        "window_end": window_end or window.window_end,
+                    }
+                )
+            }
+        )
+        try:
+            _check_window(rules)
+        except ValueError as error:
+            raise typer.BadParameter(str(error), param_hint="--window-start") from error
+        # Loudly, because it is the one setting that silently makes a figure
+        # answer a different question from the one it appears to answer.
+        typer.secho(
+            f"  assessment window overridden to "
+            f"{rules.assessment.window_start}-{rules.assessment.window_end}; "
+            f"{loaded.name} itself says "
+            f"{window.window_start}-{window.window_end}. These figures are not "
+            f"that ruleset's criterion.",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+
     try:
         result = run_massing(
-            ifc, timezone=timezone, ruleset=ruleset, area=area, year=year, massing_config=config
+            ifc, timezone=timezone, ruleset=rules, area=area, year=year, massing_config=config
         )
     except GeoreferencingError as error:
         typer.secho(f"Georeferencing error: {error}", fg=typer.colors.RED, err=True)
@@ -2472,7 +2733,7 @@ def massing(
         ):
             raise typer.Exit(code=1)
 
-    if zone_draw or zone_sheet:
+    if zone_draw or zone_sheet or zone_stats:
         typer.echo("")
         if result.zone is None:
             typer.secho(
@@ -2488,9 +2749,12 @@ def massing(
             result,
             layer_prefix=naming.group(),
             spacing_m=ground_grid,
+            hours=zone_hours,
             sheet=zone_sheet,
+            stats=zone_stats,
             master_layout=master_layout,
             subset=zone_subset,
+            also_hide=tuple(hide_layer or ()),
         ):
             raise typer.Exit(code=1)
 
