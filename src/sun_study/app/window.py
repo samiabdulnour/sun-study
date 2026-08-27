@@ -23,9 +23,11 @@ because that is the part nobody can infer from a label.
 from __future__ import annotations
 
 import queue
+import sys
 import tkinter as tk
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from tkinter import scrolledtext, ttk
 
 from sun_study import AUTHOR, PRODUCT, __version__
@@ -1116,11 +1118,54 @@ class Window:
         self.log.config(state="disabled")
 
 
+def icon_path() -> Path | None:
+    """Where the application icon is, packaged or not.
+
+    A ``--onefile`` build unpacks itself to a temp directory on every start
+    and points ``sys._MEIPASS`` at it, so the packaged path is neither beside
+    the .exe nor beside this file. From a source checkout it is where it was
+    written, at the top of the project.
+
+    ``None`` rather than an exception when it is missing: an icon is how the
+    window looks, not whether the study runs, and a checkout that has not been
+    given one should still open.
+    """
+    packaged = getattr(sys, "_MEIPASS", None)
+    root = Path(packaged) if packaged else Path(__file__).resolve().parents[3]
+    found = root / "assets" / "sun-study.ico"
+    return found if found.is_file() else None
+
+
+def wear_the_icon(window: tk.Tk) -> None:
+    """Put the application icon on the window and everything it opens.
+
+    ``--icon`` at build time carves the icon into the .exe as a Windows
+    resource, which is what Explorer and the task bar read -- and Tk never
+    looks at it. Without this the executable has the right icon in the folder
+    and the window it opens wears the Tk feather, which is the sort of half a
+    job somebody notices immediately.
+
+    ``default=`` rather than a plain call, so the message boxes and dialogs
+    raised later inherit it instead of each needing to be found and dressed.
+    """
+    found = icon_path()
+    if found is None:
+        return
+    try:
+        window.iconbitmap(default=str(found))  # type: ignore[no-untyped-call]
+    except tk.TclError:
+        # .ico is a Windows format and ``default=`` is a Windows option. This
+        # is a Windows tool, but a developer on anything else should get a
+        # plain window rather than a crash on the way to one.
+        pass
+
+
 def launch() -> None:
     root = tk.Tk()
     try:
         ttk.Style().theme_use("vista")
     except tk.TclError:
         pass
+    wear_the_icon(root)
     Window(root)
     root.mainloop()

@@ -21,6 +21,7 @@ minutes, which is the right way round.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,14 @@ from sun_study import AUTHOR, PRODUCT, __version__
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "Sun Study"
+
+#: The application icon, in the one format Windows takes for an executable.
+#: A single .ico carrying every size Windows asks for -- 16 through 256 --
+#: because it is asked for at all of them: 16 in the title bar, 32 in the
+#: task bar, 48 in a folder, 256 in the large-icon view and the Alt-Tab
+#: switcher. An .ico with only the big one in it is resampled down to a smear
+#: at the size somebody actually sees most often.
+ICON = ROOT / "assets" / "sun-study.ico"
 
 #: Windows reads this out of the .exe for its Properties > Details tab, and
 #: shows it in the UAC prompt and the task manager. Without it the file claims
@@ -76,6 +85,13 @@ def main() -> int:
         )
         return 2
 
+    if not ICON.is_file():
+        # Named rather than shrugged at. PyInstaller falls back to its own
+        # icon without comment, and the first anybody knows of a missing file
+        # is a 69 MB executable arriving with somebody else's logo on it.
+        print(f"No icon at {ICON}.", file=sys.stderr)
+        return 2
+
     version_file = ROOT / "build" / "version_info.txt"
     version_file.parent.mkdir(parents=True, exist_ok=True)
     version_file.write_text(VERSION_INFO, encoding="utf-8")
@@ -92,6 +108,15 @@ def main() -> int:
         "--windowed",
         "--name",
         NAME,
+        # Two separate jobs, and both are wanted. --icon carves it into the
+        # .exe as a Windows resource, which is what Explorer, the task bar and
+        # the Alt-Tab switcher read. It does *not* reach Tk: the window would
+        # still come up wearing the Tk feather, so the same file is carried
+        # inside as data for the window to load at startup.
+        "--icon",
+        str(ICON),
+        "--add-data",
+        f"{ICON}{os.pathsep}assets",
         # Everything of ifcopenshell: submodules, data and binaries. Not
         # --collect-data, which was the first guess and is not enough --
         # ifcopenshell imports its schema rules by name at read time, so a

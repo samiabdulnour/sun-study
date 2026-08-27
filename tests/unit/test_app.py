@@ -12,8 +12,10 @@ the argv it produces is the argv a colleague's click produces.
 
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -674,3 +676,73 @@ def test_the_stop_signal_becomes_an_exception_the_finally_blocks_answer_to() -> 
     finally:
         for name, handler in before.items():
             signal.signal(getattr(signal, name), handler)
+
+
+# ---------------------------------------------------------------------------
+# The application icon.
+# ---------------------------------------------------------------------------
+def test_the_icon_ships_with_every_size_windows_asks_for() -> None:
+    """One .ico, seven sizes.
+
+    Windows asks at 16 in the title bar, 32 in the task bar, 48 in a folder
+    and 256 in Alt-Tab, and an .ico carrying only the big one is resampled
+    down to a smear at the size somebody actually sees most often.
+    """
+    import struct
+
+    found = window.icon_path()
+    assert found is not None, "the icon must be in the checkout, not just the build"
+
+    raw = found.read_bytes()
+    reserved, kind, count = struct.unpack("<HHH", raw[:6])
+    assert (reserved, kind) == (0, 1), "not an .ico at all"
+
+    sizes = {struct.unpack("<BB", raw[6 + i * 16 : 8 + i * 16]) for i in range(count)}
+    widths = {width or 256 for width, _ in sizes}
+    assert {16, 32, 48, 256} <= widths, f"missing a size Windows asks for: {sorted(widths)}"
+
+
+def test_a_checkout_with_no_icon_still_opens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """How the window looks, not whether the study runs."""
+    monkeypatch.setattr(window, "icon_path", lambda: None)
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        window.wear_the_icon(root)
+    finally:
+        root.destroy()
+
+
+def test_the_window_is_dressed_before_it_is_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--icon`` at build time reaches Explorer and the task bar and never
+    reaches Tk. Without this the .exe carries the right icon in the folder and
+    opens a window wearing the Tk feather, which is the half a job somebody
+    notices immediately.
+
+    ``default=`` rather than a plain call, so the dialogs and message boxes
+    raised later inherit it instead of each needing to be found.
+    """
+    worn: list[dict[str, Any]] = []
+
+    class Fake:
+        def iconbitmap(self, **kwargs: Any) -> None:
+            worn.append(kwargs)
+
+    window.wear_the_icon(Fake())  # type: ignore[arg-type]
+
+    assert worn, "the window was never given the icon"
+    assert worn[0]["default"].endswith("sun-study.ico")
+
+
+def test_the_packaged_build_looks_where_it_unpacked_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A --onefile build unpacks to a fresh temp directory on every start, so
+    the icon is neither beside the .exe nor beside the module -- it is
+    wherever ``sys._MEIPASS`` points this time."""
+    bundled = tmp_path / "assets" / "sun-study.ico"
+    bundled.parent.mkdir()
+    bundled.touch()  # icon_path only asks whether it is there
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    assert window.icon_path() == bundled
