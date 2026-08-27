@@ -352,6 +352,7 @@ class Window:
         self.do_floors = tk.BooleanVar(value=True)
         self.do_plans = tk.BooleanVar(value=False)
         self.do_communal = tk.BooleanVar(value=False)
+        self.do_hourly = tk.BooleanVar(value=True)
 
         facade_box = ttk.Checkbutton(
             studies, text="Facade skin in 3D", variable=self.do_facade, command=self._sync
@@ -402,6 +403,21 @@ class Window:
             "glazing. It reports area and share and offers no verdict, "
             "because the ruleset carries ADG 4A-1 and that is about "
             "apartments.",
+        )
+        self.hourly_box = ttk.Checkbutton(
+            studies,
+            text="including one plan per hour",
+            variable=self.do_hourly,
+        )
+        self.hourly_box.grid(row=4, column=0, sticky="w", padx=(18, 0))
+        Tooltip(
+            self.hourly_box,
+            "A plan for every whole hour in the window -- 08:00, 09:00 and so "
+            "on -- showing what is in sun at that moment, each on its own "
+            "sheet. The banded plan says how much sun a place gets across the "
+            "day and never says when, which is the question somebody standing "
+            "in a courtyard at nine in the morning is asking. Eight more "
+            "sheets from an eight to three window.",
         )
         row += 1
         self._hint(frame, row, "What to run. Ticked studies run one after the other.")
@@ -846,6 +862,7 @@ class Window:
 
     def _sync(self) -> None:
         self.floors_box.config(state="normal" if self.do_facade.get() else "disabled")
+        self.hourly_box.config(state="normal" if self.do_communal.get() else "disabled")
 
     # -- reading the project -------------------------------------------------
     def refresh(self) -> None:
@@ -1149,6 +1166,8 @@ class Window:
             # areas are what they quote, and a study that draws the one
             # without writing the other invites a figure read off a colour.
             args += ["--zone-sheet", "--zone-stats"]
+            if self.do_hourly.get():
+                args += ["--zone-hourly"]
             args += ["--year", self.year.get().strip() or "2024"]
             made.append(Job("communal open space", args))
 

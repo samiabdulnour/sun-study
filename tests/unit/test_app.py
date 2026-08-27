@@ -241,6 +241,20 @@ def test_the_apartment_study_keeps_the_adg_window(hidden_window: Any) -> None:
     assert "--window-end" not in plans.args
 
 
+def test_the_hourly_plans_are_on_by_default_and_can_be_turned_off(
+    hidden_window: Any,
+) -> None:
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.do_communal.set(True)
+    (communal,) = hidden_window.jobs()
+    assert "--zone-hourly" in communal.args
+
+    hidden_window.do_hourly.set(False)
+    (communal,) = hidden_window.jobs()
+    assert "--zone-hourly" not in communal.args
+
+
 def test_all_three_studies_run_in_order(hidden_window: Any) -> None:
     hidden_window.do_plans.set(True)
     hidden_window.do_communal.set(True)
