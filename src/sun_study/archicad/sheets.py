@@ -463,6 +463,7 @@ def draw_table(
     height_mm: float = 2.2,
     swatch_m: float = 0.006,
     step_m: float = 0.009,
+    beside: bool = False,
 ) -> int:
     """Put the figures table on the sheet itself. Returns the rows drawn.
 
@@ -488,11 +489,19 @@ def draw_table(
             connection.run_tapir("DeleteElements", {"elements": elements})
 
     placements = measure_drawings(connection, layout_database_id)
-    if placements:
+    if not placements:
+        left, top = 0.02, 0.20
+    elif beside:
+        # To the right of the drawing, starting level with its top edge. A
+        # tiled plan uses a fraction of an A1 and leaves the whole right of
+        # the sheet empty, while the strip under it is where a title block
+        # and a scale bar end up -- so the figures went in the one place on
+        # the page somebody was not looking.
+        left = max(p.x_max for p in placements) + step_m * 2
+        top = max(p.y_max for p in placements)
+    else:
         left = min(p.x_min for p in placements)
         top = min(p.y_min for p in placements) - step_m * 2
-    else:
-        left, top = 0.02, 0.20
 
     fills: list[dict[str, Any]] = []
     texts: list[dict[str, Any]] = [

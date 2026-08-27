@@ -1131,6 +1131,11 @@ def report_zone_bands(
             scale=300.0,
             tables=tables,
             titles=titles,
+            # Beside the plan and larger. This study's whole output is an
+            # area and a share, so the figures are the deliverable and not a
+            # caption on it.
+            table_beside=True,
+            table_height_mm=3.0,
             also_hide=tuple(also_hide),
             analysis_subset=subset,
         )
@@ -1761,6 +1766,8 @@ def _sheet_per_instant(
     layers: Sequence[str] | None = None,
     tables: dict[str, Sequence[TableRow]] | None = None,
     titles: dict[str, str] | None = None,
+    table_beside: bool = False,
+    table_height_mm: float = 2.2,
     folder: str = "",
     also_hide: Sequence[str] = (),
     instant_subset: str = "",
@@ -1850,7 +1857,12 @@ def _sheet_per_instant(
             rows = (tables or {}).get(label)
             drawn = (
                 draw_table(
-                    connection, database_id, title=(titles or {}).get(label, label), rows=rows
+                    connection,
+                    database_id,
+                    title=(titles or {}).get(label, label),
+                    rows=rows,
+                    beside=table_beside,
+                    height_mm=table_height_mm,
                 )
                 if rows
                 else 0
