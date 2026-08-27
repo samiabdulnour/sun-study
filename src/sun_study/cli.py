@@ -983,6 +983,7 @@ def report_zone_bands(
     hourly: bool = False,
     sheet: bool = False,
     stats: bool = False,
+    csv_out: Path | None = None,
     master_layout: str | None = None,
     subset: str = "",
     also_hide: Sequence[str] = (),
@@ -1128,13 +1129,14 @@ def report_zone_bands(
         typer.secho(f"  {clock}  {area:9.1f} m2 in sun   {share:6.1%}", bold=True)
         label = f"Communal {clock}"
         layer = f"{layer_prefix} {label}"
+        sun = _sun_style(styles)
         problem |= _draw_zone_groups(
             connection,
             [
                 CellGroup(
                     label=f"in sun at {clock}",
                     mask=lit,
-                    style=styles[-1],
+                    style=sun,
                     area_m2=area,
                     share=share,
                 ),
@@ -1153,7 +1155,7 @@ def report_zone_bands(
         )
         made.append((label, layer))
         tables[label] = [
-            TableRow(f"in sun at {clock}", area, share, fill_pen=styles[-1].fill_pen),
+            TableRow(f"in sun at {clock}", area, share, fill_pen=sun.fill_pen),
             TableRow(
                 f"in shade at {clock}", total - area, 1.0 - share, fill_pen=styles[0].fill_pen
             ),
@@ -1181,10 +1183,14 @@ def report_zone_bands(
             # area and a share, so the figures are the deliverable and not a
             # caption on it.
             table_beside=True,
-            table_height_mm=3.0,
+            table_height_mm=4.5,
             also_hide=tuple(also_hide),
             analysis_subset=subset,
         )
+
+    if csv_out is not None:
+        _write_zone_csv(csv_out, result, banded=banded, hours=hours, samples=samples)
+        typer.echo(f"  wrote {csv_out}")
 
     if stats:
         typer.echo("")
@@ -1199,6 +1205,27 @@ def report_zone_bands(
             subset=subset,
         )
     return problem
+
+
+#: What a patch of sun at one moment should look like. The banded scale runs
+#: cold to hot and its top colour means "the most hours of anything here",
+#: which on a single instant means nothing at all -- a place is in the sun or
+#: it is not. Red also reads as a warning on a drawing that is reporting good
+#: news. Sunlight is yellow.
+SUN_YELLOW = (255, 213, 79)
+
+
+def _sun_style(styles: Sequence[BandStyle]) -> BandStyle:
+    """The band style closest to sunlight yellow.
+
+    Chosen by colour rather than by position, because the position of yellow
+    in the scale is an accident of where the band edges fall and would move
+    the day somebody changes them.
+    """
+    return min(
+        styles,
+        key=lambda style: sum((a - b) ** 2 for a, b in zip(style.rgb, SUN_YELLOW, strict=True)),
+    )
 
 
 def _hourly(result: MassingResult) -> list[tuple[dt.datetime, Any]]:
@@ -1217,6 +1244,65 @@ def _hourly(result: MassingResult) -> list[tuple[dt.datetime, Any]]:
         for index, when_at in enumerate(result.times)
         if when_at.minute == 0 and when_at.second == 0
     ]
+
+
+def _write_zone_csv(
+    destination: Path,
+    result: MassingResult,
+    *,
+    banded: BandedResult,
+    hours: float | None,
+    samples: SamplePoints,
+) -> None:
+    """Every figure the study produced, as one table.
+
+    A row per band, per threshold and per hour, each with the area and the
+    share, under a header of the settings that produced them. Written because
+    an Archicad Text is a poor place to keep a number somebody has to add up,
+    and because a figure that can be opened in a spreadsheet can be checked.
+    """
+    import csv as _csv
+
+    window = result.ruleset.assessment
+    total = float(samples.areas.sum())
+    rows: list[tuple[str, str, float, float]] = [
+        ("band", band.label, band.area_m2, band.share) for band in banded.bands
+    ]
+    if hours and result.zone_minutes is not None:
+        lit = float(samples.areas[result.zone_minutes >= hours * 60.0].sum())
+        rows.append(("threshold", f"{hours:g} hrs or more", lit, lit / total if total else 0.0))
+        rows.append(
+            (
+                "threshold",
+                f"under {hours:g} hrs",
+                total - lit,
+                (total - lit) / total if total else 0.0,
+            )
+        )
+    for when_at, is_lit in _hourly(result):
+        area = float(samples.areas[is_lit].sum())
+        rows.append(("hour", f"{when_at:%H:%M}", area, area / total if total else 0.0))
+    rows.append(("total", "communal open space", total, 1.0))
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = _csv.writer(handle)
+        for line in (
+            f"# {PRODUCT} {__version__} -- communal open space",
+            f"# assessed {result.assessment_date:%Y-%m-%d}, "
+            f"{window.window_start} to {window.window_end}, "
+            f"{window.timestep_minutes} min step, {len(result.times)} instants",
+            f"# plane {result.scene.config.zone_height_m:g} m above the Zone floor, "
+            f"grid {result.scene.config.ground_spacing_m:g} m",
+            f"# zones {list(result.scene.config.zone_layers)} "
+            f"{list(result.scene.config.zone_names) or '(all on the layer)'}",
+            f"# {STATUS}",
+            "# No compliance verdict: the ruleset is ADG 4A-1, which is about apartments.",
+        ):
+            handle.write(f"{line}\n")
+        writer.writerow(["kind", "label", "area_m2", "share"])
+        for kind, label, area, share in rows:
+            writer.writerow([kind, label, f"{area:.3f}", f"{share:.5f}"])
 
 
 def _draw_zone_groups(
@@ -2460,6 +2546,17 @@ def massing(
             ),
         ),
     ] = False,
+    zone_csv: Annotated[
+        Path | None,
+        typer.Option(
+            "--zone-csv",
+            help=(
+                "Write every figure -- band, threshold and hour, with area "
+                "and share -- to this CSV. A spreadsheet is a better place "
+                "for a number than an Archicad Text."
+            ),
+        ),
+    ] = None,
     zone_stats: Annotated[
         bool,
         typer.Option(
@@ -2821,7 +2918,7 @@ def massing(
         ):
             raise typer.Exit(code=1)
 
-    if zone_draw or zone_sheet or zone_stats:
+    if zone_draw or zone_sheet or zone_stats or zone_csv is not None:
         typer.echo("")
         if result.zone is None:
             typer.secho(
@@ -2841,6 +2938,7 @@ def massing(
             hourly=zone_hourly,
             sheet=zone_sheet,
             stats=zone_stats,
+            csv_out=zone_csv,
             master_layout=master_layout,
             subset=zone_subset,
             also_hide=tuple(hide_layer or ()),
