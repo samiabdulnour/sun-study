@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ride Path Isolator</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --card: #ffffff;
+    --ink: #1c2733;
+    --muted: #5c6b7a;
+    --accent: #1a73e8;
+    --border: #dde3ea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header {
+    padding: 1.2rem 1.5rem 0.4rem;
+  }
+  header h1 { margin: 0 0 0.25rem; font-size: 1.35rem; }
+  header p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+  main { padding: 1rem 1.5rem 2rem; max-width: 1400px; margin: 0 auto; }
+
+  #dropzone {
+    border: 2px dashed #b7c3cf;
+    border-radius: 12px;
+    background: var(--card);
+    padding: 2.5rem 1rem;
+    text-align: center;
+    color: var(--muted);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  #dropzone.dragover { border-color: var(--accent); background: #eaf2fd; }
+  #dropzone strong { color: var(--ink); }
+  #dropzone .hint { font-size: 0.85rem; margin-top: 0.4rem; }
+
+  #workspace { display: none; }
+  #workspace.active { display: block; }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem 1.6rem;
+    align-items: center;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+  }
+  .control { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; }
+  .control label { white-space: nowrap; color: var(--muted); }
+  .control input[type=range] { width: 140px; accent-color: var(--accent); }
+  .control .val { min-width: 2.2em; text-align: right; font-variant-numeric: tabular-nums; }
+  .control input[type=checkbox] { accent-color: var(--accent); }
+
+  button {
+    font: inherit;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 0.45rem 0.9rem;
+    cursor: pointer;
+  }
+  button:hover { background: #eef2f6; }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  button.primary:hover { background: #1667c9; }
+  button:disabled { opacity: 0.45; cursor: default; }
+
+  .panes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }
+  .pane {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.7rem;
+  }
+  .pane h2 {
+    margin: 0 0 0.5rem;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .pane .canvas-wrap {
+    overflow: auto;
+    max-height: 75vh;
+    border-radius: 6px;
+    background:
+      conic-gradient(#f0f0f0 25%, #fff 0 50%, #f0f0f0 0 75%, #fff 0) 0 0 / 20px 20px;
+  }
+  .pane canvas { display: block; width: 100%; height: auto; }
+  #resultCanvas { cursor: crosshair; }
+  .pane .note { font-size: 0.8rem; color: var(--muted); margin: 0.45rem 0 0; }
+
+  #status { font-size: 0.85rem; color: var(--muted); }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    padding: 0 1rem 1.5rem;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ride Path Isolator</h1>
+  <p>Drop in a map screenshot of your ride — get just the speed-colored path on a clean white background.</p>
+</header>
+<main>
+  <div id="dropzone" tabindex="0">
+    <strong>Drop a screenshot here</strong>, click to choose a file, or paste from clipboard (Ctrl+V)
+    <div class="hint">Works with Google Maps / ride-tracker screenshots where the route is drawn as a colored line.</div>
+    <input type="file" id="fileInput" accept="image/*" hidden>
+  </div>
+
+  <div id="workspace">
+    <div class="toolbar">
+      <div class="control">
+        <label for="satSlider">Color sensitivity</label>
+        <input type="range" id="satSlider" min="15" max="80" value="40">
+        <span class="val" id="satVal">40</span>
+      </div>
+      <div class="control">
+        <label for="speckSlider">Remove specks&nbsp;≤</label>
+        <input type="range" id="speckSlider" min="0" max="500" step="10" value="80">
+        <span class="val" id="speckVal">80</span>
+      </div>
+      <div class="control">
+        <input type="checkbox" id="paletteOnly" checked>
+        <label for="paletteOnly">Map filter (labels &amp; water edges)</label>
+      </div>
+      <div class="control">
+        <input type="checkbox" id="trimCheck" checked>
+        <label for="trimCheck">Trim download to path</label>
+      </div>
+      <button id="undoBtn" disabled>Undo erase</button>
+      <button id="resetBtn">New image</button>
+      <button id="downloadBtn" class="primary">Download PNG</button>
+      <span id="status"></span>
+    </div>
+
+    <div class="panes">
+      <div class="pane">
+        <h2>Original</h2>
+        <div class="canvas-wrap"><canvas id="origCanvas"></canvas></div>
+      </div>
+      <div class="pane">
+        <h2>Isolated path</h2>
+        <div class="canvas-wrap"><canvas id="resultCanvas"></canvas></div>
+        <p class="note">Click any leftover blob (legend, markers, logo…) to erase it.</p>
+      </div>
+    </div>
+  </div>
+</main>
+<footer>Everything runs in your browser — the image never leaves your device.</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const dropzone = document.getElementById("dropzone");
+  const fileInput = document.getElementById("fileInput");
+  const workspace = document.getElementById("workspace");
+  const origCanvas = document.getElementById("origCanvas");
+  const resultCanvas = document.getElementById("resultCanvas");
+  const satSlider = document.getElementById("satSlider");
+  const satVal = document.getElementById("satVal");
+  const speckSlider = document.getElementById("speckSlider");
+  const speckVal = document.getElementById("speckVal");
+  const paletteOnly = document.getElementById("paletteOnly");
+  const trimCheck = document.getElementById("trimCheck");
+  const undoBtn = document.getElementById("undoBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const downloadBtn = document.getElementById("downloadBtn");
+  const statusEl = document.getElementById("status");
+
+  let W = 0, H = 0;
+  let srcData = null;        // ImageData of the original
+  let mask = null;           // Uint8Array: 1 = path pixel (after speck removal)
+  let labels = null;         // Int32Array: connected-component id per pixel, 0 = none
+  let erased = new Set();    // component ids the user clicked away
+  let undoStack = [];        // erased ids, in click order
+  let recomputeTimer = null;
+
+  // ---------- input handling ----------
+
+  function loadFile(file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      setImage(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      alert("Could not read that image.");
+    };
+    img.src = url;
+  }
+
+  dropzone.addEventListener("click", () => fileInput.click());
+  dropzone.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") fileInput.click();
+  });
+  fileInput.addEventListener("change", () => loadFile(fileInput.files[0]));
+
+  ["dragover", "dragenter"].forEach(ev =>
+    document.addEventListener(ev, e => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    }));
+  ["dragleave", "drop"].forEach(ev =>
+    document.addEventListener(ev, e => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+    }));
+  document.addEventListener("drop", e => {
+    const file = e.dataTransfer && e.dataTransfer.files[0];
+    if (file) loadFile(file);
+  });
+  document.addEventListener("paste", e => {
+    for (const item of e.clipboardData.items) {
+      if (item.type.startsWith("image/")) {
+        loadFile(item.getAsFile());
+        break;
+      }
+    }
+  });
+
+  function setImage(img) {
+    W = img.naturalWidth;
+    H = img.naturalHeight;
+    origCanvas.width = W; origCanvas.height = H;
+    resultCanvas.width = W; resultCanvas.height = H;
+    const octx = origCanvas.getContext("2d");
+    octx.drawImage(img, 0, 0);
+    srcData = octx.getImageData(0, 0, W, H);
+    workspace.classList.add("active");
+    dropzone.style.display = "none";
+    recompute();
+  }
+
+  resetBtn.addEventListener("click", () => {
+    workspace.classList.remove("active");
+    dropzone.style.display = "";
+    srcData = null;
+    fileInput.value = "";
+  });
+
+  // ---------- path detection ----------
+
+  // Two-pass ("hysteresis") detection. A pixel is a candidate when it is
+  // colorful: saturation above the weak threshold and not nearly black. Map
+  // background (pale water, gray roads, white labels) is low-saturation;
+  // pink/purple POI labels are cut by hue. A candidate blob is kept only if
+  // it also contains strongly-saturated "seed" pixels — real path segments
+  // always have a vivid core, while water flecks and shoreline fringes are
+  // uniformly washed out and get dropped.
+  function buildMasks(satWeak, satSeed, cutMap) {
+    const d = srcData.data;
+    const weakM = new Uint8Array(W * H);
+    const seedM = new Uint8Array(W * H);
+    for (let i = 0, p = 0; p < W * H; p++, i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2], a = d[i + 3];
+      if (a < 128) continue;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      if (max < 30) continue;                    // nearly black
+      const sat = (max - min) / max;
+      if (sat < satWeak) continue;
+      if (cutMap) {
+        // hue in degrees
+        const delta = max - min;
+        let h;
+        if (max === r) h = 60 * (((g - b) / delta) % 6);
+        else if (max === g) h = 60 * ((b - r) / delta + 2);
+        else h = 60 * ((r - g) / delta + 4);
+        if (h < 0) h += 360;
+        if (h > 278 && h < 348) continue;        // pink/magenta POI labels
+        // washed-out cyan = water edges; path blues are hue 205+ or vivid
+        if (h > 165 && h < 203 && sat < 0.55) continue;
+      }
+      weakM[p] = 1;
+      if (sat >= satSeed) seedM[p] = 1;
+    }
+    return { weakM, seedM };
+  }
+
+  // Grow outward from seed pixels through the weak mask, at most `maxDepth`
+  // steps — enough to cover a line's width and anti-aliased edge, but never
+  // far enough to leak across water or background that barely clears the
+  // weak threshold.
+  function growFromSeeds(weakM, seedM, maxDepth) {
+    const N = W * H;
+    const depth = new Int16Array(N).fill(-1);
+    let queue = [];
+    for (let p = 0; p < N; p++) {
+      if (seedM[p] && weakM[p]) { depth[p] = 0; queue.push(p); }
+    }
+    for (let d = 1; d <= maxDepth && queue.length; d++) {
+      const next = [];
+      for (const q of queue) {
+        const x = q % W, y = (q / W) | 0;
+        if (x > 0     && weakM[q - 1] && depth[q - 1] < 0) { depth[q - 1] = d; next.push(q - 1); }
+        if (x < W - 1 && weakM[q + 1] && depth[q + 1] < 0) { depth[q + 1] = d; next.push(q + 1); }
+        if (y > 0     && weakM[q - W] && depth[q - W] < 0) { depth[q - W] = d; next.push(q - W); }
+        if (y < H - 1 && weakM[q + W] && depth[q + W] < 0) { depth[q + W] = d; next.push(q + W); }
+      }
+      queue = next;
+    }
+    const kept = new Uint8Array(N);
+    for (let p = 0; p < N; p++) if (depth[p] >= 0) kept[p] = 1;
+    return kept;
+  }
+
+  // Label 4-connected components of the mask; drop those smaller than
+  // minArea or without any seed pixel.
+  function labelComponents(raw, seedM, minArea) {
+    const lab = new Int32Array(W * H);
+    const stack = new Int32Array(W * H);
+    let nextId = 0;
+    for (let p = 0; p < W * H; p++) {
+      if (!raw[p] || lab[p]) continue;
+      nextId++;
+      let top = 0, size = 0, hasSeed = false;
+      stack[top++] = p;
+      lab[p] = nextId;
+      const member = [];
+      while (top > 0) {
+        const q = stack[--top];
+        member.push(q);
+        size++;
+        if (seedM[q]) hasSeed = true;
+        const x = q % W, y = (q / W) | 0;
+        if (x > 0     && raw[q - 1] && !lab[q - 1]) { lab[q - 1] = nextId; stack[top++] = q - 1; }
+        if (x < W - 1 && raw[q + 1] && !lab[q + 1]) { lab[q + 1] = nextId; stack[top++] = q + 1; }
+        if (y > 0     && raw[q - W] && !lab[q - W]) { lab[q - W] = nextId; stack[top++] = q - W; }
+        if (y < H - 1 && raw[q + W] && !lab[q + W]) { lab[q + W] = nextId; stack[top++] = q + W; }
+      }
+      if (size < minArea || !hasSeed) {
+        for (const q of member) { raw[q] = 0; lab[q] = 0; }
+      }
+    }
+    return lab;
+  }
+
+  function recompute() {
+    if (!srcData) return;
+    const satWeak = Number(satSlider.value) / 100;
+    const satSeed = Math.min(0.95, satWeak + 0.18);
+    const minArea = Number(speckSlider.value);
+    const { weakM, seedM } = buildMasks(satWeak, satSeed, paletteOnly.checked);
+    const maxDepth = Math.max(8, Math.round(Math.min(W, H) / 100));
+    mask = growFromSeeds(weakM, seedM, maxDepth);
+    labels = labelComponents(mask, seedM, minArea);
+    erased = new Set();
+    undoStack = [];
+    undoBtn.disabled = true;
+    render();
+  }
+
+  function scheduleRecompute() {
+    clearTimeout(recomputeTimer);
+    statusEl.textContent = "…";
+    recomputeTimer = setTimeout(recompute, 150);
+  }
+
+  function render() {
+    const rctx = resultCanvas.getContext("2d");
+    const out = rctx.createImageData(W, H);
+    const src = srcData.data, dst = out.data;
+    let kept = 0;
+    for (let p = 0, i = 0; p < W * H; p++, i += 4) {
+      if (mask[p] && !erased.has(labels[p])) {
+        dst[i] = src[i];
+        dst[i + 1] = src[i + 1];
+        dst[i + 2] = src[i + 2];
+        kept++;
+      } else {
+        dst[i] = dst[i + 1] = dst[i + 2] = 255;
+      }
+      dst[i + 3] = 255;
+    }
+    rctx.putImageData(out, 0, 0);
+    statusEl.textContent = kept ? "" : "No path found — try raising color sensitivity.";
+  }
+
+  satSlider.addEventListener("input", () => { satVal.textContent = satSlider.value; scheduleRecompute(); });
+  speckSlider.addEventListener("input", () => { speckVal.textContent = speckSlider.value; scheduleRecompute(); });
+  paletteOnly.addEventListener("change", scheduleRecompute);
+
+  // ---------- click-to-erase ----------
+
+  resultCanvas.addEventListener("click", e => {
+    if (!labels) return;
+    const rect = resultCanvas.getBoundingClientRect();
+    const x = Math.round((e.clientX - rect.left) * (W / rect.width));
+    const y = Math.round((e.clientY - rect.top) * (H / rect.height));
+    // search a small neighborhood so a slightly-off click still hits the blob
+    const R = Math.max(4, Math.round(W / 200));
+    let hit = 0, best = Infinity;
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const p = ny * W + nx;
+        if (mask[p] && labels[p] && !erased.has(labels[p])) {
+          const dist = dx * dx + dy * dy;
+          if (dist < best) { best = dist; hit = labels[p]; }
+        }
+      }
+    }
+    if (hit) {
+      erased.add(hit);
+      undoStack.push(hit);
+      undoBtn.disabled = false;
+      render();
+    }
+  });
+
+  undoBtn.addEventListener("click", () => {
+    const id = undoStack.pop();
+    if (id !== undefined) erased.delete(id);
+    undoBtn.disabled = undoStack.length === 0;
+    render();
+  });
+
+  // ---------- download ----------
+
+  downloadBtn.addEventListener("click", () => {
+    if (!mask) return;
+    let x0 = 0, y0 = 0, x1 = W, y1 = H;
+    if (trimCheck.checked) {
+      let minX = W, minY = H, maxX = -1, maxY = -1;
+      for (let p = 0; p < W * H; p++) {
+        if (mask[p] && !erased.has(labels[p])) {
+          const x = p % W, y = (p / W) | 0;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+      if (maxX >= 0) {
+        const pad = 24;
+        x0 = Math.max(0, minX - pad);
+        y0 = Math.max(0, minY - pad);
+        x1 = Math.min(W, maxX + pad + 1);
+        y1 = Math.min(H, maxY + pad + 1);
+      }
+    }
+    const cw = x1 - x0, ch = y1 - y0;
+    const c = document.createElement("canvas");
+    c.width = cw; c.height = ch;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.drawImage(resultCanvas, x0, y0, cw, ch, 0, 0, cw, ch);
+    const a = document.createElement("a");
+    a.download = "ride-path.png";
+    a.href = c.toDataURL("image/png");
+    a.click();
+  });
+})();
+</script>
+</body>
+</html>
