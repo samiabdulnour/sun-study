@@ -974,6 +974,9 @@ def report_zone_bands(
     *,
     layer_prefix: str,
     spacing_m: float,
+    sheet: bool = False,
+    master_layout: str | None = None,
+    subset: str = "",
 ) -> bool:
     """Draw the measured Zones on the plan, banded by hours of sun.
 
@@ -1059,7 +1062,48 @@ def report_zone_bands(
         f"no verdict is drawn -- the ruleset carries ADG 4A-1, which is about "
         f"apartments."
     )
+    if not sheet:
+        return not drawn.complete
+
+    typer.echo("")
+    # Zoomed to the Zones measured, not to the ones borrowed for the fit: the
+    # fitting Zones are spread over the whole building, and a view framed on
+    # them would put the communal area in a corner of the sheet.
+    report_layout(
+        connection,
+        sorted(drawn.storeys),
+        name=naming.named("Communal Open Space"),
+        master=master_layout,
+        zoom=_extent_of(zones, {guid for ifc_id, guid in paired.items() if ifc_id in measured}),
+    )
+    if subset:
+        try:
+            typer.echo(
+                file_under_subset(
+                    connection, [naming.named("Communal Open Space")], subset
+                ).describe()
+            )
+        except ArchicadError as error:
+            typer.secho(f"  {error}", fg=typer.colors.YELLOW, err=True)
     return not drawn.complete
+
+
+def _extent_of(
+    zones: Sequence[ArchicadZone], wanted: set[str], margin_m: float = 8.0
+) -> tuple[float, float, float, float] | None:
+    """The plan extent of some Zones, with a margin, for pinning a view.
+
+    A view otherwise inherits whatever the storey was last zoomed to, so the
+    drawing crops the plan wherever somebody happened to leave the screen.
+    """
+    points = [
+        point for zone in zones if zone.guid in wanted and zone.outline for point in zone.outline
+    ]
+    if not points:
+        return None
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    return (min(xs) - margin_m, min(ys) - margin_m, max(xs) + margin_m, max(ys) + margin_m)
 
 
 def _storey_at(connection: ArchicadConnection, level_m: float) -> int | None:
@@ -2119,6 +2163,23 @@ def massing(
             help="Height above the Zone floor to assess, in metres.",
         ),
     ] = 1.0,
+    zone_subset: Annotated[
+        str,
+        typer.Option(
+            "--zone-subset",
+            help="File the communal layout under this Layout Book subset.",
+        ),
+    ] = "",
+    zone_sheet: Annotated[
+        bool,
+        typer.Option(
+            "--zone-sheet/--no-zone-sheet",
+            help=(
+                "Put the drawn Zones on a layout, one linked Drawing per "
+                "storey, framed on the measured area. Implies --zone-draw."
+            ),
+        ),
+    ] = False,
     zone_draw: Annotated[
         bool,
         typer.Option(
@@ -2411,7 +2472,7 @@ def massing(
         ):
             raise typer.Exit(code=1)
 
-    if zone_draw:
+    if zone_draw or zone_sheet:
         typer.echo("")
         if result.zone is None:
             typer.secho(
@@ -2427,6 +2488,9 @@ def massing(
             result,
             layer_prefix=naming.group(),
             spacing_m=ground_grid,
+            sheet=zone_sheet,
+            master_layout=master_layout,
+            subset=zone_subset,
         ):
             raise typer.Exit(code=1)
 
