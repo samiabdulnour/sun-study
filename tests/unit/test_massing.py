@@ -13,6 +13,7 @@ uniform.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -31,11 +32,12 @@ from sun_study.core.sampling import (
     single_sample,
     triangle_samples,
 )
-from sun_study.ingest.ifc import read_ifc
+from sun_study.ingest.ifc import IfcElement, read_ifc
 from sun_study.ingest.scene import (
     MassingConfig,
     SceneConfigError,
     build_massing_scene,
+    zone_floor_grid,
 )
 from sun_study.pipeline import run_massing
 
@@ -565,3 +567,31 @@ def test_naming_no_zone_leaves_the_result_without_one() -> None:
     )
     assert result.zone is None
     assert "named zones" not in result.summary()
+
+
+def test_a_zone_off_the_project_axes_is_not_gridded_as_its_bounding_box() -> None:
+    """The failure this caught on a real project.
+
+    A horizontal face's in-plane basis is axis-aligned, so the bounding
+    rectangle of a rotated Zone is its axis-aligned bounding box. A 1,863.6 m2
+    communal zone turned 79 degrees off the project axes came back as
+    2,809.2 m2 -- half as big again as itself, with a share to match.
+    """
+    model = read_ifc(SAMPLE)
+    space = next(s for s in model.of_class("IfcSpace") if s.name == "Apartment L00-A")
+    turned = _rotated_about_z(space, math.radians(30.0))
+
+    grid = zone_floor_grid(turned, "z", spacing_m=0.25, height_m=1.0)
+    assert grid is not None
+    box = (turned.bounds[1][0] - turned.bounds[0][0]) * (turned.bounds[1][1] - turned.bounds[0][1])
+    assert box > 8.0 * 11.6 * 1.2, "the fixture rotation has to make the box bigger"
+    assert grid.total_area_m2 == pytest.approx(8.0 * 11.6, rel=0.02)
+    assert grid.total_area_m2 < box * 0.9
+
+
+def _rotated_about_z(space: IfcElement, angle_rad: float) -> IfcElement:
+    """The same Zone, turned off the project axes."""
+    c, s_ = math.cos(angle_rad), math.sin(angle_rad)
+    turn = np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]])
+    spun = TriangleMesh(space.mesh.vertices @ turn.T, space.mesh.faces)
+    return replace(space, mesh=spun)

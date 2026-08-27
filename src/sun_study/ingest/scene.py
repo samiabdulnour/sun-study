@@ -702,11 +702,23 @@ def _open_space_grid(
         owner_id,
         spacing_m=config.grid_spacing_m,
         height_m=config.open_space_height_m,
+        # Unclipped, which is what this path has always done. It over-measures
+        # any balcony that is not an axis-aligned rectangle, because the grid
+        # covers the face's bounding rectangle -- and ``_floor_grid`` clips the
+        # same Zone, so the drawn patch and the measured number can already
+        # disagree about a balcony's extent. Turning it on changes published
+        # ADG figures, so it is a decision rather than a tidy-up.
+        clip_to_face=False,
     )
 
 
 def zone_floor_grid(
-    space: IfcElement, parent_id: str, *, spacing_m: float, height_m: float
+    space: IfcElement,
+    parent_id: str,
+    *,
+    spacing_m: float,
+    height_m: float,
+    clip_to_face: bool = True,
 ) -> SamplePoints | None:
     """Grid the floor of a Zone, at ``height_m`` above it.
 
@@ -715,8 +727,11 @@ def zone_floor_grid(
     off the floor, and the normals are flipped back up afterwards. A horizontal
     surface faces the sky whichever way the face it came from pointed.
 
-    Shared by private open space and by a communal Zone measured on its own,
-    which differ in who owns the answer and not in how it is taken.
+    Clipped by default, because a Zone is a room outline and not a window. The
+    in-plane basis of a horizontal face is axis-aligned, so the bounding
+    rectangle of a Zone turned off the project axes is its axis-aligned
+    bounding box: on a real project a 1,863.6 m2 communal zone was gridded as
+    2,809.2 m2 and reported a share of an area half as big again as itself.
     """
     samples = planar_face_grid(
         space.mesh,
@@ -724,6 +739,7 @@ def zone_floor_grid(
         np.array([0.0, 0.0, -1.0]),
         spacing_m=spacing_m,
         surface_offset_m=-height_m,
+        clip_to_face=clip_to_face,
     )
     if samples is None:
         return None
