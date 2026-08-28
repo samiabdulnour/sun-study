@@ -1326,7 +1326,7 @@ def icon_path() -> Path | None:
     """
     packaged = getattr(sys, "_MEIPASS", None)
     root = Path(packaged) if packaged else Path(__file__).resolve().parents[3]
-    found = root / "assets" / "sun-study.ico"
+    found = root / "assets" / "loriini.ico"
     return found if found.is_file() else None
 
 

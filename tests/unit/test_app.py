@@ -895,7 +895,7 @@ def test_the_window_is_dressed_before_it_is_shown(monkeypatch: pytest.MonkeyPatc
     window.wear_the_icon(Fake())  # type: ignore[arg-type]
 
     assert worn, "the window was never given the icon"
-    assert worn[0]["default"].endswith("sun-study.ico")
+    assert worn[0]["default"].endswith("loriini.ico")
 
 
 def test_the_packaged_build_looks_where_it_unpacked_itself(
@@ -904,7 +904,7 @@ def test_the_packaged_build_looks_where_it_unpacked_itself(
     """A --onefile build unpacks to a fresh temp directory on every start, so
     the icon is neither beside the .exe nor beside the module -- it is
     wherever ``sys._MEIPASS`` points this time."""
-    bundled = tmp_path / "assets" / "sun-study.ico"
+    bundled = tmp_path / "assets" / "loriini.ico"
     bundled.parent.mkdir()
     bundled.touch()  # icon_path only asks whether it is there
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)

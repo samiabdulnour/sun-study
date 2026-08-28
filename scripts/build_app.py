@@ -38,12 +38,13 @@ ROOT = Path(__file__).resolve().parent.parent
 NAME = "Loriini"
 
 #: The application icon, in the one format Windows takes for an executable.
-#: A single .ico carrying every size Windows asks for -- 16 through 256 --
+#: Built by scripts/make_icon.py from the artwork. A single .ico carrying
+#: every size Windows asks for -- 16 through 256 --
 #: because it is asked for at all of them: 16 in the title bar, 32 in the
 #: task bar, 48 in a folder, 256 in the large-icon view and the Alt-Tab
 #: switcher. An .ico with only the big one in it is resampled down to a smear
 #: at the size somebody actually sees most often.
-ICON = ROOT / "assets" / "sun-study.ico"
+ICON = ROOT / "assets" / "loriini.ico"
 
 #: Windows reads this out of the .exe for its Properties > Details tab, and
 #: shows it in the UAC prompt and the task manager. Without it the file claims
@@ -139,6 +140,11 @@ def main() -> int:
         # builds cleanly and dies on the first run with "No ruleset at ...".
         "--collect-data",
         "sun_study",
+        # Pillow builds the icon and nothing imports it at runtime, but it is
+        # in the environment, so a dependency scan finds it and bundles 8 MB
+        # of image codecs into a program that draws no images.
+        "--exclude-module",
+        "PIL",
         # Typer's runtime lives behind lazy imports that a static scan misses.
         "--collect-submodules",
         "typer",

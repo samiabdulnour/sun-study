@@ -33,7 +33,11 @@ validation = ["pvlib>=0.10"]
 [dependency-groups]
 # PyInstaller is here and not in `dependencies`: it builds the window into a
 # single .exe for colleagues without Python, and nothing at runtime needs it.
+# Pillow is here for the same reason and only that reason: turning the icon
+# artwork into the multi-size .ico Windows wants. Neither is imported by
+# anything the analysis runs.
 dev = [
+    "pillow>=10.0",
     "pyinstaller>=6.10",
     "pytest>=8.0",
     "ruff>=0.6",
