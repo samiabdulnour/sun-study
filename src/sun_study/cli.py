@@ -2677,6 +2677,19 @@ def massing(
             ),
         ),
     ] = False,
+    context_layer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--context-layer",
+            help=(
+                "Archicad layer whose elements shade the study without being "
+                "measured by it. Repeatable. The layer and not a name prefix, "
+                "because survey context arrives unnamed: on one project all "
+                "232 neighbouring buildings are nameless slabs, and nothing "
+                "but the layer says what they are."
+            ),
+        ),
+    ] = None,
     subject_layer: Annotated[
         list[str] | None,
         typer.Option(
@@ -2901,6 +2914,7 @@ def massing(
         ground_margin_m=ground_margin,
         exclude_above_m=exclude_above,
         subject_layers=tuple(subject_layer or ()),
+        context_layers=tuple(context_layer or ()),
         ground_level_m=ground_level,
         zone_layers=tuple(zone_layer or ()),
         zone_names=tuple(zone_name or ()),
