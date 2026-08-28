@@ -3,7 +3,7 @@
     uv sync            # once, to install PyInstaller
     uv run python scripts/build_app.py
 
-Leaves ``dist/Sun Study.exe``. Copy that anywhere; it needs no Python and no
+Leaves ``dist/Loriini.exe``. Copy that anywhere; it needs no Python and no
 install, only an Archicad with the Tapir add-on running on the same machine.
 
 Why one file and no console
@@ -30,7 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from sun_study import AUTHOR, PRODUCT, __version__
 
 ROOT = Path(__file__).resolve().parent.parent
-NAME = "Sun Study"
+#: What the built file is called. Deliberately not ``PRODUCT``: everything
+#: this tool makes inside a project is named "Sun Study" -- the layers, the
+#: views, the layouts, the combinations -- so an application called the same
+#: thing is one more "Sun Study" in a folder that already has thirty. The
+#: program gets its own name; the drawings keep theirs.
+NAME = "Loriini"
 
 #: The application icon, in the one format Windows takes for an executable.
 #: A single .ico carrying every size Windows asks for -- 16 through 256 --
@@ -62,7 +67,7 @@ VERSION_INFO = f"""VSVersionInfo(
         StringStruct('FileVersion', {__version__!r}),
         StringStruct('InternalName', {PRODUCT!r}),
         StringStruct('LegalCopyright', 'Created by {AUTHOR}'),
-        StringStruct('OriginalFilename', 'Sun Study.exe'),
+        StringStruct('OriginalFilename', '{NAME}.exe'),
         StringStruct('ProductName', {PRODUCT!r}),
         StringStruct('ProductVersion', {__version__!r}),
       ])

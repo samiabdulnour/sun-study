@@ -475,6 +475,32 @@ class Window:
             "makes a reader do that sum by eye. This draws that split as two "
             "areas on a sheet of its own. Leave it empty for the bands alone.",
         )
+        self.communal_height, row = self._entry(
+            frame,
+            row,
+            "Communal height",
+            "0",
+            "Metres above the ground to assess. 0 is at ground level.",
+            "The height a person's sunlight is measured at. 0 means on the "
+            "ground itself, which is taken as 50 mm clear of it: the site mesh "
+            "shades, and a point exactly on the ground starts every ray inside "
+            "the ground and reads as permanent shade. It matters more than it "
+            "sounds — on the reference project, moving from one metre to "
+            "ground level took the two-hour figure from 45% to 33%, because "
+            "the fall and the built form shade the surface far more than they "
+            "shade a point a metre above it.",
+        )
+        self.communal_grid, row = self._entry(
+            frame,
+            row,
+            "Communal grid",
+            "0.5",
+            "Sample spacing in metres over the communal area.",
+            "Half a metre reads a courtyard properly. This is separate from "
+            "the ground grid on purpose: the ground is the whole site, and "
+            "gridding all of it this finely costs four times the samples for "
+            "an answer nobody asked of it.",
+        )
         self.balconies, self.balcony_names, self.balcony_hint, row = self._zone_row(
             frame,
             row,
@@ -572,6 +598,19 @@ class Window:
             "up against, and neither of this project's IFC combinations shows "
             "them. Left empty, the zone layers are added automatically.",
         )
+        self.context, inner = self._picker(
+            self.advanced,
+            inner,
+            "Neighbouring buildings",
+            "Layers that shade the site without being part of it.",
+            "They have to be in the export or the study measures a building "
+            "with nothing around it, which can only overstate its sunlight. "
+            "Named by layer and not by element name because survey context "
+            "usually arrives nameless — on one project all 232 neighbours are "
+            "unnamed slabs. Listing them here both forces them into the export "
+            "and keeps them out of the facade area, which is about the scheme "
+            "and not the neighbourhood.",
+        )
         self.hide, inner = self._picker(
             self.advanced,
             inner,
@@ -581,6 +620,18 @@ class Window:
             "annotation and clutter a sun study without adding to it. What "
             "counts as clutter is a decision about the drawing, so it is named "
             "here rather than guessed from layer names.",
+        )
+        self.communal_csv, inner = self._entry(
+            self.advanced,
+            inner,
+            "Communal areas CSV",
+            "",
+            "Where to write the figures as a spreadsheet. Blank writes none.",
+            "Every band, the threshold and every hour, with area and share, "
+            "under a header of the settings that produced them. Written before "
+            "anything is drawn, so the numbers survive whatever Archicad does "
+            "next — and a figure that opens in a spreadsheet is a figure "
+            "somebody can check.",
         )
         self.livable, inner = self._entry(
             self.advanced,
@@ -1155,6 +1206,16 @@ class Window:
                 args += ["--master-layout", self.master.get()]
             if self.adg_subset.get():
                 args += ["--zone-subset", self.adg_subset.get()]
+            for name in self._listed(self.context):
+                # Both: into the export, because a neighbour that is not
+                # exported shades nothing, and out of the facade denominator.
+                args += ["--require-layer", name, "--context-layer", name]
+            if self.communal_height.get().strip():
+                args += ["--zone-height", self.communal_height.get().strip()]
+            if self.communal_grid.get().strip():
+                args += ["--zone-grid", self.communal_grid.get().strip()]
+            if self.communal_csv.get().strip():
+                args += ["--zone-csv", self.communal_csv.get().strip()]
             start, end = self._window()
             if start:
                 args += ["--window-start", start]

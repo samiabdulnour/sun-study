@@ -255,6 +255,55 @@ def test_the_hourly_plans_are_on_by_default_and_can_be_turned_off(
     assert "--zone-hourly" not in communal.args
 
 
+def test_the_communal_study_sends_the_settings_that_change_the_answer(
+    hidden_window: Any,
+) -> None:
+    """Ground level and half a metre are the defaults, and they are not cosmetic.
+
+    At one metre and two metres this project reads 37%; at ground level and
+    half a metre it reads 46.6%. An app that quietly used the old numbers
+    would be answering a different question from the command line.
+    """
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.do_communal.set(True)
+    (communal,) = hidden_window.jobs()
+
+    assert flag(communal.args, "--zone-height") == ["0"]
+    assert flag(communal.args, "--zone-grid") == ["0.5"]
+
+
+def test_a_neighbouring_layer_is_exported_and_kept_out_of_the_denominator(
+    hidden_window: Any,
+) -> None:
+    """Both halves, or it is wrong in one direction or the other.
+
+    Not exported, a neighbour shades nothing and the study overstates the
+    sunlight. Exported as subject, its facades join the area being measured
+    and the percentage describes the neighbourhood.
+    """
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.context.insert(0, "03 | Site.Neighboring Context")
+    hidden_window.do_communal.set(True)
+    (communal,) = hidden_window.jobs()
+
+    assert "03 | Site.Neighboring Context" in flag(communal.args, "--require-layer")
+    assert flag(communal.args, "--context-layer") == ["03 | Site.Neighboring Context"]
+
+
+def test_no_csv_is_written_unless_somewhere_is_named(hidden_window: Any) -> None:
+    hidden_window.do_facade.set(False)
+    hidden_window.communal.set("06 | Zone.Balcony")
+    hidden_window.do_communal.set(True)
+    (communal,) = hidden_window.jobs()
+    assert "--zone-csv" not in communal.args
+
+    hidden_window.communal_csv.insert(0, r"C:reas.csv")
+    (communal,) = hidden_window.jobs()
+    assert flag(communal.args, "--zone-csv") == [r"C:reas.csv"]
+
+
 def test_all_three_studies_run_in_order(hidden_window: Any) -> None:
     hidden_window.do_plans.set(True)
     hidden_window.do_communal.set(True)
