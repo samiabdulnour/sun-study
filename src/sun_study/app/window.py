@@ -18,6 +18,24 @@ not report an error, it reports the least-lit half of the building; an export
 without the zone layers runs for minutes and then cannot place the skin. The
 hint says what the setting is; the tooltip says what happens when it is wrong,
 because that is the part nobody can infer from a label.
+
+Which makes a form no screen can hold
+-------------------------------------
+Thirty questions, each answered with a line of its own, comes to more than a
+laptop shows -- and a window cannot be dragged taller than the screen it is on,
+so anything past the bottom edge is not awkward to reach but unreachable. The
+settings sit in a ``Scroller``; Run, the progress bar and the log do not, so
+the button stays findable and the log stays readable while a study runs.
+
+What is worth remembering between runs
+--------------------------------------
+Half of these fields are a property of the *project* and are read out of
+Archicad every time. The rest are a property of the *practice* -- the layer
+prefix that files the output inside the office's own numbering, the
+living-room suffix, the wait a big export needs, which studies this person ever
+runs -- and those are saved, on request, by ``preferences``. The project
+always wins afterwards: the lists are refilled from the open Archicad, so a
+saved name it does not have is replaced by one it does.
 """
 
 from __future__ import annotations
@@ -31,7 +49,7 @@ from pathlib import Path
 from tkinter import scrolledtext, ttk
 
 from sun_study import AUTHOR, PRODUCT, __version__
-from sun_study.app import probe
+from sun_study.app import preferences, probe
 from sun_study.app.runner import Run
 from sun_study.archicad import naming
 from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS
@@ -103,6 +121,106 @@ class Tooltip:
         if self._window is not None:
             self._window.destroy()
             self._window = None
+
+
+class Scroller(ttk.Frame):
+    """A pane whose contents may be taller than the screen.
+
+    The window asks about thirty questions and answers each one with a line of
+    its own underneath, which is deliberate -- most of these settings fail
+    silently and that line is what stops it -- and which makes a form no
+    laptop can show at once. Without somewhere to scroll, the settings below
+    the fold are not merely awkward to reach, they are unreachable: Tk clips
+    them, and a window cannot be dragged taller than the screen it is on.
+
+    A canvas, because Tk has no scrolling frame. The frame goes inside it as a
+    single canvas item, kept as wide as the canvas so the fields still
+    stretch, and the item's own size is the scroll region -- so adding a row,
+    or opening Advanced, re-measures without anything having to be told.
+    """
+
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.bar.grid(row=0, column=1, sticky="ns")
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.content = ttk.Frame(self.canvas)
+        self._item = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind("<Configure>", self._measured)
+        self.canvas.bind("<Configure>", self._widened)
+
+    def _measured(self, _event: object = None) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _widened(self, event: tk.Event[tk.Misc]) -> None:
+        self.canvas.itemconfigure(self._item, width=event.width)
+
+    @property
+    def scrollable(self) -> bool:
+        """Whether anything is out of sight."""
+        first, last = self.canvas.yview()
+        return first > 0.0 or last < 1.0
+
+    def spin(self, delta: int) -> None:
+        """One turn of the wheel. Ignored when everything already fits.
+
+        The guard is not politeness: a canvas will happily scroll past its own
+        scroll region, so a wheel over a form that fits slides the whole form
+        off the top of the window and leaves an empty pane behind.
+
+        A mouse sends 120 to the notch and a precision touchpad sends whatever
+        the finger did, which is often less. The direction is taken from the
+        sign and the distance from the size, so a small gesture is worth one
+        line either way -- dividing first would round a gentle push down to
+        nothing while a gentle pull up still moved, and a page that scrolls
+        one way is worse than one that does not scroll at all.
+        """
+        if delta == 0 or not self.scrollable:
+            return
+        lines = max(1, abs(delta) // 120)
+        self.canvas.yview_scroll(-lines if delta > 0 else lines, "units")
+
+
+def wheel_reaches_the_pointer(root: tk.Misc) -> None:
+    """Give the wheel to whatever is under the mouse, and to nothing else.
+
+    Two Tk defaults are wrong for a form this tall, and both are undone here
+    rather than in six places.
+
+    On Windows the wheel is delivered to the widget with keyboard *focus*, not
+    to the one the pointer is over. Bound the ordinary way, the page would
+    scroll only while the right thing happened to be focused, which reads as
+    broken. So it is bound once across the application and routed by where the
+    pointer actually is.
+
+    And a ttk combobox answers the wheel by changing its own value. On a page
+    that scrolls, that is not a nuisance but a fault: a colleague rolls past
+    "Sheet master" on the way down and the sheets are built on a different
+    title block, with nothing on screen to say so. The class binding goes, and
+    a combobox then scrolls the form under it like everything else.
+    """
+    root.unbind_class("TCombobox", "<MouseWheel>")
+
+    def spin(event: tk.Event[tk.Misc]) -> None:
+        try:
+            under = root.winfo_containing(event.x_root, event.y_root)
+        except KeyError:
+            # Tk made that window itself and never told Python about it --
+            # a combobox's own dropdown is one, and the layer lists are long
+            # enough to be scrolled. The list scrolls on its own class
+            # binding; all this has to do is not raise a traceback over it.
+            return
+        while under is not None:
+            if isinstance(under, Scroller):
+                under.spin(event.delta)
+                return
+            under = getattr(under, "master", None)
+
+    root.bind_all("<MouseWheel>", spin)
 
 
 def pickable(names: Sequence[str]) -> list[str]:
@@ -205,17 +323,13 @@ class LayerChooser(tk.Toplevel):
         self.query.grid(row=0, column=1, sticky="ew")
         self.query.bind("<KeyRelease>", lambda _event: self._repaint())
 
-        canvas = tk.Canvas(outer, highlightthickness=0)
-        canvas.grid(row=2, column=0, sticky="nsew", pady=6)
-        bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        bar.grid(row=2, column=1, sticky="ns", pady=6)
-        canvas.configure(yscrollcommand=bar.set)
-        self._list = ttk.Frame(canvas)
-        self._window_id = canvas.create_window((0, 0), window=self._list, anchor="nw")
-        self._canvas = canvas
-        self._list.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(self._window_id, width=e.width))
-        canvas.bind_all("<MouseWheel>", self._wheel)
+        # The same pane the main form scrolls in, so the wheel behaves the
+        # same way over both. It also replaces a ``bind_all`` this dialog
+        # used to leave behind it: the binding outlived the window, and every
+        # turn of the wheel afterwards went to a canvas that no longer existed.
+        scroller = Scroller(outer)
+        scroller.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=6)
+        self._list = scroller.content
 
         self.count = ttk.Label(outer, text="", foreground=HINT)
         self.count.grid(row=3, column=0, sticky="w")
@@ -231,9 +345,6 @@ class LayerChooser(tk.Toplevel):
         self.query.focus_set()
         self.bind("<Escape>", lambda _e: self.destroy())
         self.grab_set()
-
-    def _wheel(self, event: tk.Event[tk.Misc]) -> None:
-        self._canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
     def _repaint(self) -> None:
         for child in self._list.winfo_children():
@@ -281,7 +392,13 @@ class Window:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Sun Study")
-        self.root.minsize(820, 700)
+        # Never taller than the screen. A window opened past the bottom edge
+        # cannot be dragged back by its title bar, so everything below the
+        # fold -- Run included -- is out of reach, which is the fault this
+        # replaces. The minimum height only has to keep the log and the
+        # buttons: the settings above them scroll.
+        self.root.minsize(820, 460)
+        self.root.geometry(self._on_the_screen(880, 940))
 
         #: Lines from the worker thread. Tkinter is not thread-safe, so nothing
         #: touches a widget from the runner's thread: lines go through here and
@@ -294,12 +411,41 @@ class Window:
         self.queued: list[Job] = []
 
         self._build()
+        #: What the window opens with when nothing has been saved. Taken
+        #: before any saved settings land on top of it, so Forget has
+        #: something to go back to that is not "whatever was on screen".
+        self.factory = self.settings()
+        self._restore()
         self.refresh()
         self.root.after(80, self._drain)
 
+    def _on_the_screen(self, want_wide: int, want_tall: int) -> str:
+        """A size that fits the display this window opened on.
+
+        The margins are for the task bar and the title bar, neither of which
+        Tk reports: ``winfo_screenheight`` is the whole panel, borders and
+        all.
+        """
+        wide = min(want_wide, self.root.winfo_screenwidth() - 40)
+        tall = min(want_tall, self.root.winfo_screenheight() - 120)
+        return f"{max(wide, 820)}x{max(tall, 460)}"
+
     # -- layout ------------------------------------------------------------
     def _build(self) -> None:
-        frame = ttk.Frame(self.root, padding=PAD)
+        wheel_reaches_the_pointer(self.root)
+
+        # The bottom of the window is built first and packed to the bottom,
+        # so it stays put while the settings above it scroll. Run has to be
+        # findable without hunting down a long page, and a log that scrolls
+        # off the top during a run is a log nobody reads -- which is most of
+        # what this window has to say while it works.
+        base = ttk.Frame(self.root, padding=(PAD, 0, PAD, PAD))
+        base.pack(side="bottom", fill="x")
+        base.columnconfigure(0, weight=1)
+
+        self.form = Scroller(self.root)
+        self.form.pack(side="top", fill="both", expand=True)
+        frame = ttk.Frame(self.form.content, padding=PAD)
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(1, weight=1)
         row = 0
@@ -717,8 +863,8 @@ class Window:
         )
         row += 1
 
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(PAD, 4))
+        buttons = ttk.Frame(base)
+        buttons.grid(row=0, column=0, sticky="ew", pady=(PAD, 4))
         buttons.columnconfigure(0, weight=1)
         self.go = ttk.Button(buttons, text="Run study", command=self._start)
         self.go.grid(row=0, column=0, sticky="ew")
@@ -736,28 +882,44 @@ class Window:
             "Asks the run to stop and lets it put the project's layer state "
             "back on the way out. It can take a few seconds to come to a halt.",
         )
-        row += 1
+        keep = ttk.Button(buttons, text="Save as default", command=self._remember, width=16)
+        keep.grid(row=0, column=2, padx=(6, 0))
+        Tooltip(
+            keep,
+            "Remembers everything on this page -- the ticks, the fields and "
+            "whether Advanced is open -- and fills the window in with it next "
+            "time. Meant for what belongs to the practice rather than to one "
+            "job: the layer prefix, the living-room suffix, the Archicad "
+            "wait, which studies you run. Anything the open project "
+            "disagrees with is overruled by the project, so a saved layer "
+            "name cannot make a run measure a layer that is not there.",
+        )
+        drop = ttk.Button(buttons, text="Forget", command=self._forget, width=9)
+        drop.grid(row=0, column=3, padx=(6, 0))
+        Tooltip(
+            drop,
+            "Throws the saved settings away and puts this page back to what "
+            "it opens with on a machine that has never been set up. The "
+            "project is then read again, so the lists fill from the open "
+            "Archicad as they did the first time.",
+        )
 
-        self.progress = ttk.Progressbar(frame, mode="determinate", maximum=100)
-        self.progress.grid(row=row, column=0, columnspan=2, sticky="ew")
-        row += 1
+        self.progress = ttk.Progressbar(base, mode="determinate", maximum=100)
+        self.progress.grid(row=1, column=0, sticky="ew")
 
-        frame.rowconfigure(row, weight=1)
         self.log = scrolledtext.ScrolledText(
-            frame, height=11, wrap="word", state="disabled", font=("Consolas", 9)
+            base, height=11, wrap="word", state="disabled", font=("Consolas", 9)
         )
-        self.log.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
-        row += 1
+        self.log.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
 
-        ttk.Label(frame, text=STATUS, foreground="#a33", wraplength=760).grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        ttk.Label(base, text=STATUS, foreground="#a33", wraplength=760).grid(
+            row=3, column=0, sticky="w", pady=(6, 0)
         )
-        row += 1
         ttk.Label(
-            frame,
+            base,
             text=f"{PRODUCT} {__version__}  ·  created by {AUTHOR}",
             foreground=HINT,
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=4, column=0, sticky="w", pady=(2, 0))
         self._sync()
 
     def _hint(self, parent: ttk.Frame, row: int, text: str) -> ttk.Label:
@@ -903,10 +1065,14 @@ class Window:
         box.insert(0, ", ".join(dialog.result))
 
     def _toggle_advanced(self) -> None:
-        opening = not self.advanced_open.get()
-        self.advanced_open.set(opening)
-        self.advanced_button.config(text="▾  Advanced" if opening else "▸  Advanced")
-        if opening:
+        self._show_advanced(not self.advanced_open.get())
+
+    def _show_advanced(self, showing: bool) -> None:
+        """Open or close Advanced. Apart from the button so that restoring a
+        saved setting moves the panel and not only the variable."""
+        self.advanced_open.set(showing)
+        self.advanced_button.config(text="▾  Advanced" if showing else "▸  Advanced")
+        if showing:
             self.advanced.grid()
         else:
             self.advanced.grid_remove()
@@ -914,6 +1080,134 @@ class Window:
     def _sync(self) -> None:
         self.floors_box.config(state="normal" if self.do_facade.get() else "disabled")
         self.hourly_box.config(state="normal" if self.do_communal.get() else "disabled")
+
+    # -- settings that outlive the window ------------------------------------
+    def _fields(self) -> dict[str, ttk.Entry]:
+        """Every typed or chosen setting, under a name that survives a rename.
+
+        Written out here rather than gathered off the widget tree, because the
+        name is what a saved file is keyed on: a field moved into Advanced, or
+        relabelled, or re-ordered, must not cost somebody the setting they
+        saved. A ``Combobox`` is an ``Entry``, so both kinds are read and
+        written the same way and belong in one mapping.
+
+        The Archicad picker is deliberately not here. Which instance answered,
+        on which port, is a fact about this afternoon rather than a preference,
+        and restoring last week's port would point the study at whatever holds
+        it today.
+        """
+        return {
+            "apartment_layer": self.apartments,
+            "apartment_names": self.apartment_names,
+            "balcony_layer": self.balconies,
+            "balcony_names": self.balcony_names,
+            "communal_layer": self.communal,
+            "communal_names": self.communal_names,
+            "communal_window": self.communal_window,
+            "communal_hours": self.communal_hours,
+            "communal_height": self.communal_height,
+            "communal_grid": self.communal_grid,
+            "communal_csv": self.communal_csv,
+            "master_layout": self.master,
+            "exclude_above": self.exclude,
+            "year": self.year,
+            "layer_combination": self.combination,
+            "subject_layers": self.subject,
+            "require_layers": self.require,
+            "context_layers": self.context,
+            "hide_layers": self.hide,
+            "livable_suffix": self.livable,
+            "plan_instants": self.instants,
+            "shadow_subset": self.shadow_subset,
+            "adg_subset": self.adg_subset,
+            "layer_prefix": self.prefix,
+            "archicad_wait_minutes": self.wait_min,
+            "skin_grid": self.grid_m,
+        }
+
+    def _ticks(self) -> dict[str, tk.BooleanVar]:
+        """The boxes, by the same rule. Advanced is one of them: a colleague
+        who works in it wants it open, and one who never has does not."""
+        return {
+            "study_facade": self.do_facade,
+            "study_floors": self.do_floors,
+            "study_plans": self.do_plans,
+            "study_communal": self.do_communal,
+            "study_hourly": self.do_hourly,
+            "advanced_open": self.advanced_open,
+        }
+
+    def settings(self) -> dict[str, str | bool]:
+        """Everything on this page, as it would be saved. Public and pure, so
+        the round trip can be tested without a file or a screen."""
+        saved: dict[str, str | bool] = {name: box.get() for name, box in self._fields().items()}
+        saved.update({name: state.get() for name, state in self._ticks().items()})
+        return saved
+
+    def apply(self, saved: Mapping[str, str | bool]) -> None:
+        """Put saved settings back on the page, one at a time.
+
+        Each is taken only if it is the kind of thing that field holds, and
+        anything unrecognised is ignored: a file written by a later version,
+        or edited by hand, should cost the settings it got wrong and no more.
+        Nothing here is validated further than that, because every one of
+        these is checked against the open project a moment later -- the lists
+        are refilled from Archicad and a name the project does not have is
+        replaced by one it does.
+        """
+        for name, box in self._fields().items():
+            value = saved.get(name)
+            if isinstance(value, str):
+                box.delete(0, "end")
+                box.insert(0, value)
+        for name, state in self._ticks().items():
+            ticked = saved.get(name)
+            if isinstance(ticked, bool):
+                state.set(ticked)
+        self._show_advanced(self.advanced_open.get())
+        self._sync()
+
+    def _restore(self) -> None:
+        """Open with what was saved, if anything was."""
+        saved = preferences.load()
+        if not saved:
+            return
+        self.apply(saved)
+        self._write(f"Opened with the settings saved in {preferences.path()}.")
+
+    def _remember(self) -> None:
+        """Save the page as the defaults, and say where it went.
+
+        The path is printed because a preference nobody can find is one nobody
+        can delete, and "it remembers the wrong thing now" is otherwise an
+        unanswerable complaint. A profile that will not be written to is
+        reported in the log rather than raised: it is a failure to save a
+        convenience, not a failure to run a study.
+        """
+        try:
+            where = preferences.save(self.settings())
+        except OSError as refused:
+            self._write(f"Could not save the settings: {refused}")
+            return
+        self._write(f"Saved. These settings are what the window will open with: {where}")
+
+    def _forget(self) -> None:
+        """Back to how the window opens on a machine nobody has set up."""
+        where = preferences.path()
+        had = where.is_file()
+        gone = preferences.forget()
+        self.apply(self.factory)
+        if self.options.reachable:
+            # Emptied fields are filled from the project again, exactly as
+            # they were the first time it was read -- otherwise Forget leaves
+            # a page of blanks rather than a page of defaults.
+            self._offer()
+        if not had:
+            self._write("There were no saved settings. The page is back to its defaults.")
+        elif gone:
+            self._write("Saved settings deleted. The page is back to its defaults.")
+        else:
+            self._write(f"The page is back to its defaults, but {where} could not be deleted.")
 
     # -- reading the project -------------------------------------------------
     def refresh(self) -> None:
@@ -965,6 +1259,7 @@ class Window:
                 f"{len(found.subsets)} subsets"
             ),
         )
+        self._only_what_this_project_has()
         self._fill(self.apartments, found.zone_layers, ("Zone.Unit", "Zone."))
         # The balconies are usually on the apartments' own layer -- one
         # project keeps 15 units, 20 balconies and the storage on
@@ -990,6 +1285,52 @@ class Window:
         if not self.subject.get():
             skin = [name for name in found.layers if any(w in name for w in SKIN_WORDS)]
             self.subject.insert(0, ", ".join(skin))
+
+    @staticmethod
+    def _as_the_project_spells_them(
+        wanted: Iterable[str], offered: Iterable[str]
+    ) -> tuple[list[str], list[str]]:
+        """Split names into the ones this project has and the ones it has not.
+
+        Spacing and case are ignored going in, because a name pasted out of a
+        report or typed by hand is nobody's memory test; what comes back is
+        the project's own spelling, because that is what the command line has
+        to be handed.
+        """
+        by_shape = {" ".join(name.split()).casefold(): name for name in offered}
+        kept: list[str] = []
+        lost: list[str] = []
+        for name in wanted:
+            found = by_shape.get(" ".join(name.split()).casefold())
+            (lost if found is None else kept).append(name if found is None else found)
+        return kept, lost
+
+    def _only_what_this_project_has(self) -> None:
+        """Drop layer names the open project does not carry, and correct the rest.
+
+        Saved settings are why this is here. A picker is filled from the
+        project only when it is *empty*, so a facade list saved on one job and
+        opened on another would sit there unchallenged and produce a study of
+        nothing -- no error, no warning, the exact silent wrong answer this
+        window exists to prevent. Dropping the names leaves the field empty,
+        and an empty field is filled from the project like a first run.
+
+        It also catches a typed name, which is the same fault arriving by a
+        different door, and rewrites a name whose spacing does not match.
+
+        Said out loud, never silently: a setting that vanished without a word
+        is worse than one that was wrong.
+        """
+        lost: list[str] = []
+        for box in (self.subject, self.require, self.context, self.hide):
+            kept, dropped = self._as_the_project_spells_them(self._listed(box), self.options.layers)
+            if not dropped and kept == self._listed(box):
+                continue
+            lost += dropped
+            box.delete(0, "end")
+            box.insert(0, ", ".join(kept))
+        if lost:
+            self._write(f"Not layers in this project, so left out: {_some(lost)}")
 
     def _fill(self, box: ttk.Combobox, values: tuple[str, ...], prefer: tuple[str, ...]) -> None:
         """Offer these, and pick the likeliest -- without overriding a choice.
@@ -1039,6 +1380,7 @@ class Window:
             if not kinds:
                 line.config(text=f"No Zones read on that layer, so nothing is taken as {what}.")
                 continue
+            self._only_on_this_layer(names_box, layer_box.get(), kinds)
             fits = [kind for kind in kinds if getattr(kind, wanted)]
             if not self._listed(names_box):
                 names_box.delete(0, "end")
@@ -1049,6 +1391,8 @@ class Window:
         # Communal space gets no guess. Area cannot tell a courtyard from a
         # large flat, so the line reports what is on the layer and stops.
         kinds = self._kinds_on(self.communal.get())
+        if kinds:
+            self._only_on_this_layer(self.communal_names, self.communal.get(), kinds)
         self.communal_hint.config(
             text=(
                 f"carries {_some(kind.described() for kind in kinds)} — name the "
@@ -1057,6 +1401,30 @@ class Window:
                 else "No Zones read on that layer."
             )
         )
+
+    def _only_on_this_layer(
+        self, names_box: ttk.Entry, layer: str, kinds: Sequence[probe.ZoneKind]
+    ) -> None:
+        """Keep only the zone names that layer actually carries.
+
+        The same fault as a stale layer, one level down, and it arrives by two
+        doors: a name saved on another project, and a layer changed under
+        names that were guessed for the one before it. Either way the study is
+        told to measure zones that are not there, which is not an error --
+        it is an assessment of nothing, or of half a building.
+
+        Only when the layer gave up its zones at all. A layer that read as
+        empty is a failure to read, not a statement that the names are wrong,
+        and it must not cost somebody a list they chose.
+        """
+        wanted = self._listed(names_box)
+        kept, dropped = self._as_the_project_spells_them(wanted, (kind.label for kind in kinds))
+        if not dropped and kept == wanted:
+            return
+        names_box.delete(0, "end")
+        names_box.insert(0, ", ".join(kept))
+        if dropped:
+            self._write(f"Not Zones on {layer}, so left out: {_some(dropped)}")
 
     def _zone_defaults(self) -> list[str]:
         """Zone layers worth forcing into the export, narrowest first.

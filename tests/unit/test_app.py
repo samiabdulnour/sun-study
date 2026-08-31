@@ -20,14 +20,21 @@ from typing import Any
 
 import pytest
 
-from sun_study.app import probe, window
+from sun_study.app import preferences, probe, window
 from sun_study.app.runner import CLI_MARKER, child_environment, command_prefix
+from sun_study.archicad import naming
 from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS, Instance
 
 
 @pytest.fixture
-def hidden_window(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """A real Window over a fake project, never shown."""
+def hidden_window(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """A real Window over a fake project, never shown.
+
+    The saved settings are pointed somewhere disposable before it is built:
+    the window reads them as it opens, and a test that passed or failed on
+    whatever the developer last pressed Save on would be no test at all.
+    """
+    monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.setattr(
         probe,
         "running",
@@ -910,3 +917,295 @@ def test_the_packaged_build_looks_where_it_unpacked_itself(
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
 
     assert window.icon_path() == bundled
+
+
+# -- a form taller than the screen ----------------------------------------
+
+
+def test_the_settings_scroll_and_the_run_button_does_not(hidden_window: Any) -> None:
+    """The form is about thirty questions long, each with its explanation
+    underneath, and no laptop shows it at once -- so it scrolls. Run, the
+    progress bar and the log do not: a log that scrolls off the top during a
+    run is a log nobody reads, and Run somewhere down a long page is worse
+    than a Run that never moves.
+    """
+
+    def inside_the_form(widget: tk.Misc) -> bool:
+        above: Any = widget
+        while above is not None:
+            if above is hidden_window.form:
+                return True
+            above = getattr(above, "master", None)
+        return False
+
+    assert inside_the_form(hidden_window.prefix), "a setting that must be reachable"
+    assert inside_the_form(hidden_window.master), "and one near the bottom of the page"
+    assert not inside_the_form(hidden_window.go), "Run must stay where it is"
+    assert not inside_the_form(hidden_window.log), "and so must the log"
+
+
+def test_the_wheel_moves_the_page(hidden_window: Any) -> None:
+    """A scroll bar nobody can reach with the wheel is half a fix."""
+    form = hidden_window.form
+    form.canvas.configure(scrollregion=(0, 0, 100, 4000), yscrollincrement=10)
+
+    form.spin(-120)  # one notch down
+    assert form.canvas.yview()[0] > 0.0
+
+    form.spin(120)  # and back up
+    assert form.canvas.yview()[0] == 0.0
+
+
+def test_a_page_that_fits_does_not_slide_off_the_top(hidden_window: Any) -> None:
+    """A canvas will scroll past its own scroll region without complaint, so
+    the wheel over a short form would leave an empty pane behind."""
+    form = hidden_window.form
+    form.canvas.configure(scrollregion=(0, 0, 1, 1), yscrollincrement=10)
+
+    form.spin(-120)
+
+    assert form.canvas.yview() == (0.0, 1.0)
+
+
+def test_the_wheel_does_not_quietly_change_a_setting(hidden_window: Any) -> None:
+    """ttk binds the wheel on a combobox to changing its own value. On a page
+    that scrolls, rolling past 'Sheet master' would build the sheets on a
+    different title block with nothing on screen to say so."""
+    assert hidden_window.root.bind_class("TCombobox", "<MouseWheel>") == ""
+    assert hidden_window.root.bind_all("<MouseWheel>"), "and the page scrolls instead"
+
+
+def test_the_window_opens_no_taller_than_the_screen(hidden_window: Any) -> None:
+    """A window opened past the bottom edge cannot be dragged back up by its
+    title bar, which is how the settings below the fold became unreachable."""
+    asked = hidden_window._on_the_screen(880, 10_000)
+    _, _, tall = asked.partition("x")
+
+    assert int(tall) <= hidden_window.root.winfo_screenheight()
+
+
+def test_a_touchpad_scrolls_both_ways(hidden_window: Any) -> None:
+    """A mouse sends 120 to the notch; a precision touchpad sends whatever the
+    finger did. Dividing first rounds a gentle push down to nothing while a
+    gentle pull up still moves, and a page that scrolls one way only is worse
+    than one that does not scroll at all."""
+    form = hidden_window.form
+    form.canvas.configure(scrollregion=(0, 0, 100, 4000), yscrollincrement=10)
+
+    form.spin(-40)  # less than a notch, downward
+    moved = form.canvas.yview()[0]
+    form.spin(40)
+
+    assert moved > 0.0, "a small gesture down has to move the page"
+    assert form.canvas.yview()[0] == 0.0, "and the same gesture up puts it back"
+
+
+def test_the_wheel_over_an_open_dropdown_says_nothing(
+    hidden_window: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A combobox's dropdown is a window Tk made for itself and never told
+    Python about, so asking what is under the pointer raises. The list scrolls
+    on its own; all the form's handler has to do is not print a traceback over
+    somebody choosing a layer."""
+    complaints: list[Any] = []
+    hidden_window.root.report_callback_exception = lambda *bad: complaints.append(bad)
+
+    def never_heard_of_it(*_where: int) -> None:
+        raise KeyError("popdown")
+
+    monkeypatch.setattr(hidden_window.root, "winfo_containing", never_heard_of_it)
+    hidden_window.root.event_generate("<MouseWheel>", delta=-120, when="now")
+
+    assert not complaints
+
+
+# -- settings that outlive the window --------------------------------------
+
+
+@pytest.fixture
+def settings_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Where those settings land. The same disposable place the window fixture
+    already points at, named here so a test can look in it."""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    return preferences.path()
+
+
+def test_what_was_saved_is_what_opens(hidden_window: Any, settings_file: Path) -> None:
+    """The point of the whole thing: the layer prefix, the living-room suffix
+    and the Archicad wait are properties of the practice, not of the job, and
+    retyping them every time is both tedious and a way to get one subtly
+    wrong."""
+    hidden_window.prefix.delete(0, "end")
+    hidden_window.prefix.insert(0, "14 |")
+    hidden_window.livable.insert(0, "_L")
+    hidden_window.do_plans.set(True)
+
+    hidden_window._remember()
+    assert settings_file.is_file()
+
+    hidden_window.apply(hidden_window.factory)
+    assert hidden_window.livable.get() == "", "back to the defaults"
+
+    hidden_window.apply(preferences.load())
+    assert hidden_window.prefix.get() == "14 |"
+    assert hidden_window.livable.get() == "_L"
+    assert hidden_window.do_plans.get() is True
+
+
+def test_a_window_opened_afterwards_is_already_filled_in(
+    hidden_window: Any, settings_file: Path
+) -> None:
+    """The whole point is what happens tomorrow morning, so the reopening is
+    what is tested: a second window over the same fake project, reading the
+    file the first one wrote."""
+    hidden_window.livable.insert(0, "_L")
+    hidden_window.wait_min.delete(0, "end")
+    hidden_window.wait_min.insert(0, "45")
+    hidden_window._remember()
+
+    reopened = window.Window(tk.Toplevel(hidden_window.root))  # type: ignore[arg-type]
+
+    assert reopened.livable.get() == "_L"
+    assert reopened.wait_min.get() == "45"
+    assert flag(reopened.jobs()[0].args, "--timeout") == ["2700"], "and it reaches the run"
+
+
+def test_the_port_is_not_a_preference(hidden_window: Any) -> None:
+    """Which Archicad answered, on which port, is a fact about this afternoon.
+    Restored next week it would point the study at whatever holds that port
+    today, which is the one mistake this window exists to prevent."""
+    saved = hidden_window.settings()
+
+    assert not [name for name in saved if "port" in name or "instance" in name]
+
+
+def test_whether_advanced_was_open_is_remembered(hidden_window: Any, settings_file: Path) -> None:
+    """Somebody who works in Advanced wants it open; somebody who never has
+    does not. And the panel has to move, not only the variable."""
+    hidden_window._toggle_advanced()
+    hidden_window._remember()
+
+    hidden_window.apply(hidden_window.factory)
+    assert hidden_window.advanced_open.get() is False
+    assert hidden_window.advanced.winfo_manager() == "", "closed, and off the grid"
+
+    hidden_window.apply(preferences.load())
+    assert hidden_window.advanced_open.get() is True
+    assert hidden_window.advanced.winfo_manager() == "grid", "the panel itself moved"
+
+
+def test_a_settings_file_nobody_can_read_leaves_the_window_alone(
+    settings_file: Path,
+) -> None:
+    """Hand-edited into nonsense, written by a later version, sitting on a
+    locked profile: a window that will not open is a far worse failure than a
+    window that opens on its own defaults."""
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings_file.write_text("{ this is not json", encoding="utf-8")
+    assert preferences.load() == {}
+
+    settings_file.write_text('["a list, not a mapping"]', encoding="utf-8")
+    assert preferences.load() == {}
+
+    settings_file.unlink()
+    assert preferences.load() == {}
+
+
+def test_a_setting_of_the_wrong_shape_costs_only_itself(
+    hidden_window: Any, settings_file: Path
+) -> None:
+    """One bad line should not condemn the other twenty-five."""
+    hidden_window.apply({"layer_prefix": "14 |", "year": 2024, "study_plans": "yes"})
+
+    assert hidden_window.prefix.get() == "14 |"
+    assert hidden_window.year.get() == "2024", "the number is not a field's text"
+    assert hidden_window.do_plans.get() is False, "and the string is not a tick"
+
+
+def test_forget_puts_back_what_the_window_opens_with(
+    hidden_window: Any, settings_file: Path
+) -> None:
+    """Not 'whatever was on screen when it was pressed'."""
+    hidden_window.prefix.delete(0, "end")
+    hidden_window.prefix.insert(0, "99 |")
+    hidden_window._remember()
+
+    hidden_window._forget()
+
+    assert not settings_file.exists()
+    assert hidden_window.prefix.get() == naming.DEFAULT_PREFIX
+    assert hidden_window.master.get(), "and the project's own lists are read again"
+
+
+def test_the_open_project_overrules_a_saved_name_it_does_not_have(
+    hidden_window: Any,
+) -> None:
+    """A saved layer name from another job must not make a run measure a
+    layer that is not in this one. The lists are refilled from Archicad after
+    the settings land, and a name the project cannot offer is replaced by one
+    it can."""
+    hidden_window.apply({"master_layout": "A0 - SOMEBODY ELSE'S TITLE BLOCK"})
+
+    hidden_window.refresh()
+
+    assert hidden_window.master.get() in hidden_window.options.masters
+
+
+def test_a_layer_saved_on_another_job_is_not_measured_here(hidden_window: Any) -> None:
+    """The one way a saved setting can make a run measure the wrong thing. The
+    pickers are filled from the project only when they are empty, so a facade
+    list carried over from another job would sit there unchallenged and
+    produce a study of nothing -- no error anywhere, which is the failure this
+    window exists to prevent."""
+    hidden_window.apply({"subject_layers": "01 | Wall.External, 09 | SOMEBODY ELSE'S SLABS"})
+
+    hidden_window.refresh()
+
+    assert hidden_window._listed(hidden_window.subject) == ["01 | Wall.External"]
+    assert "SOMEBODY ELSE" in hidden_window.log.get("1.0", "end"), "and it is said out loud"
+
+
+def test_a_layer_the_project_spells_differently_is_corrected(hidden_window: Any) -> None:
+    """What goes to the command line has to be the project's own spelling, and
+    a name pasted out of a report is nobody's memory test."""
+    hidden_window.apply({"hide_layers": "05 |   Dims/Notes.DA"})
+
+    hidden_window.refresh()
+
+    assert hidden_window._listed(hidden_window.hide) == ["05 | Dims/Notes.DA"]
+
+
+def test_a_zone_name_that_is_not_on_the_chosen_layer_goes(hidden_window: Any) -> None:
+    """The same fault one level down, and it arrives by two doors: a name
+    saved on another project, and a layer changed under names guessed for the
+    one before it. Either way the assessment is of nothing, or of half a
+    building."""
+    hidden_window.apartment_names.delete(0, "end")
+    hidden_window.apartment_names.insert(0, "G08, NOT-A-ZONE-HERE")
+
+    hidden_window._offer_zone_names()
+
+    assert hidden_window._listed(hidden_window.apartment_names) == ["G08"]
+
+
+def test_a_layer_that_read_as_empty_costs_nobody_their_names(hidden_window: Any) -> None:
+    """A layer that gave up no zones is a failure to read, not a statement
+    that the names are wrong."""
+    hidden_window.apartments.set("01 | Wall.External")  # carries no Zones
+    hidden_window.apartment_names.delete(0, "end")
+    hidden_window.apartment_names.insert(0, "G08")
+
+    hidden_window._offer_zone_names()
+
+    assert hidden_window._listed(hidden_window.apartment_names) == ["G08"]
+
+
+def test_a_settings_file_that_is_not_even_text(settings_file: Path) -> None:
+    """Not JSON is one thing; not decodable at all is another, and it raises a
+    ValueError rather than an OSError. Through a narrower guard it would reach
+    the window's own construction and stop it opening -- the one failure this
+    module promises cannot happen."""
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings_file.write_bytes(b"\xff\xfe\x00 not text")
+
+    assert preferences.load() == {}
