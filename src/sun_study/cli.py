@@ -2629,6 +2629,7 @@ def _export_for_massing(
     combination: str | None,
     require: Sequence[str],
     hide: Sequence[str],
+    only: Sequence[str] = (),
 ) -> Path:
     """Export the open project, and return where it landed.
 
@@ -2664,7 +2665,11 @@ def _export_for_massing(
         )
     typer.echo(f"  exporting the open project to {out} ...")
     with export_state(
-        connection, combination=combination, require=tuple(require), hide=tuple(hide)
+        connection,
+        combination=combination,
+        only=tuple(only),
+        require=tuple(require),
+        hide=tuple(hide),
     ) as plan:
         typer.echo(plan.describe())
         written = export_ifc(connection, out)
@@ -3120,6 +3125,23 @@ def massing(
             # combinations shows Zone layers, so a study of a Zone would
             # export a model that does not contain the thing being measured.
             require=[*(subject_layer or []), *(require_layer or []), *(zone_layer or [])],
+            # Only when the run has named *both* sides. Named subject layers
+            # alone are not enough: context is also matched on an element's
+            # name, so 'Context Tower' sitting on a layer nobody listed is
+            # real context that restricting the export would drop -- and a
+            # dropped occluder is a study that reports more sunlight than the
+            # site gets. With both named there is nothing left to lose, and
+            # the export stops carrying the furniture.
+            only=(
+                [
+                    *(subject_layer or []),
+                    *(context_layer or []),
+                    *(zone_layer or []),
+                    *(require_layer or []),
+                ]
+                if subject_layer and context_layer
+                else []
+            ),
             hide=tuple(hide_layer or ()),
         )
 
