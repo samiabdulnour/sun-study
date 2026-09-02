@@ -742,6 +742,32 @@ elements, so 6 causes and 42 echoes.
 
 The `north` convention ([D23](decisions.md)) is **settled** and no longer needs a step.
 
+## Making a translator for this tool
+
+The settings below are what the tool reads, and nothing else is. Rather than bend an
+office translator that other people export with, make one of your own once:
+
+`File ▸ Interoperability ▸ IFC ▸ IFC Translators… ▸ New…`, call it **Sun Study Export**,
+and set these five things. Then pick it in the export dialog, or leave it selected — the
+add-on exports with whatever translator is current and cannot choose one for you
+(`IFCFileOperation` accepts only `method`, `ifcFilePath` and `fileType`; there is no
+translator field, and the Translators dialog is modal, so it blocks the whole API while
+it is open).
+
+| Page in the dialog | Setting | Value | Why |
+|---|---|---|---|
+| **Property Mapping** | IFC property sets to export | **`Element Parameters only`** | The one that matters. `All properties` is roughly nine tenths of the file: on a layer-trimmed Crows Nest export, 1,549,134 `IfcPropertySingleValue` and 848,200 `IfcQuantityLength` against 38,052 `IfcFace` of building. The tool reads none of them. |
+| **Property Mapping** | Export base quantities | **off** | The `IfcQuantityLength`/`Area`/`Volume` above. Areas are measured off the geometry here, never read from the file. |
+| **Model Filter** | Zones | **exported as `IfcSpace`** | An apartment *is* a Zone. Without this `run` reports zero apartments. Harmless for `shadows`, which reads no Zones — one translator does both. |
+| **Model Filter** | IFC Space boundaries | **on** | `IfcRelSpaceBoundary` maps each window to the room it serves; without it the tool falls back to geometric containment, which is a guess. |
+| **Geometry Conversion** | — | leave as it is | Geometry is the one thing that must survive, and the defaults keep it. |
+
+Two things deliberately *not* on the list. The layer state is no longer a translator
+concern: the tool sets it per run and puts it back, and `shadows` narrows it to the
+layers its own legend names ([D77](decisions.md)). And Project Location has to be the
+real site, but that is a project setting rather than a translator one — see the north
+section above.
+
 ## Translator settings the analysis needs
 
 Read off a real AC26 export that turned out to be missing two of them. Check these in
