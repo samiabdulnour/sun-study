@@ -88,6 +88,7 @@ from sun_study.archicad.read import (
     gdl_parameters,
     layer_names,
     library_objects,
+    oversized_export_note,
     read_geo_location,
 )
 from sun_study.archicad.read import zones as read_zones
@@ -2674,6 +2675,9 @@ def _export_for_massing(
         typer.echo(plan.describe())
         written = export_ifc(connection, out)
     typer.echo(f"  exported {written.stat().st_size / 1e6:.1f} MB")
+    note = oversized_export_note(written)
+    if note:
+        typer.secho(note, fg=typer.colors.YELLOW)
     return written
 
 
@@ -5632,6 +5636,9 @@ def shadows(
             ) as plan:
                 typer.echo(plan.describe())
                 exported = export_ifc(connection, destination)
+            note = oversized_export_note(exported)
+            if note:
+                typer.secho(note, fg=typer.colors.YELLOW)
         except ArchicadError as error:
             typer.secho(str(error), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2) from error

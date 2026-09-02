@@ -49,6 +49,7 @@ from sun_study.core.orientation import SiteOrientation
 from sun_study.ingest.ifc import IfcModel
 
 __all__ = [
+    "LARGE_EXPORT_BYTES",
     "NORTH_ANGLE_OFFSET_DEG",
     "ArchicadZone",
     "GeoLocation",
@@ -65,6 +66,7 @@ __all__ = [
     "layer_names",
     "library_objects",
     "north_bearing_deg",
+    "oversized_export_note",
     "project_info",
     "read_geo_location",
     "zones",
@@ -416,6 +418,39 @@ def clear_selection(connection: ArchicadConnection) -> int:
 
 
 #: Below this an export carries no building. A header-only IFC from this
+#: Past this, an export is worth commenting on. Not an error -- the file is
+#: correct and the study will run -- but a run that has just spent ten minutes
+#: waiting deserves to be told why, and the cause is one setting.
+LARGE_EXPORT_BYTES = 100_000_000
+
+
+def oversized_export_note(path: Path) -> str:
+    """A word about a very large export, or empty if it is a reasonable size.
+
+    The cause is always the same and it is never the geometry. Measured on
+    1960_CROWS NEST2_SA: a layer-trimmed export of 12,595 products came to
+    268 MB, of which 1,549,134 entities were ``IfcPropertySingleValue`` and
+    848,200 were ``IfcQuantityLength``, against 38,052 ``IfcFace`` of actual
+    building. Roughly nine tenths of the file is property values this tool
+    reads none of.
+
+    Said here rather than fixed here because it cannot be fixed here: the
+    translator is chosen in Archicad and the add-on cannot name one --
+    ``IFCFileOperation`` refuses a ``translatorName`` field outright. So the
+    only useful thing the tool can do is stop the next person wondering.
+    """
+    size = path.stat().st_size
+    if size < LARGE_EXPORT_BYTES:
+        return ""
+    return (
+        f"  the export is {size / 1e6:,.0f} MB, which is mostly properties rather "
+        f"than building. Set 'Properties to export' to 'Element Parameters only' in "
+        f"the active IFC translator (File > Interoperability > IFC > IFC Translators) "
+        f"and this drops by roughly an order of magnitude. The tool reads none of "
+        f"them, and cannot choose the translator for you."
+    )
+
+
 #: translator is a few kB; the smallest real massing seen is several hundred.
 EMPTY_EXPORT_BYTES = 100_000
 
