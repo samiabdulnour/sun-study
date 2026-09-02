@@ -7,8 +7,26 @@ files this kind of drawing under -- is read from the open Archicad and offered
 as a list, because the project already knows and a person mistyping it is the
 commonest way a run measures the wrong thing.
 
-Everything that is a real decision, and everything the reference project needed
-that another will not, sits behind Advanced, closed.
+Grouped by what comes out of it
+-------------------------------
+A tab per *output* -- General, Facade skin, Solar diagrams, and two more that
+are not built yet and say so. That is how the work is asked for: a job wants
+the facade skin, or it wants the solar diagrams, and the person setting one up
+should be able to read the whole of that study and none of the rest.
+
+It replaces a single column of thirty settings with an Advanced panel under
+them, which was the wrong cut. "Advanced" is not a property of a setting: the
+facade layers are not harder than the year, they are simply the facade
+study's, and a section that hides half of its own inputs somewhere else is not
+a section. What is genuinely shared -- the year, the title block, the layer
+state the export starts from, the numbering the results file themselves under
+-- is what General now is, and it is shared rather than advanced.
+
+The cost of tabs is that a section nobody opens is a section nobody knows the
+state of, and this window's whole subject is the wrong answer nobody noticed.
+So it is paid for twice, in ``Window._sync``: a tab whose study will run says
+so on its own label, and a line above Run names every study queued whichever
+tab happens to be showing.
 
 Every field says what it is
 ---------------------------
@@ -19,13 +37,15 @@ without the zone layers runs for minutes and then cannot place the skin. The
 hint says what the setting is; the tooltip says what happens when it is wrong,
 because that is the part nobody can infer from a label.
 
-Which makes a form no screen can hold
--------------------------------------
-Thirty questions, each answered with a line of its own, comes to more than a
-laptop shows -- and a window cannot be dragged taller than the screen it is on,
-so anything past the bottom edge is not awkward to reach but unreachable. The
-settings sit in a ``Scroller``; Run, the progress bar and the log do not, so
-the button stays findable and the log stays readable while a study runs.
+Which makes sections no screen can hold either
+----------------------------------------------
+Sections shorten the page but do not fix it: Solar diagrams alone is two
+studies and a dozen questions, each answered with a line of its own, which is
+more than a laptop shows -- and a window cannot be dragged taller than the
+screen it is on, so anything past the bottom edge is not awkward to reach but
+unreachable. So every tab is its own ``Scroller``. Run, the progress bar and
+the log sit below the notebook and outside it, so the button stays findable
+and the log stays readable while a study runs, whichever section is showing.
 
 What is worth remembering between runs
 --------------------------------------
@@ -33,13 +53,15 @@ Half of these fields are a property of the *project* and are read out of
 Archicad every time. The rest are a property of the *practice* -- the layer
 prefix that files the output inside the office's own numbering, the
 living-room suffix, the wait a big export needs, which studies this person ever
-runs -- and those are saved, on request, by ``preferences``. The project
-always wins afterwards: the lists are refilled from the open Archicad, so a
-saved name it does not have is replaced by one it does.
+runs, which section they work in -- and those are saved, on request, by
+``preferences``. The project always wins afterwards: the lists are refilled
+from the open Archicad, so a saved name it does not have is replaced by one it
+does.
 """
 
 from __future__ import annotations
 
+import math
 import queue
 import sys
 import tkinter as tk
@@ -62,6 +84,27 @@ HINT = "#5a5a5a"
 #: guess, offered rather than applied: the picker is filled with them and the
 #: list stays editable, because the next project names its slabs differently.
 SKIN_WORDS = ("Wall.External", "Floor.", "Balustrade", "Screens")
+
+#: What "Ignore above" says before a project has been read. A placeholder, and
+#: named so the test for "nobody has touched this" cannot drift from the value
+#: the field is built with.
+DEFAULT_EXCLUDE_ABOVE_M = "100"
+
+#: Headroom over the topmost storey. A roof, a lift overrun and a parapet are
+#: all real and all within a storey or two of the top slab; hotlinked masters
+#: are parked far higher -- 157 to 281 m on the reference project. 15 m clears
+#: the first and is nowhere near the second, and is the same figure
+#: ``ingest.scene`` uses to decide when overhead geometry is suspicious.
+STOREY_HEADROOM_M = 15.0
+
+#: What each study is called, in the one place all three callers read it
+#: from: the line above Run that says what is queued, the ``──`` rule the log
+#: prints when that study starts, and the tab that marks itself. A study
+#: named one thing before it runs and another while it runs is a study
+#: somebody cannot follow.
+FACADE_JOB = "facade skin"
+PLANS_JOB = "apartment plans and sheets"
+COMMUNAL_JOB = "communal open space"
 
 
 class Tooltip:
@@ -252,18 +295,54 @@ def _some(entries: Iterable[str], most: int = 5) -> str:
     return shown if len(listed) <= most else f"{shown} and {len(listed) - most} more"
 
 
+def _letters_and_digits(text: str) -> str:
+    """A name reduced to what somebody actually types when searching for it.
+
+    Layer names carry punctuation nobody reproduces from memory -- ``01 |
+    Core``, ``05 | Dims/Notes.DA``, ``Wall.External`` -- and the spacing round
+    it is the practice's, not the searcher's. Somebody looking for the core
+    types ``1| core``, or ``01|core``, and gets nothing, because neither
+    ``1|`` nor ``01|core`` appears anywhere in ``01 | Core`` as written.
+
+    Dropping every non-alphanumeric character from both sides makes all three
+    the same question. It only ever widens what matches -- punctuation removed
+    from the query cannot make a name stop matching -- so nothing that used to
+    be findable becomes unfindable.
+    """
+    return "".join(character for character in text.casefold() if character.isalnum())
+
+
 def matching(names: Sequence[str], query: str) -> list[str]:
     """Layers matching a search box, in the order the project lists them.
 
     Every word has to appear, in any order and anywhere in the name, so
     "floor str" finds ``01 | Floor.Structural`` without anybody having to
-    remember whether the group number or the dot comes first. Case is ignored
-    because layer naming is nobody's memory test.
+    remember whether the group number or the dot comes first.
+
+    Punctuation and case are both ignored, on both sides. Layer naming is
+    nobody's memory test, and the group number, the bar and the dot are the
+    part of a name a person is least likely to type the way it was written --
+    ``1| core``, ``01|core`` and ``core`` all have to find ``01 | Core`` or
+    the picker is slower than scrolling.
     """
-    words = query.casefold().split()
-    if not words:
+    words = [_letters_and_digits(word) for word in query.split()]
+    wanted = [word for word in words if word]
+    if not wanted:
         return list(names)
-    return [name for name in names if all(word in name.casefold() for word in words)]
+    return [name for name in names if all(word in _letters_and_digits(name) for word in wanted)]
+
+
+#: Where the layer chooser was when it was last closed, as a Tk geometry
+#: string. Module level because it belongs to none of the fields that open
+#: one: a colleague setting a project up opens the chooser six or seven times
+#: in a row -- facade layers, then also-export, then the neighbours -- and a
+#: dialog that jumps back to the middle of the screen every time is one they
+#: have to drag off the form again every time.
+#:
+#: Not saved to disk. Where a window sat is a fact about this afternoon and
+#: this screen, and restoring last week's position onto a laptop that no
+#: longer has the second monitor would put the chooser somewhere unreachable.
+_chooser_geometry: str | None = None
 
 
 class LayerChooser(tk.Toplevel):
@@ -297,6 +376,10 @@ class LayerChooser(tk.Toplevel):
         self.title(title)
         self.transient(parent.winfo_toplevel())
         self.minsize(520, 460)
+        if _chooser_geometry:
+            # Size and position both, so a chooser somebody widened to read
+            # long layer names opens wide the next time as well.
+            self.geometry(_chooser_geometry)
         self.result: list[str] | None = None
 
         self._available = list(available)
@@ -338,12 +421,14 @@ class LayerChooser(tk.Toplevel):
         buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         buttons.columnconfigure(0, weight=1)
         ttk.Button(buttons, text="Clear all", command=self._clear).grid(row=0, column=0, sticky="w")
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=1, padx=6)
+        ttk.Button(buttons, text="Cancel", command=self._close).grid(row=0, column=1, padx=6)
         ttk.Button(buttons, text="Use these", command=self._accept).grid(row=0, column=2)
 
         self._repaint()
         self.query.focus_set()
-        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Escape>", lambda _e: self._close())
+        # The window manager's own X, which goes nowhere near the buttons.
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.grab_set()
 
     def _repaint(self) -> None:
@@ -372,12 +457,32 @@ class LayerChooser(tk.Toplevel):
         self._ticked.clear()
         self._repaint()
 
+    def _close(self) -> None:
+        """Remember where this was, then go.
+
+        Every route out comes through here -- Cancel, Escape, the window
+        manager's X and Use these -- because a dialog that remembers its place
+        only when dismissed one particular way is worse than one that never
+        does: it looks broken rather than absent.
+        """
+        global _chooser_geometry
+        try:
+            # ``wm_geometry`` and not ``winfo_geometry``: the first is what the
+            # window manager holds and tracks through a drag, the second is
+            # what the widget has been realised at -- and a Toplevel that was
+            # never mapped answers that one with 1x1+0+0, which would remember
+            # a corner nobody put it in.
+            _chooser_geometry = self.wm_geometry()
+        except tk.TclError:  # pragma: no cover - already gone
+            pass
+        self.destroy()
+
     def _accept(self) -> None:
         # Back in the project's own order, not tick order: a list a person can
         # scan against the layer palette is worth more than one recording the
         # sequence somebody happened to click in.
         self.result = [name for name in self._available if name in self._ticked]
-        self.destroy()
+        self._close()
 
 
 @dataclass
@@ -431,31 +536,61 @@ class Window:
         return f"{max(wide, 820)}x{max(tall, 460)}"
 
     # -- layout ------------------------------------------------------------
+    #: The sections, in the order a colleague meets them. One tab per
+    #: *output*, because that is how this work is asked for -- "the facade
+    #: skin and the solar diagrams for Tuesday" -- rather than per kind of
+    #: setting. General is first and is not an output: it is what every
+    #: output is drawn on, and its settings are the ones a project is set up
+    #: with once.
+    #:
+    #: The last two are not built. They are here because the shape of the
+    #: tool is worth showing, and because a setting that arrives later then
+    #: has a decided place to land instead of being wedged into whichever
+    #: section is nearest. Each says plainly that it does nothing yet, and
+    #: neither carries a tick, so there is nothing to switch on and wait for.
+    GENERAL = "General"
+    FACADE = "Facade skin"
+    DIAGRAMS = "Solar diagrams"
+    SHADOWS = "Shadow diagram"
+    EYE = "Sun eye view"
+
     def _build(self) -> None:
         wheel_reaches_the_pointer(self.root)
 
         # The bottom of the window is built first and packed to the bottom,
-        # so it stays put while the settings above it scroll. Run has to be
-        # findable without hunting down a long page, and a log that scrolls
-        # off the top during a run is a log nobody reads -- which is most of
-        # what this window has to say while it works.
+        # so it stays put while the settings above it change tab and scroll.
+        # Run has to be findable without hunting through sections, and a log
+        # that scrolls off the top during a run is a log nobody reads --
+        # which is most of what this window has to say while it works.
         base = ttk.Frame(self.root, padding=(PAD, 0, PAD, PAD))
         base.pack(side="bottom", fill="x")
         base.columnconfigure(0, weight=1)
 
-        self.form = Scroller(self.root)
-        self.form.pack(side="top", fill="both", expand=True)
-        frame = ttk.Frame(self.form.content, padding=PAD)
-        frame.pack(fill="both", expand=True)
-        frame.columnconfigure(1, weight=1)
+        self._project_picker()
+        self._sections()
+        self._controls(base)
+        self._sync()
+
+    def _project_picker(self) -> None:
+        """Which Archicad, above the tabs and belonging to none of them.
+
+        Every list in every section is read out of the chosen project and
+        every study runs against it, so it is not a setting of one output. It
+        also has to stay visible while a section is being filled in: a
+        colleague naming zones for the diagrams should not have to leave the
+        page to see which project they are naming them in.
+        """
+        top = ttk.Frame(self.root, padding=(PAD, PAD, PAD, 0))
+        top.pack(side="top", fill="x")
+        top.columnconfigure(1, weight=1)
         row = 0
 
-        # Which Archicad. Listed, never assumed: each instance gets its own
-        # port, so the default is right only for whichever started first, and
-        # two projects open is the ordinary case in an office.
-        label = ttk.Label(frame, text="Archicad")
+        # Listed, never assumed: each instance gets its own port, so the
+        # default is right only for whichever started first, and two projects
+        # open is the ordinary case in an office.
+        label = ttk.Label(top, text="Archicad")
         label.grid(row=row, column=0, sticky="w")
-        picker = ttk.Frame(frame)
+        picker = ttk.Frame(top)
         picker.grid(row=row, column=1, sticky="ew", pady=2)
         picker.columnconfigure(0, weight=1)
         self.instance = ttk.Combobox(picker, state="readonly", values=[])
@@ -468,11 +603,11 @@ class Window:
             "Looks again for running Archicads and re-reads the chosen "
             "project. Press it after opening a project, or after adding a "
             "layer or a Layout Book subset that should appear in the lists "
-            "below.",
+            "in the sections below.",
         )
         row += 1
         self._hint(
-            frame,
+            top,
             row,
             "The open project to measure. Check the name if you have two open.",
         )
@@ -487,23 +622,219 @@ class Window:
                 "after opening or closing a project.",
             )
 
-        self.status = ttk.Label(frame, text="", foreground=HINT, wraplength=620, justify="left")
-        self.status.grid(row=row, column=1, sticky="w", pady=(0, PAD))
+        self.status = ttk.Label(top, text="", foreground=HINT, wraplength=620, justify="left")
+        self.status.grid(row=row, column=1, sticky="w", pady=(0, 4))
+
+    def _sections(self) -> None:
+        """The tabs, each holding everything one output needs.
+
+        Grouped by output rather than by kind, because that is the question a
+        colleague arrives with. Thirty settings in one column made a page
+        nobody could hold in their head, and the split that mattered was
+        never "simple and advanced" -- it was "the four things the facade
+        skin needs" against "the nine things the diagrams need". A person
+        running one study can now read the whole of it and none of the rest.
+
+        What tabs cost is that a section nobody opens is a section nobody
+        knows the state of. Paid for twice, in ``_sync``: a tab whose study
+        will run says so on its own label, and the line above Run names every
+        study queued whichever tab is showing.
+        """
+        self.tabs = ttk.Notebook(self.root)
+        self.tabs.pack(side="top", fill="both", expand=True, padx=PAD, pady=(4, 0))
+
+        #: Every tab's title in tab order, and every tab's pane. The
+        #: notebook's own labels grow a tick when the study in them will run,
+        #: so they are no longer safe to read a title back out of, and the
+        #: saved "which section was open" is keyed on this list instead.
+        self.titles: list[str] = []
+        self.panes: list[Scroller] = []
+
+        self._general(self._section(self.GENERAL))
+        self._facade(self._section(self.FACADE))
+        self._diagrams(self._section(self.DIAGRAMS))
+        self._not_yet(
+            self._section(self.SHADOWS),
+            "Not built yet, and nothing on this page does anything.\n\n"
+            "The clock-time sheets a shadow diagram is made of are drawn "
+            "today by Apartment plans and sheets, under Solar diagrams, and "
+            "filed in the subset named there. What is missing is the study "
+            "proper: the shadow the building and its neighbours cast across "
+            "the site at each hour, drawn as an outline rather than inferred "
+            "from where the sun patch is not.\n\n"
+            "When it exists, its settings will be here.",
+        )
+        self._not_yet(
+            self._section(self.EYE),
+            "Not built yet, and nothing on this page does anything.\n\n"
+            "A view from the sun's own position, at one moment: everything it "
+            "can see is in sun and everything hidden behind something else is "
+            "in shade. It answers 'why is this balcony dark at ten' in one "
+            "picture, which a banded plan never does — the plan says how much "
+            "and this says what by.\n\n"
+            "When it exists, its settings will be here.",
+        )
+
+    def _section(self, title: str) -> ttk.Frame:
+        """One tab, and the frame its settings are built into.
+
+        Each tab scrolls on its own rather than the notebook sitting inside
+        one scroller, because the sections are not the same length: Solar
+        diagrams asks about two studies and is three times General. A single
+        scroller would size itself to the longest and leave every short tab
+        with a bar that moves nothing, while a laptop that cannot show the
+        longest tab still has to be able to reach the bottom of it.
+        """
+        pane = Scroller(self.tabs)
+        self.tabs.add(pane, text=title)
+        self.titles.append(title)
+        self.panes.append(pane)
+        frame = ttk.Frame(pane.content, padding=PAD)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(1, weight=1)
+        return frame
+
+    def _general(self, frame: ttk.Frame) -> None:
+        """What every output is drawn on, and what none of them chooses.
+
+        Set once when a project is set up and left alone afterwards, which is
+        what used to make most of these "advanced". They are not advanced,
+        they are shared: the year, the title block, the layer state the
+        export starts from and the numbering the results file themselves
+        under are the same for the facade skin and for every diagram, and a
+        copy of each in three sections is three chances to disagree.
+        """
+        row = 0
+        self.master, row = self._combo(
+            frame,
+            row,
+            "Sheet master",
+            "Title block the layouts are built on.",
+            "A no-scale master is the right one: the drawings are shrunk to fit "
+            "the page, so they are no longer at any stated scale and a title "
+            "block claiming 1:200 would be wrong. An existing layout keeps the "
+            "master it was made on — nothing in the add-on can change it — so "
+            "delete old study sheets before changing this.",
+        )
+        self.year, row = self._entry(
+            frame,
+            row,
+            "Year",
+            "2024",
+            "Which year's midwinter date to assess.",
+            "The assessment runs on 21 June, the shortest day, which is the "
+            "worst case the ADG asks about. The year only shifts the date and "
+            "the sun positions slightly; it is here so a study can be repeated "
+            "against the same day as an earlier report.",
+        )
+        self.exclude, row = self._entry(
+            frame,
+            row,
+            "Ignore above (m)",
+            DEFAULT_EXCLUDE_ABOVE_M,
+            "Drops anything sitting entirely above this height.",
+            "Hotlinked unit-type masters are parked high above the real "
+            "building — 157 to 281 m on this project — on the same layers as "
+            "the building itself, so height is the only thing that separates "
+            "them. Left in, they join the area being measured and quietly "
+            "change every percentage. Filled in from the project when it is "
+            "read: the topmost storey plus 15 m, which clears a roof and a "
+            "lift overrun and is far below anything parked. Type over it and "
+            "the typed figure is kept. Clear the box to keep everything.",
+        )
+
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
         row += 1
 
-        ttk.Label(frame, text="Study").grid(row=row, column=0, sticky="nw")
-        studies = ttk.Frame(frame)
-        studies.grid(row=row, column=1, sticky="w")
+        self.combination, row = self._combo(
+            frame,
+            row,
+            "Export combination",
+            "The office layer combination the IFC export starts from.",
+            "The translator exports what is shown, so the layer state is an "
+            "input to every number this tool produces. The run sets it from "
+            "this combination, forces on what the study needs over the top, "
+            "and puts every layer back afterwards — so the answer does not "
+            "depend on what happened to be on screen.",
+        )
+        self.require, row = self._picker(
+            frame,
+            row,
+            "Also export",
+            "Layers forced into the export whatever the combination says.",
+            "Shared by the facade skin and the communal study, which is why "
+            "it is here rather than in either. The zone layers must be in the "
+            "export or neither drawing can be placed on the building — both "
+            "need a Zone to line the IFC up against, and neither of this "
+            "project's IFC combinations shows them. Left empty, the zone "
+            "layers are added automatically.",
+        )
+        self.context, row = self._picker(
+            frame,
+            row,
+            "Neighbouring buildings",
+            "Layers that shade the site without being part of it.",
+            "They have to be in the export or the study measures a building "
+            "with nothing around it, which can only overstate its sunlight. "
+            "Named by layer and not by element name because survey context "
+            "usually arrives nameless — on one project all 232 neighbours are "
+            "unnamed slabs. Listing them here both forces them into the export "
+            "and keeps them out of the facade area, which is about the scheme "
+            "and not the neighbourhood.",
+        )
+        self.hide, row = self._picker(
+            frame,
+            row,
+            "Keep off drawings",
+            "Layers switched off on the study drawings and in the export.",
+            "Grids and dimension layers usually: they are the practice's own "
+            "annotation and clutter a sun study without adding to it. What "
+            "counts as clutter is a decision about the drawing, so it is named "
+            "here rather than guessed from layer names.",
+        )
+
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        row += 1
+
+        self.prefix, row = self._entry(
+            frame,
+            row,
+            "Layer prefix",
+            naming.DEFAULT_PREFIX,
+            "Leads the name of every layer, view and sheet the study creates.",
+            "So the output files itself inside the office's own numbering: on "
+            "a project whose layer groups run 00 to 13, '14 |' gives "
+            "'14 | Sun Study.Results' and it sorts where a reader expects. It "
+            "is also how a rerun finds its own sheets to replace, so changing "
+            "it leaves the last run's behind to be deleted by hand, and it "
+            "cannot be emptied — an empty prefix matches every layout in the "
+            "project.",
+        )
+        self.wait_min, row = self._entry(
+            frame,
+            row,
+            "Archicad wait (min)",
+            "30",
+            "How long to let Archicad think about one command before giving up.",
+            "Only the IFC export comes anywhere near it, and on a big project "
+            "that export is minutes rather than seconds -- 455 MB on one "
+            "mixed-use job. Too short and the run stops partway with 'Archicad "
+            "did not answer', having already done the slow part, and leaves "
+            "the project holding the study's layer state. Raising it costs "
+            "nothing on a run that works; it only decides how long a genuinely "
+            "stuck Archicad is waited on.",
+        )
+
+    def _facade(self, frame: ttk.Frame) -> None:
+        """The 3D skin: what gets painted, and how finely."""
+        row = 0
         self.do_facade = tk.BooleanVar(value=True)
         self.do_floors = tk.BooleanVar(value=True)
-        self.do_plans = tk.BooleanVar(value=False)
-        self.do_communal = tk.BooleanVar(value=False)
-        self.do_hourly = tk.BooleanVar(value=True)
 
         facade_box = ttk.Checkbutton(
-            studies, text="Facade skin in 3D", variable=self.do_facade, command=self._sync
+            frame, text="Facade skin in 3D", variable=self.do_facade, command=self._sync
         )
-        facade_box.grid(row=0, column=0, sticky="w")
+        facade_box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
             facade_box,
             "Paints the outside of the building with one colour per band of "
@@ -512,23 +843,83 @@ class Window:
             "the model is touched. This measures surface area, not apartments, "
             "so it answers a massing question rather than an ADG one.",
         )
+        row += 1
         self.floors_box = ttk.Checkbutton(
-            studies,
+            frame,
             text="including floors, balcony decks and soffits",
             variable=self.do_floors,
         )
-        self.floors_box.grid(row=1, column=0, sticky="w", padx=(18, 0))
+        self.floors_box.grid(row=row, column=0, columnspan=2, sticky="w", padx=(18, 0))
         Tooltip(
             self.floors_box,
             "Horizontal surfaces take far more sun than any wall. Leaving them "
             "out is not a smaller study — it is a study of the least-lit half "
             "of the building, and nothing in the result says so. Needs the slab "
-            "layers named under Advanced → Facade layers.",
+            "layers named in Facade layers below.",
         )
+        row += 1
+        self._caption(
+            frame,
+            row,
+            "Every surface of the building itself, banded by hours of direct sun. "
+            "A massing question rather than an ADG one.",
+        )
+        row += 1
+
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        row += 1
+
+        self.subject, row = self._picker(
+            frame,
+            row,
+            "Facade layers",
+            "The layers that are the building being measured. Comma separated.",
+            "Everything else in the model still casts shade but is not counted "
+            "in the area. Without this, the facade area on a developed model "
+            "includes every internal partition and balustrade. The slab layers "
+            "belong here too, or there are no floors to colour.",
+        )
+        self.grid_m, row = self._entry(
+            frame,
+            row,
+            "Skin cell (m)",
+            "0.5",
+            "Cell size of the 3D facade skin.",
+            "Finer looks better and makes many more elements — half the cell "
+            "size is roughly four times the count, and this project already "
+            "makes over five thousand at 0.5 m. A face narrower than one cell "
+            "is not drawn at all, so a coarse setting loses thin columns.",
+        )
+
+    def _diagrams(self, frame: ttk.Frame) -> None:
+        """The drawn studies: apartments, and communal open space.
+
+        Two studies in one section because they are one deliverable. Both
+        band a plan by hours of direct sun, both are read at the same
+        drawing, and a job that asks for solar diagrams means both — so where
+        the sheets are filed is asked once, at the top, for the pair.
+        """
+        row = 0
+        self.adg_subset, row = self._combo(
+            frame,
+            row,
+            "Diagrams filed in",
+            "Layout Book subset both studies' banded sheets go into.",
+            "So the sheets sit with the practice's own drawings of that kind "
+            "instead of at the root of the book. The subset has to exist "
+            "already — the run will not create one, because the Layout Book is "
+            "the office's structure to organise — and a missing one is "
+            "reported rather than invented, with the sheets left at the root.",
+        )
+
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        row += 1
+
+        self.do_plans = tk.BooleanVar(value=False)
         plans_box = ttk.Checkbutton(
-            studies, text="Apartment plans and sheets", variable=self.do_plans
+            frame, text="Apartment plans and sheets", variable=self.do_plans, command=self._sync
         )
-        plans_box.grid(row=2, column=0, sticky="w")
+        plans_box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
             plans_box,
             "The ADG assessment proper: hours of direct sun per apartment, the "
@@ -536,40 +927,8 @@ class Window:
             "Needs Zones and windows in the model, so it is off by default — "
             "the facade study works on a massing that has neither.",
         )
-        communal_box = ttk.Checkbutton(
-            studies, text="Communal open space", variable=self.do_communal, command=self._sync
-        )
-        communal_box.grid(row=3, column=0, sticky="w")
-        Tooltip(
-            communal_box,
-            "Hours of direct sun over an outdoor area that belongs to no "
-            "dwelling — a playground, a courtyard, a communal terrace — "
-            "banded and drawn on the plan with a legend. Needs only a Zone "
-            "drawn round the area: no apartment, no windows, no marked "
-            "glazing. It reports area and share and offers no verdict, "
-            "because the ruleset carries ADG 4A-1 and that is about "
-            "apartments.",
-        )
-        self.hourly_box = ttk.Checkbutton(
-            studies,
-            text="including one plan per hour",
-            variable=self.do_hourly,
-        )
-        self.hourly_box.grid(row=4, column=0, sticky="w", padx=(18, 0))
-        Tooltip(
-            self.hourly_box,
-            "A plan for every whole hour in the window -- 08:00, 09:00 and so "
-            "on -- showing what is in sun at that moment, each on its own "
-            "sheet. The banded plan says how much sun a place gets across the "
-            "day and never says when, which is the question somebody standing "
-            "in a courtyard at nine in the morning is asking. Eight more "
-            "sheets from an eight to three window.",
-        )
         row += 1
-        self._hint(frame, row, "What to run. Ticked studies run one after the other.")
-        row += 1
-
-        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        self._caption(frame, row, "Hours of sun per apartment, assessed against the ADG.")
         row += 1
 
         self.apartments, self.apartment_names, self.apartment_hint, row = self._zone_row(
@@ -585,11 +944,97 @@ class Window:
             "and a balcony assessed as an apartment is a flat with no living "
             "room, which fails silently and drags the percentage down.",
         )
+        self.balconies, self.balcony_names, self.balcony_hint, row = self._zone_row(
+            frame,
+            row,
+            "Balcony zones",
+            "The Zones that are private open space. Usually the same layer.",
+            "Half of the ADG test. Each apartment is judged on its living room "
+            "and on its private open space, and the better of the two governs "
+            "— so with no balconies named, every apartment is assessed on its "
+            "living room alone and the result is worse than the building is. "
+            "Left empty, no Zone is treated as open space at all.",
+        )
+        self.livable, row = self._entry(
+            frame,
+            row,
+            "Living-room glazing",
+            "",
+            "Suffix marking the windows and doors of a living room, e.g. _L.",
+            "The ADG counts sun into living rooms, not into bedrooms, and a "
+            "Zone drawn per apartment cannot say which room is which. Where "
+            "the office marks its living-room glazing with a suffix on the "
+            "opening ID, that is the better answer and it is used instead of "
+            "the room names. Left empty, rooms named 'Living Room' are looked "
+            "for — and a project that names none is assessed on every opening, "
+            "which reads as a pass it has not earned.",
+        )
+        self.instants, row = self._entry(
+            frame,
+            row,
+            "Plan times",
+            "09:00, 12:00, 15:00",
+            "Times of day to draw a sun patch for. Comma separated.",
+            "One floor-plan sheet per time. Nine, twelve and three are the "
+            "conventional set. Each one adds a set of views and a layout, so a "
+            "long list makes a long run.",
+        )
+        self.shadow_subset, row = self._combo(
+            frame,
+            row,
+            "Times filed in",
+            "Layout Book subset the clock-time sheets go into.",
+            "A sheet that is a time of day is a shadow diagram and belongs "
+            "with the practice's own, which is usually a different subset from "
+            "the banded plans. Same rule as those: it has to exist already. "
+            "This moves to the Shadow diagram section when that study is "
+            "built, and the setting will come with it.",
+        )
+
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        row += 1
+
+        self.do_communal = tk.BooleanVar(value=False)
+        self.do_hourly = tk.BooleanVar(value=True)
+        communal_box = ttk.Checkbutton(
+            frame, text="Communal open space", variable=self.do_communal, command=self._sync
+        )
+        communal_box.grid(row=row, column=0, columnspan=2, sticky="w")
+        Tooltip(
+            communal_box,
+            "Hours of direct sun over an outdoor area that belongs to no "
+            "dwelling — a playground, a courtyard, a communal terrace — "
+            "banded and drawn on the plan with a legend. Needs only a Zone "
+            "drawn round the area: no apartment, no windows, no marked "
+            "glazing. It reports area and share and offers no verdict, "
+            "because the ruleset carries ADG 4A-1 and that is about "
+            "apartments.",
+        )
+        row += 1
+        self.hourly_box = ttk.Checkbutton(
+            frame,
+            text="including one plan per hour",
+            variable=self.do_hourly,
+        )
+        self.hourly_box.grid(row=row, column=0, columnspan=2, sticky="w", padx=(18, 0))
+        Tooltip(
+            self.hourly_box,
+            "A plan for every whole hour in the window -- 08:00, 09:00 and so "
+            "on -- showing what is in sun at that moment, each on its own "
+            "sheet. The banded plan says how much sun a place gets across the "
+            "day and never says when, which is the question somebody standing "
+            "in a courtyard at nine in the morning is asking. Eight more "
+            "sheets from an eight to three window.",
+        )
+        row += 1
+        self._caption(frame, row, "Hours of sun over a courtyard, a terrace or a playground.")
+        row += 1
+
         self.communal, self.communal_names, self.communal_hint, row = self._zone_row(
             frame,
             row,
             "Communal zones",
-            "The Zones covering communal open space. Only for that study.",
+            "The Zones covering communal open space.",
             "Nothing is guessed here. A communal area is not separable from a "
             "dwelling by size -- a courtyard and a big flat are the same "
             "number of square metres -- so this is left for you to name, and "
@@ -647,129 +1092,9 @@ class Window:
             "gridding all of it this finely costs four times the samples for "
             "an answer nobody asked of it.",
         )
-        self.balconies, self.balcony_names, self.balcony_hint, row = self._zone_row(
+        self.communal_csv, row = self._entry(
             frame,
             row,
-            "Balcony zones",
-            "The Zones that are private open space. Usually the same layer.",
-            "Half of the ADG test. Each apartment is judged on its living room "
-            "and on its private open space, and the better of the two governs "
-            "— so with no balconies named, every apartment is assessed on its "
-            "living room alone and the result is worse than the building is. "
-            "Left empty, no Zone is treated as open space at all.",
-        )
-        self.master, row = self._combo(
-            frame,
-            row,
-            "Sheet master",
-            "Title block the layouts are built on.",
-            "A no-scale master is the right one: the drawings are shrunk to fit "
-            "the page, so they are no longer at any stated scale and a title "
-            "block claiming 1:200 would be wrong. An existing layout keeps the "
-            "master it was made on — nothing in the add-on can change it — so "
-            "delete old study sheets before changing this.",
-        )
-        self.exclude, row = self._entry(
-            frame,
-            row,
-            "Ignore above (m)",
-            "100",
-            "Drops anything sitting entirely above this height.",
-            "Hotlinked unit-type masters are parked high above the real "
-            "building — 157 to 281 m on this project — on the same layers as "
-            "the building itself, so height is the only thing that separates "
-            "them. Left in, they join the area being measured and quietly "
-            "change every percentage. Clear the box to keep everything.",
-        )
-        self.year, row = self._entry(
-            frame,
-            row,
-            "Year",
-            "2024",
-            "Which year's midwinter date to assess.",
-            "The assessment runs on 21 June, the shortest day, which is the "
-            "worst case the ADG asks about. The year only shifts the date and "
-            "the sun positions slightly; it is here so a study can be repeated "
-            "against the same day as an earlier report.",
-        )
-
-        # Advanced, closed. Everything in it has a defensible default and is
-        # the kind of thing one project needs and the next does not.
-        self.advanced_open = tk.BooleanVar(value=False)
-        self.advanced_button = ttk.Button(
-            frame, text="▸  Advanced", command=self._toggle_advanced, width=16
-        )
-        self.advanced_button.grid(row=row, column=0, columnspan=2, sticky="w", pady=(PAD, 2))
-        Tooltip(
-            self.advanced_button,
-            "Settings with a sensible default that one project needs and the "
-            "next does not. Worth opening the first time a new project is set "
-            "up, and worth leaving alone after that.",
-        )
-        row += 1
-
-        self.advanced = ttk.Frame(frame)
-        self.advanced.grid(row=row, column=0, columnspan=2, sticky="ew")
-        self.advanced.columnconfigure(1, weight=1)
-        self.advanced.grid_remove()
-        inner = 0
-        self.combination, inner = self._combo(
-            self.advanced,
-            inner,
-            "Export combination",
-            "The office layer combination the IFC export starts from.",
-            "The translator exports what is shown, so the layer state is an "
-            "input to every number below. The run sets it from this "
-            "combination, forces on what the study needs over the top, and "
-            "puts every layer back afterwards — so the answer does not depend "
-            "on what happened to be on screen.",
-        )
-        self.subject, inner = self._picker(
-            self.advanced,
-            inner,
-            "Facade layers",
-            "The layers that are the building being measured. Comma separated.",
-            "Everything else in the model still casts shade but is not counted "
-            "in the area. Without this, the facade area on a developed model "
-            "includes every internal partition and balustrade. The slab layers "
-            "belong here too, or there are no floors to colour.",
-        )
-        self.require, inner = self._picker(
-            self.advanced,
-            inner,
-            "Also export",
-            "Layers forced into the export whatever the combination says.",
-            "The zone layers must be in the export or the 3D skin cannot be "
-            "placed on the building — the study needs a Zone to line the IFC "
-            "up against, and neither of this project's IFC combinations shows "
-            "them. Left empty, the zone layers are added automatically.",
-        )
-        self.context, inner = self._picker(
-            self.advanced,
-            inner,
-            "Neighbouring buildings",
-            "Layers that shade the site without being part of it.",
-            "They have to be in the export or the study measures a building "
-            "with nothing around it, which can only overstate its sunlight. "
-            "Named by layer and not by element name because survey context "
-            "usually arrives nameless — on one project all 232 neighbours are "
-            "unnamed slabs. Listing them here both forces them into the export "
-            "and keeps them out of the facade area, which is about the scheme "
-            "and not the neighbourhood.",
-        )
-        self.hide, inner = self._picker(
-            self.advanced,
-            inner,
-            "Keep off drawings",
-            "Layers switched off on the study drawings and in the export.",
-            "Grids and dimension layers usually: they are the practice's own "
-            "annotation and clutter a sun study without adding to it. What "
-            "counts as clutter is a decision about the drawing, so it is named "
-            "here rather than guessed from layer names.",
-        )
-        self.communal_csv, inner = self._entry(
-            self.advanced,
-            inner,
             "Communal areas CSV",
             "",
             "Where to write the figures as a spreadsheet. Blank writes none.",
@@ -779,101 +1104,39 @@ class Window:
             "next — and a figure that opens in a spreadsheet is a figure "
             "somebody can check.",
         )
-        self.livable, inner = self._entry(
-            self.advanced,
-            inner,
-            "Living-room glazing",
-            "",
-            "Suffix marking the windows and doors of a living room, e.g. _L.",
-            "The ADG counts sun into living rooms, not into bedrooms, and a "
-            "Zone drawn per apartment cannot say which room is which. Where "
-            "the office marks its living-room glazing with a suffix on the "
-            "opening ID, that is the better answer and it is used instead of "
-            "the room names. Left empty, rooms named 'Living Room' are looked "
-            "for — and a project that names none is assessed on every opening, "
-            "which reads as a pass it has not earned.",
+
+    def _not_yet(self, frame: ttk.Frame, what: str) -> None:
+        """A section for an output this version does not make.
+
+        Said in full rather than greyed out, because a tab that cannot be
+        opened cannot explain itself and reads as something broken. There is
+        nothing to tick here on purpose: an empty page is honest, and a
+        switch that does nothing is not.
+        """
+        ttk.Label(frame, text=what, foreground=HINT, wraplength=560, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w"
         )
-        self.instants, inner = self._entry(
-            self.advanced,
-            inner,
-            "Plan times",
-            "09:00, 12:00, 15:00",
-            "Times of day to draw a sun patch for. Comma separated.",
-            "One floor-plan sheet per time. Nine, twelve and three are the "
-            "conventional set. Each one adds a set of views and a layout, so a "
-            "long list makes a long run.",
-        )
-        self.shadow_subset, inner = self._combo(
-            self.advanced,
-            inner,
-            "Times filed in",
-            "Layout Book subset the clock-time sheets go into.",
-            "So the sheets sit with the practice's own drawings of that kind "
-            "instead of at the root of the book. The subset has to exist "
-            "already — the run will not create one, because the Layout Book is "
-            "the office's structure to organise.",
-        )
-        self.adg_subset, inner = self._combo(
-            self.advanced,
-            inner,
-            "Diagrams filed in",
-            "Subset for the sheets that are not a time of day.",
-            "The banded plan and the two-hour plan. Same rule: the subset must "
-            "exist, and a missing one is reported rather than invented, with "
-            "the sheets left at the root of the book.",
-        )
-        self.prefix, inner = self._entry(
-            self.advanced,
-            inner,
-            "Layer prefix",
-            naming.DEFAULT_PREFIX,
-            "Leads the name of every layer, view and sheet the study creates.",
-            "So the output files itself inside the office's own numbering: on "
-            "a project whose layer groups run 00 to 13, '14 |' gives "
-            "'14 | Sun Study.Results' and it sorts where a reader expects. It "
-            "is also how a rerun finds its own sheets to replace, so changing "
-            "it leaves the last run's behind to be deleted by hand, and it "
-            "cannot be emptied — an empty prefix matches every layout in the "
-            "project.",
-        )
-        self.wait_min, inner = self._entry(
-            self.advanced,
-            inner,
-            "Archicad wait (min)",
-            "30",
-            "How long to let Archicad think about one command before giving up.",
-            "Only the IFC export comes anywhere near it, and on a big project "
-            "that export is minutes rather than seconds -- 455 MB on one "
-            "mixed-use job. Too short and the run stops partway with 'Archicad "
-            "did not answer', having already done the slow part, and leaves "
-            "the project holding the study's layer state. Raising it costs "
-            "nothing on a run that works; it only decides how long a genuinely "
-            "stuck Archicad is waited on.",
-        )
-        self.grid_m, inner = self._entry(
-            self.advanced,
-            inner,
-            "Skin cell (m)",
-            "0.5",
-            "Cell size of the 3D facade skin.",
-            "Finer looks better and makes many more elements — half the cell "
-            "size is roughly four times the count, and this project already "
-            "makes over five thousand at 0.5 m. A face narrower than one cell "
-            "is not drawn at all, so a coarse setting loses thin columns.",
-        )
-        row += 1
+
+    def _controls(self, base: ttk.Frame) -> None:
+        """Run, the progress bar and the log, under every section alike."""
+        #: What pressing Run will actually do. With the ticks spread across
+        #: sections there is otherwise nowhere on screen that answers it: a
+        #: colleague reading the Facade skin tab can see that study is on and
+        #: nothing whatever about the other two.
+        self.queued_line = ttk.Label(base, text="", foreground=HINT, wraplength=760)
+        self.queued_line.grid(row=0, column=0, sticky="w", pady=(PAD, 0))
 
         buttons = ttk.Frame(base)
-        buttons.grid(row=0, column=0, sticky="ew", pady=(PAD, 4))
+        buttons.grid(row=1, column=0, sticky="ew", pady=(4, 4))
         buttons.columnconfigure(0, weight=1)
         self.go = ttk.Button(buttons, text="Run study", command=self._start)
         self.go.grid(row=0, column=0, sticky="ew")
         Tooltip(
             self.go,
-            "Runs the study in the project chosen above. Minutes rather than "
-            "seconds: the export alone takes a couple. Nothing is saved — look "
-            "at the result in Archicad and save it yourself if you want to "
-            "keep it.",
+            "Runs every ticked study in the project chosen above, one after "
+            "the other. Minutes rather than seconds: the export alone takes a "
+            "couple. Nothing is saved — look at the result in Archicad and "
+            "save it yourself if you want to keep it.",
         )
         self.cancel = ttk.Button(buttons, text="Stop", command=self._stop, state="disabled")
         self.cancel.grid(row=0, column=1, padx=(6, 0))
@@ -886,41 +1149,40 @@ class Window:
         keep.grid(row=0, column=2, padx=(6, 0))
         Tooltip(
             keep,
-            "Remembers everything on this page -- the ticks, the fields and "
-            "whether Advanced is open -- and fills the window in with it next "
-            "time. Meant for what belongs to the practice rather than to one "
-            "job: the layer prefix, the living-room suffix, the Archicad "
-            "wait, which studies you run. Anything the open project "
-            "disagrees with is overruled by the project, so a saved layer "
-            "name cannot make a run measure a layer that is not there.",
+            "Remembers every section -- the ticks, the fields and which "
+            "section was open -- and fills the window in with it next time. "
+            "Meant for what belongs to the practice rather than to one job: "
+            "the layer prefix, the living-room suffix, the Archicad wait, "
+            "which studies you run. Anything the open project disagrees with "
+            "is overruled by the project, so a saved layer name cannot make a "
+            "run measure a layer that is not there.",
         )
         drop = ttk.Button(buttons, text="Forget", command=self._forget, width=9)
         drop.grid(row=0, column=3, padx=(6, 0))
         Tooltip(
             drop,
-            "Throws the saved settings away and puts this page back to what "
-            "it opens with on a machine that has never been set up. The "
+            "Throws the saved settings away and puts every section back to "
+            "what it opens with on a machine that has never been set up. The "
             "project is then read again, so the lists fill from the open "
             "Archicad as they did the first time.",
         )
 
         self.progress = ttk.Progressbar(base, mode="determinate", maximum=100)
-        self.progress.grid(row=1, column=0, sticky="ew")
+        self.progress.grid(row=2, column=0, sticky="ew")
 
         self.log = scrolledtext.ScrolledText(
             base, height=11, wrap="word", state="disabled", font=("Consolas", 9)
         )
-        self.log.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
+        self.log.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
 
         ttk.Label(base, text=STATUS, foreground="#a33", wraplength=760).grid(
-            row=3, column=0, sticky="w", pady=(6, 0)
+            row=4, column=0, sticky="w", pady=(6, 0)
         )
         ttk.Label(
             base,
             text=f"{PRODUCT} {__version__}  ·  created by {AUTHOR}",
             foreground=HINT,
-        ).grid(row=4, column=0, sticky="w", pady=(2, 0))
-        self._sync()
+        ).grid(row=5, column=0, sticky="w", pady=(2, 0))
 
     def _hint(self, parent: ttk.Frame, row: int, text: str) -> ttk.Label:
         """The line under a control. Returned so it can be rewritten: the
@@ -929,6 +1191,20 @@ class Window:
         made = ttk.Label(parent, text=text, foreground=HINT, wraplength=560)
         made.grid(row=row, column=1, sticky="w", pady=(0, 4))
         return made
+
+    def _caption(self, parent: ttk.Frame, row: int, text: str) -> None:
+        """What a whole study is, under the tick that turns it on.
+
+        Flush with the left margin and across both columns, unlike ``_hint``,
+        which starts where the fields do. A study's tick has no label beside
+        it -- it *is* its own label -- so a line indented into the field
+        column reads as belonging to the last thing above it, which on both
+        of these is the dependent tick. Aligned with the tick instead, it
+        plainly captions the block.
+        """
+        ttk.Label(parent, text=text, foreground=HINT, wraplength=620).grid(
+            row=row, column=0, columnspan=2, sticky="w", padx=(18, 0), pady=(2, 4)
+        )
 
     def _combo(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
@@ -1064,22 +1340,77 @@ class Window:
         box.delete(0, "end")
         box.insert(0, ", ".join(dialog.result))
 
-    def _toggle_advanced(self) -> None:
-        self._show_advanced(not self.advanced_open.get())
+    # -- which studies are on, said in every place it matters ----------------
+    def _studies(self) -> list[tuple[str, tk.BooleanVar, str]]:
+        """Every study this window runs: its name, its tick, and its section.
 
-    def _show_advanced(self, showing: bool) -> None:
-        """Open or close Advanced. Apart from the button so that restoring a
-        saved setting moves the panel and not only the variable."""
-        self.advanced_open.set(showing)
-        self.advanced_button.config(text="▾  Advanced" if showing else "▸  Advanced")
-        if showing:
-            self.advanced.grid()
-        else:
-            self.advanced.grid_remove()
+        One list because two things have to agree about it and would
+        otherwise be written out separately -- the tab that marks itself when
+        the study in it will run, and the line above Run that says what is
+        queued. The names are the ones ``jobs`` labels the run with, so a
+        colleague reads the same words before pressing Run and in the log
+        afterwards.
+        """
+        return [
+            (FACADE_JOB, self.do_facade, self.FACADE),
+            (PLANS_JOB, self.do_plans, self.DIAGRAMS),
+            (COMMUNAL_JOB, self.do_communal, self.DIAGRAMS),
+        ]
+
+    def _open_section(self) -> str:
+        """Which tab is showing, by title.
+
+        By title and not by number so that inserting Shadow diagram ahead of
+        Sun eye view, or dropping a section, cannot reopen somebody on a
+        different page than the one they left.
+        """
+        try:
+            # Tk's own wrappers, and none of ttk's Notebook is annotated --
+            # hence the three ignores in this file and nowhere else.
+            return self.titles[self.tabs.index("current")]  # type: ignore[no-untyped-call]
+        except (tk.TclError, IndexError):  # pragma: no cover - no tab yet
+            return ""
+
+    def _show_section(self, title: str) -> None:
+        """Open that tab, if there is still one by that name."""
+        if title in self.titles:
+            self.tabs.select(self.titles.index(title))  # type: ignore[no-untyped-call]
 
     def _sync(self) -> None:
+        """Keep the window telling the truth about what it will do.
+
+        Three things that are one fact seen from three places, which is why
+        they move together.
+
+        A dependent tick is only a question while the study above it is on.
+
+        A tab whose study will run says so on its own label. That is what
+        tabs cost: a section nobody opens is a section nobody knows the state
+        of, and a colleague who has never opened Solar diagrams should still
+        be able to see from the outside that two studies are waiting in it.
+
+        And the line above Run names every study queued. With the ticks
+        spread over three sections there is otherwise nowhere on screen that
+        answers "what happens if I press this" -- which is the one question a
+        run of several minutes had better not get wrong.
+        """
         self.floors_box.config(state="normal" if self.do_facade.get() else "disabled")
         self.hourly_box.config(state="normal" if self.do_communal.get() else "disabled")
+
+        running = {where for _name, tick, where in self._studies() if tick.get()}
+        for index, title in enumerate(self.titles):
+            self.tabs.tab(  # type: ignore[no-untyped-call]
+                index, text=f"{title} ✓" if title in running else title
+            )
+
+        queued = [name for name, tick, _where in self._studies() if tick.get()]
+        self.queued_line.config(
+            text=(
+                "Will run: " + ", then ".join(queued)
+                if queued
+                else "Nothing ticked. Choose a study in one of the sections above."
+            )
+        )
 
     # -- settings that outlive the window ------------------------------------
     def _fields(self) -> dict[str, ttk.Entry]:
@@ -1126,22 +1457,28 @@ class Window:
         }
 
     def _ticks(self) -> dict[str, tk.BooleanVar]:
-        """The boxes, by the same rule. Advanced is one of them: a colleague
-        who works in it wants it open, and one who never has does not."""
+        """The boxes, by the same rule."""
         return {
             "study_facade": self.do_facade,
             "study_floors": self.do_floors,
             "study_plans": self.do_plans,
             "study_communal": self.do_communal,
             "study_hourly": self.do_hourly,
-            "advanced_open": self.advanced_open,
         }
+
+    #: The section that was showing, saved under its own name. It is neither
+    #: a field nor a tick, and it is worth keeping for the same reason the
+    #: open Advanced panel used to be: somebody who only ever runs the
+    #: diagrams should open on the diagrams, not on a page of layer settings
+    #: they set up once in March.
+    OPEN_SECTION = "open_section"
 
     def settings(self) -> dict[str, str | bool]:
         """Everything on this page, as it would be saved. Public and pure, so
         the round trip can be tested without a file or a screen."""
         saved: dict[str, str | bool] = {name: box.get() for name, box in self._fields().items()}
         saved.update({name: state.get() for name, state in self._ticks().items()})
+        saved[self.OPEN_SECTION] = self._open_section()
         return saved
 
     def apply(self, saved: Mapping[str, str | bool]) -> None:
@@ -1164,7 +1501,13 @@ class Window:
             ticked = saved.get(name)
             if isinstance(ticked, bool):
                 state.set(ticked)
-        self._show_advanced(self.advanced_open.get())
+        opened = saved.get(self.OPEN_SECTION)
+        if isinstance(opened, str):
+            # A title this version does not have -- a file saved before the
+            # sections existed, or after one was renamed -- leaves the
+            # notebook where it is, which is General. Losing which tab was
+            # open is the cheapest thing in the file to lose.
+            self._show_section(opened)
         self._sync()
 
     def _restore(self) -> None:
@@ -1285,6 +1628,52 @@ class Window:
         if not self.subject.get():
             skin = [name for name in found.layers if any(w in name for w in SKIN_WORDS)]
             self.subject.insert(0, ", ".join(skin))
+        self._offer_height_cut()
+
+    def _offer_height_cut(self) -> None:
+        """Put this building's own height in "Ignore above", not a placeholder.
+
+        100 m is a guess that is wrong twice over: on a townhouse it cuts
+        nothing and lets a parked hotlink master through, and on a tower it
+        cuts the top ten storeys off the thing being measured. The project
+        knows its own storeys, so the cut is offered from them -- the topmost
+        storey plus enough headroom for a roof and a lift overrun.
+
+        Only over the placeholder. A figure somebody typed, or one restored
+        from saved settings, is a decision and outranks anything read here;
+        the tooltip says so. An unreadable storey list leaves the placeholder
+        alone rather than clearing the field, because an empty box means
+        "measure everything, however high" and that is the failure this
+        setting exists to prevent.
+
+        And only when the answer is *lower* than the placeholder. A project
+        can park its hotlink masters on real storeys, and then the storey list
+        describes the parked geometry rather than the building: the reference
+        project defines 134 storeys running to 422.5 m, at a regular 3.2 m
+        spacing the whole way, with no gap to tell the tower from the masters
+        above it. A cut at 437 m excludes nothing, which makes it worse than
+        the placeholder rather than better -- so it is refused, and the reason
+        is printed rather than swallowed.
+        """
+        top = self.options.top_storey_m
+        if top is None or self.exclude.get().strip() != DEFAULT_EXCLUDE_ABOVE_M:
+            return
+        cut = math.ceil(top + STOREY_HEADROOM_M)
+        if cut >= float(DEFAULT_EXCLUDE_ABOVE_M):
+            self._write(
+                f"Left 'Ignore above' at {DEFAULT_EXCLUDE_ABOVE_M} m. This project's "
+                f"highest storey is at {top:g} m, which would put the cut at {cut} m "
+                f"-- above everything, so it would exclude nothing. That usually means "
+                f"the hotlink masters are parked on storeys of their own. Set it by "
+                f"hand to just above the real building."
+            )
+            return
+        self.exclude.delete(0, "end")
+        self.exclude.insert(0, str(cut))
+        self._write(
+            f"Ignore above set to {cut} m from the project: its highest storey is at "
+            f"{top:g} m, plus {STOREY_HEADROOM_M:g} m for a roof and a lift overrun."
+        )
 
     @staticmethod
     def _as_the_project_spells_them(
@@ -1503,7 +1892,7 @@ class Window:
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             args += ["--year", self.year.get().strip() or "2024"]
-            made.append(Job("facade skin", args))
+            made.append(Job(FACADE_JOB, args))
 
         if self.do_plans.get():
             args = [
@@ -1550,7 +1939,7 @@ class Window:
             if self.adg_subset.get():
                 args += ["--adg-subset", self.adg_subset.get()]
             args += ["--year", self.year.get().strip() or "2024"]
-            made.append(Job("apartment plans and sheets", args))
+            made.append(Job(PLANS_JOB, args))
 
         if self.do_communal.get():
             args = ["massing", "--timezone", "Australia/Sydney", *common]
@@ -1598,7 +1987,7 @@ class Window:
             if self.do_hourly.get():
                 args += ["--zone-hourly"]
             args += ["--year", self.year.get().strip() or "2024"]
-            made.append(Job("communal open space", args))
+            made.append(Job(COMMUNAL_JOB, args))
 
         return made
 

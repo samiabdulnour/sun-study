@@ -90,6 +90,15 @@ class ProjectOptions:
 
     storeys: tuple[int, ...] = ()
 
+    top_storey_m: float | None = None
+    """Level of the highest storey, in metres above project zero.
+
+    Read so the window can offer a height cut that belongs to *this* building
+    instead of a placeholder. ``None`` when the storeys would not read, which
+    the window takes as "leave the default alone" rather than as zero -- a cut
+    at zero would drop the entire project.
+    """
+
     tapir: str = ""
     """The add-on's version, when it answered."""
 
@@ -259,5 +268,31 @@ def options(port: int) -> ProjectOptions:
                 if isinstance(row, dict) and isinstance(row.get("index"), int)
             )
         ),
+        top_storey_m=_highest_storey((storeys or {}).get("stories") or []),
         problems=tuple(problems),
     )
+
+
+def _highest_storey(rows: object) -> float | None:
+    """The level of the topmost storey, in metres, or ``None``.
+
+    ``level`` is what Tapir calls it and what every Archicad this runs against
+    has answered with; ``elevation`` is accepted too, because the cost of
+    reading a second key is nothing and the cost of a height cut silently
+    falling back to a placeholder is a study that measures parked hotlink
+    masters.
+
+    ``None`` on anything unreadable, never zero: a project whose storeys will
+    not parse should keep the window's own default, and a cut at zero would
+    drop the whole building.
+    """
+    if not isinstance(rows, list):
+        return None
+    levels = [
+        float(value)
+        for row in rows
+        if isinstance(row, dict)
+        for value in (row.get("level", row.get("elevation")),)
+        if isinstance(value, int | float)
+    ]
+    return max(levels) if levels else None

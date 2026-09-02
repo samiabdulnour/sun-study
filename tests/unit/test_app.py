@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -922,31 +923,37 @@ def test_the_packaged_build_looks_where_it_unpacked_itself(
 # -- a form taller than the screen ----------------------------------------
 
 
+def in_a_section(hidden_window: Any, widget: tk.Misc) -> bool:
+    """Whether that widget sits inside one of the scrolling section panes."""
+    above: Any = widget
+    while above is not None:
+        if above in hidden_window.panes:
+            return True
+        above = getattr(above, "master", None)
+    return False
+
+
 def test_the_settings_scroll_and_the_run_button_does_not(hidden_window: Any) -> None:
-    """The form is about thirty questions long, each with its explanation
-    underneath, and no laptop shows it at once -- so it scrolls. Run, the
+    """Sections shorten the page but do not fix it -- Solar diagrams alone is
+    two studies and a dozen questions, each with its explanation underneath,
+    and no laptop shows that at once -- so every section scrolls. Run, the
     progress bar and the log do not: a log that scrolls off the top during a
     run is a log nobody reads, and Run somewhere down a long page is worse
     than a Run that never moves.
     """
-
-    def inside_the_form(widget: tk.Misc) -> bool:
-        above: Any = widget
-        while above is not None:
-            if above is hidden_window.form:
-                return True
-            above = getattr(above, "master", None)
-        return False
-
-    assert inside_the_form(hidden_window.prefix), "a setting that must be reachable"
-    assert inside_the_form(hidden_window.master), "and one near the bottom of the page"
-    assert not inside_the_form(hidden_window.go), "Run must stay where it is"
-    assert not inside_the_form(hidden_window.log), "and so must the log"
+    assert in_a_section(hidden_window, hidden_window.prefix), "a setting in General"
+    assert in_a_section(hidden_window, hidden_window.grid_m), "and one in Facade skin"
+    assert in_a_section(hidden_window, hidden_window.communal_csv), "and one in Solar diagrams"
+    assert not in_a_section(hidden_window, hidden_window.go), "Run must stay where it is"
+    assert not in_a_section(hidden_window, hidden_window.log), "and so must the log"
+    assert not in_a_section(hidden_window, hidden_window.instance), (
+        "and so must the project it all runs against"
+    )
 
 
 def test_the_wheel_moves_the_page(hidden_window: Any) -> None:
     """A scroll bar nobody can reach with the wheel is half a fix."""
-    form = hidden_window.form
+    form = hidden_window.panes[0]
     form.canvas.configure(scrollregion=(0, 0, 100, 4000), yscrollincrement=10)
 
     form.spin(-120)  # one notch down
@@ -959,7 +966,7 @@ def test_the_wheel_moves_the_page(hidden_window: Any) -> None:
 def test_a_page_that_fits_does_not_slide_off_the_top(hidden_window: Any) -> None:
     """A canvas will scroll past its own scroll region without complaint, so
     the wheel over a short form would leave an empty pane behind."""
-    form = hidden_window.form
+    form = hidden_window.panes[0]
     form.canvas.configure(scrollregion=(0, 0, 1, 1), yscrollincrement=10)
 
     form.spin(-120)
@@ -989,7 +996,7 @@ def test_a_touchpad_scrolls_both_ways(hidden_window: Any) -> None:
     finger did. Dividing first rounds a gentle push down to nothing while a
     gentle pull up still moves, and a page that scrolls one way only is worse
     than one that does not scroll at all."""
-    form = hidden_window.form
+    form = hidden_window.panes[0]
     form.canvas.configure(scrollregion=(0, 0, 100, 4000), yscrollincrement=10)
 
     form.spin(-40)  # less than a notch, downward
@@ -1079,19 +1086,31 @@ def test_the_port_is_not_a_preference(hidden_window: Any) -> None:
     assert not [name for name in saved if "port" in name or "instance" in name]
 
 
-def test_whether_advanced_was_open_is_remembered(hidden_window: Any, settings_file: Path) -> None:
-    """Somebody who works in Advanced wants it open; somebody who never has
-    does not. And the panel has to move, not only the variable."""
-    hidden_window._toggle_advanced()
+def test_which_section_was_open_is_remembered(hidden_window: Any, settings_file: Path) -> None:
+    """Somebody who only ever runs the diagrams should open on the diagrams,
+    not on a page of layer settings they set up once in March. And the
+    notebook has to move, not only the saved string."""
+    hidden_window._show_section(window.Window.DIAGRAMS)
     hidden_window._remember()
 
     hidden_window.apply(hidden_window.factory)
-    assert hidden_window.advanced_open.get() is False
-    assert hidden_window.advanced.winfo_manager() == "", "closed, and off the grid"
+    assert hidden_window._open_section() == window.Window.GENERAL, "back to the first tab"
 
     hidden_window.apply(preferences.load())
-    assert hidden_window.advanced_open.get() is True
-    assert hidden_window.advanced.winfo_manager() == "grid", "the panel itself moved"
+    assert hidden_window._open_section() == window.Window.DIAGRAMS
+
+
+def test_a_section_this_version_has_never_heard_of_leaves_the_tabs_alone(
+    hidden_window: Any,
+) -> None:
+    """A settings file from a version that named its sections differently, or
+    that carried one this build does not. Losing which tab was open is the
+    cheapest thing in the file to lose; refusing to open is the dearest."""
+    hidden_window._show_section(window.Window.FACADE)
+
+    hidden_window.apply({"open_section": "Sun eye view over the harbour"})
+
+    assert hidden_window._open_section() == window.Window.FACADE
 
 
 def test_a_settings_file_nobody_can_read_leaves_the_window_alone(
@@ -1209,3 +1228,138 @@ def test_a_settings_file_that_is_not_even_text(settings_file: Path) -> None:
     settings_file.write_bytes(b"\xff\xfe\x00 not text")
 
     assert preferences.load() == {}
+
+
+# -- finding a layer without retyping its punctuation ----------------------
+
+
+def test_a_layer_is_found_however_its_punctuation_is_typed() -> None:
+    """Layer names carry punctuation nobody reproduces from memory. Somebody
+    looking for the core types '1| core', and the group number, the bar and
+    the spacing round it are the part they are least likely to get right."""
+    names = ["01 | Core", "01 | Wall.External", "05 | Dims/Notes.DA"]
+
+    for query in ("core", "CORE", "1| core", "01|core", "1|core", "core 1"):
+        assert window.matching(names, query) == ["01 | Core"], query
+
+
+def test_words_still_match_in_any_order_and_anywhere() -> None:
+    names = ["01 | Floor.Structural", "01 | Wall.External"]
+
+    assert window.matching(names, "floor str") == ["01 | Floor.Structural"]
+    assert window.matching(names, "str floor") == ["01 | Floor.Structural"]
+    assert window.matching(names, "dimsnotes") == []
+
+
+def test_an_empty_search_offers_everything() -> None:
+    names = ["01 | Core", "01 | Wall.External"]
+
+    assert window.matching(names, "") == names
+    assert window.matching(names, "   ") == names
+    assert window.matching(names, "|| //") == names, "punctuation alone narrows nothing"
+
+
+# -- the chooser opening where it was left ---------------------------------
+
+
+def test_the_chooser_reopens_where_it_was_closed(hidden_window: Any) -> None:
+    """A colleague setting a project up opens it six or seven times in a row.
+    One that jumps back to the middle of the screen every time is one they
+    have to drag off the form every time."""
+    monkey = window.LayerChooser(
+        hidden_window.root,
+        title="Facade layers",
+        hint="",
+        available=["01 | Core"],
+        chosen=[],
+    )
+    monkey.geometry("640x500+321+123")
+    monkey.update_idletasks()
+    monkey._close()
+
+    again = window.LayerChooser(
+        hidden_window.root, title="Also export", hint="", available=["01 | Core"], chosen=[]
+    )
+    again.update_idletasks()
+    remembered = again.wm_geometry()
+    again._close()
+
+    assert "+321+123" in remembered, f"opened at {remembered}, not where it was left"
+
+
+def test_cancelling_remembers_the_place_too(hidden_window: Any) -> None:
+    """A dialog that remembers only when dismissed one particular way looks
+    broken rather than absent."""
+    first = window.LayerChooser(
+        hidden_window.root, title="One", hint="", available=["01 | Core"], chosen=[]
+    )
+    first.geometry("600x480+250+180")
+    first.update_idletasks()
+    first._close()  # what Cancel, Escape and the window manager's X all call
+
+    assert first.result is None, "cancelling still answers with nothing chosen"
+    assert "+250+180" in (window._chooser_geometry or "")
+
+
+# -- a height cut this building justifies ----------------------------------
+
+
+def test_the_height_cut_comes_from_the_project_not_a_placeholder(hidden_window: Any) -> None:
+    """100 m is wrong twice over: on a townhouse it lets a parked hotlink
+    master through, and on a tower it cuts off the top ten storeys."""
+    hidden_window.options = replace(hidden_window.options, top_storey_m=42.5)
+    hidden_window.exclude.delete(0, "end")
+    hidden_window.exclude.insert(0, window.DEFAULT_EXCLUDE_ABOVE_M)
+
+    hidden_window._offer_height_cut()
+
+    assert hidden_window.exclude.get() == "58", "42.5 m top storey plus 15 m headroom"
+
+
+def test_a_typed_height_cut_outranks_the_project(hidden_window: Any) -> None:
+    """A figure somebody typed is a decision. So is one restored from saved
+    settings, which is the same thing arriving a day later."""
+    hidden_window.options = replace(hidden_window.options, top_storey_m=42.5)
+    hidden_window.exclude.delete(0, "end")
+    hidden_window.exclude.insert(0, "120")
+
+    hidden_window._offer_height_cut()
+
+    assert hidden_window.exclude.get() == "120"
+
+
+def test_storeys_that_will_not_read_leave_the_placeholder_alone(hidden_window: Any) -> None:
+    """An empty box means 'measure everything, however high', which is the
+    failure this setting exists to prevent. So a project that will not give up
+    its storeys keeps the default rather than losing it."""
+    hidden_window.options = replace(hidden_window.options, top_storey_m=None)
+    hidden_window.exclude.delete(0, "end")
+    hidden_window.exclude.insert(0, window.DEFAULT_EXCLUDE_ABOVE_M)
+
+    hidden_window._offer_height_cut()
+
+    assert hidden_window.exclude.get() == window.DEFAULT_EXCLUDE_ABOVE_M
+
+
+def test_the_top_storey_is_read_off_whatever_key_archicad_used() -> None:
+    """'level' is what Tapir answers with; 'elevation' costs nothing to accept."""
+    assert probe._highest_storey([{"level": 3.0}, {"level": 42.5}, {"level": 0.0}]) == 42.5
+    assert probe._highest_storey([{"elevation": 12.0}]) == 12.0
+    assert probe._highest_storey([]) is None
+    assert probe._highest_storey("not a list") is None
+    assert probe._highest_storey([{"index": 0}]) is None, "no level is not a level of zero"
+
+
+def test_storeys_that_describe_parked_masters_are_refused(hidden_window: Any) -> None:
+    """A project can park its hotlink masters on real storeys. The reference
+    project defines 134 of them running to 422.5 m at a regular 3.2 m spacing,
+    with no gap to tell the tower from the masters above it -- so the top
+    storey is not the top of the building, and a cut above the placeholder
+    excludes nothing at all."""
+    hidden_window.options = replace(hidden_window.options, top_storey_m=422.5)
+    hidden_window.exclude.delete(0, "end")
+    hidden_window.exclude.insert(0, window.DEFAULT_EXCLUDE_ABOVE_M)
+
+    hidden_window._offer_height_cut()
+
+    assert hidden_window.exclude.get() == window.DEFAULT_EXCLUDE_ABOVE_M, "left alone"
