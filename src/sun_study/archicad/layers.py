@@ -483,6 +483,7 @@ def export_state(
     connection: ArchicadConnection,
     *,
     combination: str | None = None,
+    only: Sequence[str] = (),
     require: Sequence[str] = (),
     hide: Sequence[str] = (),
     record_as: str | None = None,
@@ -494,6 +495,21 @@ def export_state(
     of the project's own, usually its IFC export combination, which is an
     office's own account of what belongs in an export -- or everything shown
     if none is named. Then ``require`` is forced on and ``hide`` forced off.
+
+    ``only`` inverts the base: everything off, and just these on. It is for a
+    study that knows exactly what it needs, which a shadow diagram does -- its
+    sources name their own layers. The default of showing everything is right
+    for an apartment run, which needs zones, windows and interiors and cannot
+    enumerate them; on this project it switched on 167 of 195 layers, ``00 |
+    Temp Delete`` and ``00 | Work No Print`` among them, and exported 22,513
+    solids to cast shadows off about eight thousand. The rest is export time,
+    file size and ray casts -- and one real hazard, since that is how a site
+    mesh reaches the occluders and prints a sheet of solid grey.
+
+    ``only`` and ``combination`` are mutually exclusive: one says "start from
+    nothing", the other "start from the office's own account of an export",
+    and silently letting the second win would be a study measuring more than
+    it was told to.
 
     The middle step is what makes the first usable. On the reference project
     *neither* export combination shows the ``06 | Zone.*`` layers, so either
@@ -512,19 +528,38 @@ def export_state(
     record_as = record_as or export_combination()
     source = record_as
 
-    if combination:
-        base = combination_states(connection, combination)
-        if base is None:
+    if combination and only:
+        raise ArchicadError(
+            "Both a layer combination and an explicit layer list were given, and "
+            "they mean opposite things. Use one or the other."
+        )
+
+    base: dict[str, bool]
+    if only:
+        # Everything off, then the named layers back on below.
+        base = dict.fromkeys((state.identifier for state in before), True)
+        source = "only the layers the study names"
+        known = {" ".join(state.name.split()).casefold() for state in before}
+        missing = sorted(name for name in only if " ".join(name.split()).casefold() not in known)
+        if len(missing) == len(set(only)):
+            raise ArchicadError(
+                f"None of {missing} is a layer in this project, so the export would "
+                f"be empty. Run 'sun-study archicad-info' to see the layer names."
+            )
+    elif combination:
+        found = combination_states(connection, combination)
+        if found is None:
             raise ArchicadError(
                 f"The project has no layer combination called {combination!r}. "
                 f"Leave --layer-combination off to use the tool's own, which is "
                 f"every layer on except those named with --hide-layer."
             )
+        base = found
         source = f"{combination} + what the study needs"
     else:
         base = dict.fromkeys((state.identifier for state in before), False)
 
-    wanted = _with(base, before, shown=require, off=hide)
+    wanted = _with(base, before, shown=(*only, *require), off=hide)
     if not combination:
         ensure_combination(connection, record_as, wanted)
 

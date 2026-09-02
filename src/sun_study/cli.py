@@ -5585,19 +5585,27 @@ def shadows(
             with export_state(
                 connection,
                 combination=layer_combination,
-                # The source selectors go in too. The translator exports what
-                # is *shown*, so a TOD massing sitting on a layer the export
-                # combination hides would leave its legend row matching
-                # nothing -- a refusal at best, and at worst a sheet missing
-                # the comparison it exists to make. A selector that is an
-                # Element ID rather than a layer name simply matches no layer
-                # and costs nothing here.
-                require=(
-                    *(subject_layer or []),
-                    *(context_layer or []),
-                    *(selector for rule in config.shadow_sources for selector in rule.selectors),
-                    *(require_layer or []),
+                # A declared legend knows exactly what it needs, so the
+                # export carries that and nothing else. Left to the default
+                # this project switches on 167 of its 195 layers -- 2D site
+                # context, dimensions and notes, '00 | Temp Delete', '00 |
+                # Work No Print' -- and hands over 22,513 solids to cast
+                # shadows off about eight thousand. The rest is export time,
+                # file size and ray casts, and one hazard: it is how a site
+                # mesh reaches the occluders and prints a sheet of solid grey.
+                #
+                # A selector that is an Element ID rather than a layer name
+                # matches no layer, which is why --require-layer stays: it is
+                # how that run says which layers to carry.
+                only=(
+                    tuple(selector for rule in config.shadow_sources for selector in rule.selectors)
+                    + tuple(subject_layer or ())
+                    + tuple(context_layer or ())
+                    + tuple(require_layer or ())
+                    if config.shadow_sources
+                    else ()
                 ),
+                require=(*(subject_layer or []), *(context_layer or []), *(require_layer or [])),
                 hide=tuple(hide_layer or ()),
             ) as plan:
                 typer.echo(plan.describe())

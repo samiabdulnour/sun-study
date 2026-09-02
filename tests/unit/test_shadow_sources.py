@@ -65,3 +65,27 @@ def test_an_empty_selector_claims_nothing_rather_than_everything() -> None:
     """A trailing comma in ``--shadow-source "TOD=a,b,"`` is a typo, not an
     instruction to sweep the whole model into one legend row."""
     assert not _claims(element(name="anything", layer="any layer"), ["", "   "])
+
+
+# -- what the export carries ----------------------------------------------
+
+
+def test_only_starts_from_nothing_and_shows_what_it_is_given() -> None:
+    """The default shows everything, which is right for an apartment run and
+    wasteful for a shadow diagram: on Crows Nest it switched on 167 of 195
+    layers and handed over 22,513 solids to cast shadows off about eight
+    thousand -- '00 | Temp Delete' and the 2D site context among them."""
+    from sun_study.archicad.layers import LayerState, _with
+
+    layers = [
+        LayerState(identifier="a", name="03 | Site context.TOD Buildings", hidden=True),
+        LayerState(identifier="b", name="00 | Temp Delete", hidden=False),
+        LayerState(identifier="c", name="03 | Site.Mesh", hidden=False),
+    ]
+    everything_off = dict.fromkeys((layer.identifier for layer in layers), True)
+
+    wanted = _with(everything_off, layers, shown=["03 | Site context.TOD Buildings"])
+
+    assert wanted["a"] is False, "the named layer is on"
+    assert wanted["b"] is True, "a temp layer that was on is off"
+    assert wanted["c"] is True, "the site mesh cannot reach the occluders"
