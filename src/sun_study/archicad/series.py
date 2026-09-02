@@ -47,9 +47,19 @@ import numpy.typing as npt
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError, activate
 from sun_study.archicad.draw import DRAWING_MINIMUM_TAPIR_VERSION, BandStyle, ensure_layer
+from sun_study.archicad.ids import (
+    NOT_GROUPED,
+    NOT_STAMPED,
+    SOLAR,
+    GroupReport,
+    StampReport,
+    fill_id,
+    group_by_value,
+    stamp_in_order,
+)
 from sun_study.archicad.layout import _walk
 from sun_study.archicad.read import layer_names
-from sun_study.core.patches import Rectangle, merge_lit_cells
+from sun_study.core.patches import Ring, drawable_contours
 
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
@@ -122,6 +132,12 @@ class SeriesReport:
     lit_area_m2: tuple[float, ...]
     """Lit floor area at each drawn instant, so the picture can be checked
     against a number without opening Archicad."""
+
+    stamped: StampReport = NOT_STAMPED
+    """The Element IDs written onto the fills, so a Schedule can total them."""
+
+    grouped: GroupReport = NOT_GROUPED
+    """One Archicad Group per instant and band."""
 
     def describe(self) -> str:
         lines = [
@@ -321,6 +337,7 @@ def draw_patch_series(
     height = float(positions[:, 1].max()) - origin_y + gutter_m
 
     fills: list[dict[str, Any]] = []
+    element_ids: list[str | None] = []
     captions: list[dict[str, Any]] = []
     lit_area: list[float] = []
 
@@ -328,9 +345,9 @@ def draw_patch_series(
         here = positions[band.mask]
         if not len(here):
             continue
-        # Merged once per storey: every cell of it, lit. Drawn under each tile
-        # so the patch is read against the floor it lies on.
-        footprint = merge_lit_cells(here, np.ones(len(here), dtype=bool), spacing_m)
+        # Traced once per storey: every cell of it, lit. Drawn under each
+        # tile so the patch is read against the floor it lies on.
+        footprint = drawable_contours(here, np.ones(len(here), dtype=bool), spacing_m)
         lit_here = sunlit[band.mask]
 
         # Rows run downward, the way a study sheet reads: level down the side,
@@ -353,16 +370,26 @@ def draw_patch_series(
         for column, caption in enumerate(times):
             dx = column * width - origin_x
 
-            for rectangle in footprint:
-                fills.append(_hatch(rectangle, dx, dy, floor_style, layer.index))
+            for ring in footprint:
+                fills.append(_hatch(ring, dx, dy, floor_style, layer.index))
+                # The floor under the patch is context, not measured area.
+                # Tagged, it would double every figure in the schedule.
+                element_ids.append(None)
 
-            patch = merge_lit_cells(here, lit_here[:, column], spacing_m)
+            mask = lit_here[:, column]
+            patch = drawable_contours(here, mask, spacing_m)
+            # From the mask rather than from the shapes. The traced outlines
+            # enclose exactly the lit cells, so the two agree -- but counting
+            # cells stays right if a patch is ever drawn some other way, and it
+            # does not depend on the rings not overlapping.
+            area = float(mask.sum()) * spacing_m * spacing_m
             if row_index == 0:
-                lit_area.append(sum(rectangle.area_m2 for rectangle in patch))
+                lit_area.append(area)
             else:
-                lit_area[column] += sum(rectangle.area_m2 for rectangle in patch)
-            for rectangle in patch:
-                fills.append(_hatch(rectangle, dx, dy, sunlit_style, layer.index))
+                lit_area[column] += area
+            for ring in patch:
+                fills.append(_hatch(ring, dx, dy, sunlit_style, layer.index))
+                element_ids.append(fill_id(SOLAR, caption, band.label))
 
             if row_index == 0:
                 captions.append(
@@ -378,7 +405,13 @@ def draw_patch_series(
                     }
                 )
 
-    _create(connection, "CreateHatches", "hatchesData", fills)
+    made = _create(connection, "CreateHatches", "hatchesData", fills)
+    stamped = stamp_in_order(connection, made, element_ids)
+    grouped = (
+        group_by_value(connection, list(zip(made, element_ids, strict=True)))
+        if len(made) == len(element_ids)
+        else NOT_GROUPED
+    )
     # KNOWN GAP. The fills carry ``layerIndex`` and land on the tool's layer;
     # these captions cannot, because ``CreateTexts`` takes no layer, so they
     # land on the Text tool's default -- ``05 | Dims/Notes.DA`` on the
@@ -406,6 +439,8 @@ def draw_patch_series(
         first_time=times[0],
         last_time=times[-1],
         lit_area_m2=tuple(lit_area),
+        stamped=stamped,
+        grouped=grouped,
     )
 
 
@@ -497,17 +532,21 @@ def restore_after(connection: ArchicadConnection, storey_database_id: str) -> bo
     return bool(isinstance(current, dict) and current.get("currentWindowType") == "FloorPlan")
 
 
-def _hatch(
-    rectangle: Rectangle, dx: float, dy: float, style: BandStyle, layer_index: int
-) -> dict[str, Any]:
-    """One rectangle as a hatch, shifted into its tile.
+def _hatch(ring: Ring, dx: float, dy: float, style: BandStyle, layer_index: int) -> dict[str, Any]:
+    """One outline as a hatch, shifted into its tile.
+
+    A ring rather than a rectangle. The two are the same shape to this
+    function -- an unclosed run of plan coordinates -- but they are very
+    different numbers of elements: a sun patch with a stepped diagonal edge
+    tiles into hundreds of rectangles and traces into a handful of outlines.
+    Measured on a synthetic diagonal band at half-metre cells: 531 against 17.
 
     No ``floorInd``: a worksheet has no storeys, and Tapir's own issue tracker
     records a floor index silently destroying elements in a database that has
     none.
     """
     return {
-        "coordinates": [{"x": x + dx, "y": y + dy} for x, y in rectangle.corners],
+        "coordinates": [{"x": x + dx, "y": y + dy} for x, y in ring],
         "layerIndex": layer_index,
         "fillPenIndex": style.fill_pen,
         "fillBackgroundPenIndex": style.background_pen,
@@ -522,14 +561,19 @@ def _hatch(
 
 def _create(
     connection: ArchicadConnection, command: str, key: str, data: list[dict[str, Any]]
-) -> None:
+) -> list[dict[str, Any]]:
     """Run a create command in batches, failing on any per-element error.
 
     Batched because a series is thousands of fills and one request carrying all
     of them is a JSON payload Archicad has to parse in one go.
+
+    Returns what was made, in the order it was asked for, because that order
+    is the only thing linking a fill back to the instant it was drawn for --
+    which is what an Element ID has to record.
     """
+    made: list[dict[str, Any]] = []
     if not data:
-        return
+        return made
     batch = 500
     for start in range(0, len(data), batch):
         response = connection.run_tapir(command, {key: data[start : start + batch]})
@@ -543,3 +587,5 @@ def _create(
                     f"{command} failed for one item: "
                     f"{error.get('message', 'no message')} (code {error.get('code')})"
                 )
+        made.extend(entry for entry in elements if isinstance(entry, dict) and "elementId" in entry)
+    return made

@@ -36,6 +36,15 @@ from typing import Any
 
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.ids import (
+    NOT_GROUPED,
+    NOT_STAMPED,
+    SOLAR,
+    GroupReport,
+    StampReport,
+    fill_id,
+    stamp_in_order,
+)
 from sun_study.archicad.layers import LayerState, borrowed
 from sun_study.archicad.read import ArchicadZone, disambiguated
 from sun_study.rules.assessment import BuildingAssessment
@@ -84,7 +93,29 @@ class BandStyle:
     """Exclusive upper bound. ``inf`` for the open-ended top band."""
     fill_pen: int
     background_pen: int = 19
-    contour_pen: int = 1
+    contour_pen: int | None = None
+    """Pen for the outline, or ``None`` to draw it in the fill's own pen.
+
+    ``None`` by default, which is as close to *no contour* as this add-on
+    reaches. ``CreateHatches`` exposes ``contourPenIndex`` and nothing else --
+    no "show contour" flag -- so a fill cannot be created without an outline.
+    Drawn in the fill's own pen the outline is invisible against it, which is
+    what a banded plan wants: a black hairline round every cell of a sun patch
+    turns a colour field into a grid of boxes, and at 1:200 the boxes are what
+    a reader sees.
+
+    A real contour-less fill is reachable one way, and it needs a person: make
+    a Favorite by hand with the contour switched off and pass its name as
+    ``favourite``. ``CreateHatches`` applies a Favorite's settings first and
+    the explicit fields over the top -- the same route D50 needed for a wall's
+    surface override, and the only one there is.
+    """
+
+    @property
+    def outline_pen(self) -> int:
+        """The pen the contour is actually drawn in."""
+        return self.fill_pen if self.contour_pen is None else self.contour_pen
+
     rgb: tuple[int, int, int] = (0, 0, 0)
     """The colour this band *should* be, 0-255.
 
@@ -125,6 +156,11 @@ class DrawReport:
     zones_with_holes: tuple[str, ...]
     zones_with_arcs: tuple[str, ...]
     unmatched: tuple[str, ...]
+    stamped: StampReport = NOT_STAMPED
+    """The Element IDs written onto the fills, so a Schedule can total them."""
+
+    grouped: GroupReport = NOT_GROUPED
+    """One Archicad Group per band."""
 
     @property
     def complete(self) -> bool:
@@ -665,7 +701,7 @@ def _fill_for(zone: ArchicadZone, band: BandStyle, layer_index: int) -> dict[str
         "layerIndex": layer_index,
         "fillPenIndex": band.fill_pen,
         "fillBackgroundPenIndex": band.background_pen,
-        "contourPenIndex": band.contour_pen,
+        "contourPenIndex": band.outline_pen,
         # A Fill inherits the Fill tool's current default, and on a real
         # project that default has "Show Area Text" on -- so every fill
         # arrives with its own square-metre figure printed across it, over
@@ -729,7 +765,7 @@ def _legend(
                 "layerIndex": layer_index,
                 "fillPenIndex": band.fill_pen,
                 "fillBackgroundPenIndex": band.background_pen,
-                "contourPenIndex": band.contour_pen,
+                "contourPenIndex": band.outline_pen,
                 # A swatch showing its own area is a legend annotated with
                 # "1.00 m2" seven times. See _fill_for.
                 "showArea": False,
@@ -784,6 +820,7 @@ def draw_assessment(
     # zone at all, so the ones that collide carry a GUID fragment.
     named = disambiguated({zone.guid: zone.label for zone in zones})
     fills: list[dict[str, Any]] = []
+    element_ids: list[str] = []
     no_outline: list[str] = []
     with_holes: list[str] = []
     with_arcs: list[str] = []
@@ -803,7 +840,11 @@ def draw_assessment(
             with_holes.append(label)
         if zone.arc_count:
             with_arcs.append(label)
-        fills.append(_fill_for(zone, band_for(apartment.governing_minutes, bands), layer_index))
+        band = band_for(apartment.governing_minutes, bands)
+        fills.append(_fill_for(zone, band, layer_index))
+        # The band, so one schedule totals the study and breaks it down by
+        # hours of sun at the same time.
+        element_ids.append(fill_id(SOLAR, band.label))
 
     legend_fills, legend_texts = _legend(bands, legend_origin or _legend_origin(zones), layer_index)
     if title:
@@ -820,14 +861,23 @@ def draw_assessment(
             }
         )
 
+    stamped = NOT_STAMPED
+    grouped = NOT_GROUPED
     if fills or legend_fills:
-        _create(connection, "CreateHatches", "hatchesData", fills + legend_fills)
+        # The legend swatches go in the same request and are deliberately left
+        # without an ID: a schedule totalling every fill whose ID contains
+        # SOLAR must not add seven legend squares to the assessed area. Only
+        # what was measured is tagged, so the filter is the answer.
+        made = create_elements(connection, "CreateHatches", "hatchesData", fills + legend_fills)
+        # The legend swatches are passed as ``None`` so they are created and
+        # never tagged: see ``ids.stamp_in_order``.
+        stamped = stamp_in_order(connection, made, [*element_ids, *([None] * len(legend_fills))])
     if legend_texts:
         # CreateTexts takes no layer, so the labels land on the Text tool's
         # default -- an office annotation layer -- and have to be moved onto
         # the study's own. Otherwise the legend is not part of what the next
         # run clears, and switching the study off leaves it behind.
-        made = _create(connection, "CreateTexts", "textsData", legend_texts)
+        made = create_elements(connection, "CreateTexts", "textsData", legend_texts)
         moved = move_to_layer(connection, made, layer_index)
         if moved != len(made):
             raise ArchicadError(
@@ -846,6 +896,8 @@ def draw_assessment(
         zones_with_holes=tuple(with_holes),
         zones_with_arcs=tuple(with_arcs),
         unmatched=tuple(unmatched),
+        stamped=stamped,
+        grouped=grouped,
     )
 
 
@@ -863,10 +915,13 @@ def _legend_origin(zones: Sequence[ArchicadZone]) -> tuple[float, float]:
     return (right + 5.0, top)
 
 
-def _create(
+def create_elements(
     connection: ArchicadConnection, command: str, key: str, data: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Run a create command and fail on any per-element error.
+
+    Public because the shadow diagrams create hatches too, and the thing
+    worth sharing is not the request but the error handling below it.
 
     These commands report failures inside a successful response, one slot per
     input. A half-drawn diagram that reports success is worse than no diagram:

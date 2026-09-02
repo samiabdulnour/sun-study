@@ -48,9 +48,11 @@ __all__ = [
     "Scene",
     "SceneConfig",
     "SceneConfigError",
+    "ShadowScene",
     "WindowAssignment",
     "build_massing_scene",
     "build_scene",
+    "build_shadow_scene",
     "planar_face_grid",
 ]
 
@@ -1419,6 +1421,44 @@ class MassingConfig:
     which is the intended reading: that ground is covered.
     """
 
+    assess_facade: bool | None = None
+    assess_ground: bool | None = None
+    """Whether to sample the two site-wide surfaces. ``None`` follows the rule.
+
+    The rule is that a run measures what it names: name a Zone and the study
+    is about that Zone, name none and it is the ordinary massing run, which is
+    the facade and the ground. Read through ``measures_facade``, never
+    directly, so the rule has one home rather than one per caller.
+
+    It is worth having because the two are not a small constant. Measured on
+    the reference project: 1,070,938 m2 of facade and 1,946,135 m2 of open
+    ground at metre spacing, every sample ray-cast at every instant of the
+    window -- to answer a question about 828 m2 of courtyard. Nothing else in
+    the tool reads those tables, so a Zone study computing them bought
+    nothing whatever; it was simply most of the run.
+
+    A surface that is not assessed is ``None`` in the result rather than an
+    empty band table, because "not measured" and "measured as zero" are
+    different claims and a report must not confuse them.
+
+    Setting either explicitly overrides the rule, which is what a caller
+    wanting both a Zone figure and the site figures does.
+    """
+
+    @property
+    def measures_facade(self) -> bool:
+        """Whether this run assesses the facade."""
+        if self.assess_facade is not None:
+            return self.assess_facade
+        return not (self.zone_layers or self.zone_names)
+
+    @property
+    def measures_ground(self) -> bool:
+        """Whether this run assesses the open ground."""
+        if self.assess_ground is not None:
+            return self.assess_ground
+        return not (self.zone_layers or self.zone_names)
+
     zone_layers: tuple[str, ...] = ()
     zone_names: tuple[str, ...] = ()
     """Zones to measure as a surface in their own right.
@@ -1462,6 +1502,11 @@ class MassingConfig:
             + " | "
             f"ground level {ground}, margin {self.ground_margin_m:g} m | "
             + (
+                ""
+                if self.measures_facade and self.measures_ground
+                else "site surfaces not assessed, this run measures its Zones | "
+            )
+            + (
                 f"zone surface on layers {list(self.zone_layers)} "
                 f"named {list(self.zone_names)} at {self.zone_height_m:g} m | "
                 if self.zone_layers or self.zone_names
@@ -1489,19 +1534,28 @@ class MassingScene:
     provenance: dict[str, object] = field(default_factory=dict)
 
     def describe(self) -> str:
-        zones = (
-            f" | {len(self.zone_samples)} zone samples ({self.zone_samples.total_area_m2:.1f} m2)"
-            if len(self.zone_samples)
-            else ""
-        )
+        # "not assessed", never "0 samples (0.0 m2)". A surface that was not
+        # measured and a surface measured as nothing read identically that
+        # way, and the second is a finding worth chasing -- a facade of zero
+        # area means the subject filter matched nothing.
+        def surface(what: str, points: SamplePoints, measured: bool) -> str:
+            if not measured:
+                return f"{what} not assessed"
+            return f"{len(points)} {what} samples ({points.total_area_m2:.1f} m2)"
+
         return (
             f"{self.orientation.describe()}\n"
             f"  {self.config.describe()}\n"
             f"  occluders {self.occluders.triangle_count} triangles | "
-            f"{len(self.facade_samples)} facade samples "
-            f"({self.facade_samples.total_area_m2:.1f} m2) | "
-            f"{len(self.ground_samples)} ground samples "
-            f"({self.ground_samples.total_area_m2:.1f} m2)" + zones
+            + surface("facade", self.facade_samples, self.config.measures_facade)
+            + " | "
+            + surface("ground", self.ground_samples, self.config.measures_ground)
+            + (
+                f" | {len(self.zone_samples)} zone samples "
+                f"({self.zone_samples.total_area_m2:.1f} m2)"
+                if len(self.zone_samples)
+                else ""
+            )
         )
 
 
@@ -1637,11 +1691,15 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
             vertical_tolerance_deg=config.vertical_tolerance_deg,
         )
         for element in subject
-        if element.mesh.triangle_count
+        if element.mesh.triangle_count and config.measures_facade
     ]
     facade = SamplePoints.concatenate([group for group in facade_groups if len(group)])
 
-    ground = open_ground_grid(subject, occluders, config)
+    ground = (
+        open_ground_grid(subject, occluders, config)
+        if config.measures_ground
+        else SamplePoints.empty()
+    )
     zone_surface, measured_zones = _zone_surface(model, config)
 
     provenance: dict[str, object] = {
@@ -1654,6 +1712,8 @@ def build_massing_scene(model: IfcModel, config: MassingConfig) -> MassingScene:
         "context_elements": len(context),
         "elements_above_cut": cut_above,
         "occluder_triangles": occluders.triangle_count,
+        "facade_assessed": config.measures_facade,
+        "ground_assessed": config.measures_ground,
         "facade_samples": len(facade),
         "facade_area_m2": round(facade.total_area_m2, 3),
         "facade_spacing_m": config.facade_spacing_m,
@@ -1770,3 +1830,80 @@ def _geometry_overhead(model: IfcModel, spaces: Sequence[IfcElement]) -> dict[st
         "geometry_above_building_top_m": round(highest, 1),
         "top_of_apartments_m": round(top_of_building, 1),
     }
+
+
+@dataclass(frozen=True)
+class ShadowScene:
+    """A model split into what already stands and what is being applied for.
+
+    The same reduction a massing study uses -- ``massing_subject``, height cut
+    included -- read for a different question. A massing study wants one
+    occluder set because a tower shading its own podium is part of what it
+    measures; a shadow diagram wants two, because the entire point of the
+    drawing is which of them cast what.
+    """
+
+    context: TriangleMesh
+    """Everything that already stands: neighbours, survey, retained fabric."""
+
+    proposal: TriangleMesh
+    """The scheme. What ``--subject-layer`` names, or whatever is not context."""
+
+    bounds: tuple[FloatArray, FloatArray]
+    """Minimum and maximum corner of both together, which is what the shadow
+    plane has to cover before its margin is added."""
+
+    orientation: SiteOrientation
+    provenance: dict[str, object]
+
+    def describe(self) -> str:
+        return (
+            f"context {self.context.triangle_count} triangles | "
+            f"proposal {self.proposal.triangle_count} triangles | "
+            f"north {self.orientation.normalised_bearing_deg:.1f} deg"
+        )
+
+
+def build_shadow_scene(model: IfcModel, config: MassingConfig) -> ShadowScene:
+    """Split the model into context and proposal, for a shadow diagram.
+
+    A proposal that comes back empty is refused rather than drawn. With
+    nothing in it every hour's "additional" fill is empty, the sheets come out
+    showing only the existing shadow, and there is nothing on the drawing that
+    says why -- which is the precise failure this package exists to prevent.
+    Naming no ``--subject-layer`` at all is fine and means "everything that is
+    not context"; what is refused is naming layers that match nothing.
+    """
+    orientation = model.orientation(config.timezone)
+    reduced = massing_subject(model, config)
+
+    context = TriangleMesh.concatenate([element.mesh for element in reduced.context])
+    proposal = TriangleMesh.concatenate([element.mesh for element in reduced.subject])
+    if not proposal.triangle_count:
+        raise SceneConfigError(
+            "Nothing in the model is the proposal, so there is no additional shadow to "
+            "draw and the sheets would show only what already stands. Check "
+            "--subject-layer against the project's layer names."
+        )
+
+    everything = [element for element in reduced.solids if element.mesh.triangle_count]
+    lower = np.min([element.bounds[0] for element in everything], axis=0).astype(np.float64)
+    upper = np.max([element.bounds[1] for element in everything], axis=0).astype(np.float64)
+
+    return ShadowScene(
+        context=context,
+        proposal=proposal,
+        bounds=(lower, upper),
+        orientation=orientation,
+        provenance={
+            "mode": "shadow",
+            "source": model.path.name,
+            "schema": model.schema,
+            "true_north_bearing_deg": orientation.normalised_bearing_deg,
+            "context_elements": len(reduced.context),
+            "proposal_elements": len(reduced.subject),
+            "elements_above_cut": reduced.elements_above_cut,
+            "context_triangles": context.triangle_count,
+            "proposal_triangles": proposal.triangle_count,
+        },
+    )

@@ -73,7 +73,18 @@ _Cell = tuple[int, int]
 _Vertex = tuple[int, int]
 _Step = tuple[int, int]
 
-__all__ = ["CellRegion", "Rectangle", "merge_lit_cells", "trace_lit_regions"]
+#: One unclosed ring of plan coordinates -- what both a traced outline and a
+#: merged rectangle come back as, and what a drawing command takes.
+Ring = tuple[tuple[float, float], ...]
+
+__all__ = [
+    "CellRegion",
+    "Rectangle",
+    "Ring",
+    "drawable_contours",
+    "merge_lit_cells",
+    "trace_lit_regions",
+]
 
 
 class Rectangle(tuple[float, float, float, float]):
@@ -294,6 +305,59 @@ def trace_lit_regions(
         regions.append(CellRegion(place(outer), tuple(sorted(place(hole) for hole in holes))))
 
     return tuple(sorted(regions, key=lambda region: region.outer))
+
+
+def drawable_contours(positions: FloatArray, lit: BoolArray, spacing_m: float) -> list[Ring]:
+    """The shapes to draw for one set of lit cells, as unclosed rings.
+
+    Here rather than beside a drawing command because it is not a fact
+    about Archicad, it is a fact about polygons with holes in them, and
+    two studies now need the same answer: a sun patch on a floor plan and
+    a shadow on a site plan both come off a cell mask and both meet the
+    same one-contour limit at the far end.
+
+    One polygon per connected patch where that is safe, and the tiled
+    rectangles where it is not. ``CreateHatches`` takes a single contour and
+    no holes, so a patch with a hole in it can only be drawn as one shape by
+    filling the hole -- which would claim sunlight on a piece of floor that
+    never saw any. Those fall back to rectangles, which tile the same area
+    exactly and simply need more of them.
+
+    On the reference project this turns thousands of small fills into a
+    handful of outlines, which is the difference between a drawing that can be
+    edited and one that cannot.
+    """
+    regions = trace_lit_regions(positions, lit, spacing_m)
+    if regions and not any(region.holes for region in regions):
+        return [region.outer for region in regions]
+
+    shapes: list[Ring] = []
+    for region in regions:
+        if not region.holes:
+            shapes.append(region.outer)
+    if not shapes:
+        return [rectangle.corners for rectangle in merge_lit_cells(positions, lit, spacing_m)]
+
+    # Mixed: the solid patches as outlines, the holed ones as rectangles.
+    holed = np.zeros(len(positions), dtype=bool)
+    flat = np.asarray(positions, dtype=np.float64)[:, :2]
+    for region in regions:
+        if not region.holes:
+            continue
+        xs = [x for x, _ in region.outer]
+        ys = [y for _, y in region.outer]
+        inside = (
+            (flat[:, 0] >= min(xs))
+            & (flat[:, 0] <= max(xs))
+            & (flat[:, 1] >= min(ys))
+            & (flat[:, 1] <= max(ys))
+        )
+        holed |= inside & np.asarray(lit, dtype=bool)
+    if holed.any():
+        shapes.extend(
+            rectangle.corners for rectangle in merge_lit_cells(positions, holed, spacing_m)
+        )
+    return shapes
 
 
 def _components(cells: set[_Cell]) -> Iterator[frozenset[_Cell]]:

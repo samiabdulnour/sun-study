@@ -52,9 +52,20 @@ from sun_study.archicad.draw import (
     ensure_layer,
     move_to_layer,
 )
+from sun_study.archicad.ids import (
+    NOT_GROUPED,
+    NOT_STAMPED,
+    SOLAR,
+    GroupReport,
+    StampReport,
+    combined,
+    fill_id,
+    group_by_value,
+    stamp_in_order,
+)
 from sun_study.archicad.read import ArchicadZone
 from sun_study.core.geometry import PlanTransform, fit_plan_transform
-from sun_study.core.patches import merge_lit_cells, trace_lit_regions
+from sun_study.core.patches import Ring, drawable_contours
 
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
@@ -70,6 +81,7 @@ __all__ = [
     "draw_cell_groups",
     "draw_penetration",
     "fit_to_plan",
+    "zone_label",
 ]
 
 #: How far the fitted transform may be out before the drawing is refused.
@@ -128,6 +140,11 @@ class PenetrationReport:
     unmatched: tuple[str, ...]
     storeys: tuple[int, ...]
     hidden_layers: tuple[str, ...]
+    stamped: StampReport = NOT_STAMPED
+    """The Element IDs written onto the fills, so a Schedule can total them."""
+
+    grouped: GroupReport = NOT_GROUPED
+    """One Archicad Group per category."""
 
     @property
     def complete(self) -> bool:
@@ -203,12 +220,14 @@ def fit_to_plan(
     """
     source: list[list[float]] = []
     target: list[list[float]] = []
+    keys: list[str] = []
     for apartment, zone in zones.items():
         extent = export_extents.get(apartment)
         if not zone.outline or extent is None or not len(extent):
             continue
         source.append(box_centre(extent))
         target.append(box_centre(np.array(zone.outline, dtype=np.float64)))
+        keys.append(zone_label(zone, apartment))
 
     if len(source) < 2:
         raise ArchicadError(
@@ -216,7 +235,21 @@ def fit_to_plan(
             f"and the project, and a plan transform needs two. Without it the "
             f"patch cannot be placed on the floor plan at all."
         )
-    return fit_plan_transform(np.array(source), np.array(target))
+    # The names ride along so a refusal can say which pair is the bad one.
+    # Attached here rather than in the solver, which is given points and has
+    # no business knowing what a zone is.
+    return replace(fit_plan_transform(np.array(source), np.array(target)), keys=tuple(keys))
+
+
+def zone_label(zone: ArchicadZone, fallback: str) -> str:
+    """How a zone should be named in a message a person has to act on.
+
+    Its number and name, because that is what is on the plan in front of them
+    and what the Zone dialog shows. The IFC GlobalId is the join key and means
+    nothing to a reader, so it is the last resort rather than the first.
+    """
+    parts = [part for part in (zone.number, zone.name) if part]
+    return " ".join(parts) if parts else fallback
 
 
 def draw_penetration(
@@ -261,13 +294,15 @@ def draw_penetration(
             f"residual, over the {MAX_FIT_RESIDUAL_M:g} m limit. A patch drawn "
             f"through that lands on the wrong flat and still looks plausible. "
             f"The usual cause is a stale export, or apartments matched to the "
-            f"wrong zones."
+            f"wrong zones.\n" + transform.describe_disagreement(MAX_FIT_RESIDUAL_M)
         )
 
     patches = outlines = labels = removed = 0
     layers: list[str] = []
     hidden: list[str] = []
     storeys: set[int] = set()
+    tagged: list[StampReport] = []
+    gathered: list[GroupReport] = []
 
     for instant in instants:
         layer = ensure_layer(connection, f"{layer_prefix} {instant.label}")
@@ -277,6 +312,13 @@ def draw_penetration(
         removed += clear_layer(connection, layer.index)
 
         fills: list[dict[str, Any]] = []
+        # One ID per fill, in the same order. Only the patches are tagged:
+        # the outlines and labels are not area anybody totals.
+        patch_ids: list[str] = []
+        #: Grouped per *instant*, not per apartment: the ID has to name the
+        #: flat so a schedule can break down by it, but a group per flat is
+        #: one group each and no use to anybody selecting a drawing.
+        patch_groups: list[str] = []
         lines: list[dict[str, Any]] = []
         texts: list[dict[str, Any]] = []
 
@@ -291,6 +333,8 @@ def draw_penetration(
                 shapes = _contours(here, instant.lit[mine], spacing_m)
                 for shape in shapes:
                     fills.append(_patch_fill(shape, transform, patch_style, layer, zone))
+                    patch_ids.append(fill_id(SOLAR, instant.label, apartment))
+                    patch_groups.append(fill_id(SOLAR, instant.label))
                 patches += len(shapes)
 
             if zone.outline:
@@ -304,7 +348,10 @@ def draw_penetration(
             if zone.storey_index is not None:
                 storeys.add(zone.storey_index)
 
-        _create(connection, "CreateHatches", "hatchesData", fills)
+        made = _create(connection, "CreateHatches", "hatchesData", fills)
+        tagged.append(stamp_in_order(connection, made, patch_ids))
+        if len(made) == len(patch_groups):
+            gathered.append(group_by_value(connection, list(zip(made, patch_groups, strict=True))))
         _create(connection, "CreatePolylines", "polylinesData", lines)
         _texts_on(connection, texts, layer)
 
@@ -320,6 +367,8 @@ def draw_penetration(
         unmatched=unmatched,
         storeys=tuple(sorted(storeys)),
         hidden_layers=tuple(hidden),
+        stamped=combined(tagged),
+        grouped=_one_group_report(gathered),
     )
 
 
@@ -337,8 +386,19 @@ def draw_cell_groups(
     title: str = "",
     caption_height_mm: float = 2.5,
     on_storey: int | None = None,
+    max_residual_m: float = MAX_FIT_RESIDUAL_M,
 ) -> PenetrationReport:
     """Draw floor cells grouped by band, one colour each, plus a legend.
+
+    ``max_residual_m`` is how far the fitted frame may be out before this
+    refuses. The default is right for a sun patch inside a room, where half a
+    metre is most of the way to the wrong one. It is settable because the
+    right number depends on what is being drawn and on how the project models
+    its Zones: an IFC space solid is the net room volume while an Archicad
+    Zone is the polygon somebody drew, so their centres differ by a few
+    hundred millimetres on some projects however good the frame is -- and a
+    band across a 35 m terrace can carry that where a patch in a bedroom
+    cannot.
 
     ``on_storey`` draws every cell on one storey instead of grouping them by
     apartment. That is what open ground needs: it belongs to no dwelling, and
@@ -361,17 +421,27 @@ def draw_cell_groups(
     }
     unmatched = tuple(sorted(set(zone_by_apartment) - set(matched)))
     transform = fit_to_plan(export_extents, matched)
-    if transform.rmse_m > MAX_FIT_RESIDUAL_M:
+    if transform.rmse_m > max_residual_m:
+        # "Zones", not "apartments". This path fits on whatever Zones the two
+        # sides share -- for a communal study that is mostly flats borrowed to
+        # place the drawing, and none of them is what is being measured. A
+        # message about apartments sent a reader looking at the wrong thing.
         raise ArchicadError(
-            f"The export and the project disagree about where the apartments "
-            f"are: {transform.rmse_m:.2f} m of residual, over the "
-            f"{MAX_FIT_RESIDUAL_M:g} m limit."
+            f"The export and the project disagree about where the Zones are: "
+            f"fitting {len(transform.per_pair_m)} of them leaves "
+            f"{transform.rmse_m:.2f} m of residual, over the "
+            f"{max_residual_m:g} m limit. This is a plan check and not a "
+            f"vertical one -- height is discarded before fitting -- and it is "
+            f"relative: a whole export shifted or rotated fits perfectly, so "
+            f"what this measures is the Zones disagreeing with each other.\n"
+            + transform.describe_disagreement(max_residual_m)
         )
 
     layer = ensure_layer(connection, layer_name)
     removed = clear_layer(connection, layer.index)
 
     fills: list[dict[str, Any]] = []
+    band_ids: list[str] = []
     storeys: set[int] = set()
     if on_storey is not None:
         anywhere = next(iter(matched.values()), None)
@@ -382,6 +452,7 @@ def draw_cell_groups(
             flat = replace(anywhere, storey_index=on_storey)
             for shape in _contours(here, np.ones(len(here), dtype=bool), spacing_m):
                 fills.append(_patch_fill(shape, transform, group.style, layer, flat))
+                band_ids.append(fill_id(SOLAR, group.label))
             storeys.add(on_storey)
 
     for group in groups if on_storey is None else ():
@@ -394,6 +465,7 @@ def draw_cell_groups(
             here = positions[mine]
             for shape in _contours(here, np.ones(len(here), dtype=bool), spacing_m):
                 fills.append(_patch_fill(shape, transform, group.style, layer, zone))
+                band_ids.append(fill_id(SOLAR, group.label))
             if zone.storey_index is not None:
                 storeys.add(zone.storey_index)
 
@@ -401,10 +473,20 @@ def draw_cell_groups(
     legend_fills, legend_texts = _band_legend(
         groups, _legend_origin(matched.values()), layer, storeys, title, caption_height_mm
     )
+    # The legend swatches go in the same request and are left untagged: a
+    # schedule totalling every fill whose ID contains SOLAR must not add seven
+    # legend squares to the assessed area.
+    measured = len(fills)
     fills.extend(legend_fills)
     texts.extend(legend_texts)
 
-    _create(connection, "CreateHatches", "hatchesData", fills)
+    made = _create(connection, "CreateHatches", "hatchesData", fills)
+    stamped = stamp_in_order(connection, made[:measured], band_ids)
+    grouped = (
+        group_by_value(connection, list(zip(made[:measured], band_ids, strict=True)))
+        if len(made) >= measured
+        else NOT_GROUPED
+    )
     _texts_on(connection, texts, layer)
 
     return PenetrationReport(
@@ -419,6 +501,8 @@ def draw_cell_groups(
         unmatched=unmatched,
         storeys=tuple(sorted(storeys)),
         hidden_layers=(layer_name,) if layer.hidden else (),
+        stamped=stamped,
+        grouped=grouped,
     )
 
 
@@ -496,51 +580,15 @@ def _band_legend(
     return fills, texts
 
 
-def _contours(positions: FloatArray, lit: BoolArray, spacing_m: float) -> list[Any]:
-    """The shapes to draw for one set of lit cells, as unclosed rings.
+def _contours(positions: FloatArray, lit: BoolArray, spacing_m: float) -> list[Ring]:
+    """The shapes to draw for one set of lit cells. See ``patches``.
 
-    One polygon per connected patch where that is safe, and the tiled
-    rectangles where it is not. ``CreateHatches`` takes a single contour and
-    no holes, so a patch with a hole in it can only be drawn as one shape by
-    filling the hole -- which would claim sunlight on a piece of floor that
-    never saw any. Those fall back to rectangles, which tile the same area
-    exactly and simply need more of them.
-
-    On the reference project this turns thousands of small fills into a
-    handful of outlines, which is the difference between a drawing that can be
-    edited and one that cannot.
+    Kept as a name here because every call site in this module reads better
+    for it, and because what it does -- outlines where they are safe, tiled
+    rectangles where a hole would otherwise be filled in -- is a decision this
+    module made first and now shares with the shadow drawings.
     """
-    regions = trace_lit_regions(positions, lit, spacing_m)
-    if regions and not any(region.holes for region in regions):
-        return [region.outer for region in regions]
-
-    shapes: list[Any] = []
-    for region in regions:
-        if not region.holes:
-            shapes.append(region.outer)
-    if not shapes:
-        return [rectangle.corners for rectangle in merge_lit_cells(positions, lit, spacing_m)]
-
-    # Mixed: the solid patches as outlines, the holed ones as rectangles.
-    holed = np.zeros(len(positions), dtype=bool)
-    flat = np.asarray(positions, dtype=np.float64)[:, :2]
-    for region in regions:
-        if not region.holes:
-            continue
-        xs = [x for x, _ in region.outer]
-        ys = [y for _, y in region.outer]
-        inside = (
-            (flat[:, 0] >= min(xs))
-            & (flat[:, 0] <= max(xs))
-            & (flat[:, 1] >= min(ys))
-            & (flat[:, 1] <= max(ys))
-        )
-        holed |= inside & np.asarray(lit, dtype=bool)
-    if holed.any():
-        shapes.extend(
-            rectangle.corners for rectangle in merge_lit_cells(positions, holed, spacing_m)
-        )
-    return shapes
+    return drawable_contours(positions, lit, spacing_m)
 
 
 def _patch_fill(
@@ -591,7 +639,8 @@ def _label(
     """The annotation block, placed at the apartment's own centroid.
 
     Not on a leader: ``CreateLabels`` refuses an associative label on a Zone
-    here (-2130312912, the Label tool's default is not a text-class label), and
+    here (-2130312912 = ``APIERR_HIDDENLAY`` -- the Label tool's default for
+    that parent type sits on a hidden layer; see ``docs/archicad.md``), and
     a leader whose end is computed from nothing but a centroid points somewhere
     arbitrary anyway. Text in the middle of the flat it describes is
     unambiguous, and moving it is one drag.
@@ -651,3 +700,14 @@ def _texts_on(
     clears, so switching the study's layer off leaves the labels on the plan.
     """
     move_to_layer(connection, _create(connection, "CreateTexts", "textsData", data), layer.index)
+
+
+def _one_group_report(reports: list[GroupReport]) -> GroupReport:
+    """Several passes of grouping, as one line in the run's report."""
+    if not reports:
+        return NOT_GROUPED
+    return GroupReport(
+        groups=sum(report.groups for report in reports),
+        elements=sum(report.elements for report in reports),
+        problem="; ".join(sorted({r.problem for r in reports if r.problem})[:3]),
+    )
