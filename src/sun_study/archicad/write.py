@@ -620,7 +620,12 @@ def _values_for(
 
 #: Archicad error codes worth translating, because the raw number is the only
 #: thing Tapir passes through and the generic message says nothing useful.
-#: Values read off Graphisoft's published error code table.
+#:
+#: A code is a plain GSErrCode: ``APIErrorStart = 0x80000000 | (262 << 16)``, so
+#: the name is the offset ``code + 2130313216`` in ``APIdefs_ErrorCodes.h``. Names
+#: and glosses below are read off Graphisoft's own table in the AC26 dev kit,
+#: ``Documentation/HTML/APIDevKit/APIHTMLLibrary/Level2/Error_Codes.html``. A code
+#: whose offset has no name there is not an API error at all -- print it bare.
 ERROR_CODE_NOTES: dict[int, str] = {
     -2130312909: (
         "APIERR_NOACCESSRIGHT -- Archicad refused write access to the element. "
@@ -635,6 +640,28 @@ ERROR_CODE_NOTES: dict[int, str] = {
         "definition with no defaultValue fails this way"
     ),
     -2130312908: "APIERR_BADPROPERTY -- the property is not valid for this element",
+    -2130312907: (
+        "APIERR_BADCLASSIFICATION -- Archicad will not classify this element; a "
+        "Hatch cannot be classified, and so cannot carry a custom property"
+    ),
+    -2130312912: (
+        "APIERR_HIDDENLAY -- the layer being drawn on is hidden, and Archicad "
+        "creates nothing on a hidden layer. Show it, create, then hide it again"
+    ),
+    -2130312913: (
+        "APIERR_LOCKEDLAY -- the layer being drawn on is locked, and Archicad "
+        "creates nothing on a locked layer"
+    ),
+    -2130313110: (
+        "APIERR_BADDATABASE -- the command cannot run on the current database. "
+        "A worksheet created in this session cannot be activated in it"
+    ),
+    -2130312308: (
+        "APIERR_COMMANDFAILED -- the undoable command threw an exception inside "
+        "Archicad. It names no cause; a dialog waiting to be clicked, or a file "
+        "Archicad cannot write, are the usual ones"
+    ),
+    -2130313112: "APIERR_BADPARS -- the parameters in the request are inconsistent",
 }
 
 

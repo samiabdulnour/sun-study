@@ -1840,3 +1840,371 @@ failed for that reason rather than for the one it was written to catch.
 Terminate and then kill are still there, in that order, behind a twenty-second
 deadline. A run too wedged to notice a file is worse than one stopped roughly.
 
+### D71 — The window is grouped by what comes out of it, not by how hard a setting is
+
+The window asked thirty questions in one column, with about half of them folded
+into an *Advanced* panel at the bottom. That was the wrong cut, and it got worse
+with every study added.
+
+"Advanced" is not a property of a setting. *Facade layers* is not harder than
+*Year* — it is simply the facade study's, and it sat under Advanced only because
+the reference project needed it named and the next project might not. The
+consequence was that no study could be read in one place: somebody setting up the
+facade skin ticked a box at the top of the page, then scrolled past nine settings
+belonging to two other studies to find the layer list that decides what the skin
+is even measuring. A study whose inputs are scattered is a study somebody sets up
+half of, and this tool's entire subject is the wrong answer nobody noticed.
+
+So the settings are now a tab per **output** — General, Facade skin, Solar
+diagrams — because that is the form the work is asked for in: a job wants the
+facade skin, or it wants the solar diagrams. Apartment plans and communal open
+space share one section because they are one deliverable, banding a plan by hours
+of direct sun and read at the same drawing, so where their sheets are filed is
+asked once for the pair.
+
+What survives of Advanced is General, and it is a different claim. The year, the
+title block, the layer combination the export starts from, the numbering the
+results file themselves under and the wait a slow export needs are not advanced,
+they are **shared**: every output is drawn on them, and a copy of each in three
+sections would be three chances to disagree. *Also export* is there for that
+reason and not because it is obscure — the facade skin and the communal study
+both need the zone layers forced into the export, and neither owns the setting.
+
+Tabs cost one thing, and it is the thing this window exists to prevent: a section
+nobody opens is a section nobody knows the state of. A colleague could tick
+Communal open space in March and never see it again. So it is paid for twice, in
+`Window._sync`:
+
+* a tab whose study will run carries a tick on its own label, so the state of
+  every section is legible without opening any of them; and
+* a line directly above Run names every study queued — *"Will run: facade skin,
+  then apartment plans and sheets"* — because with the ticks spread over three
+  sections there is otherwise nowhere on screen that answers "what happens if I
+  press this", and this is a run of several minutes.
+
+Both read from one list, `Window._studies`, which also carries the names `jobs`
+labels the run with. A study called one thing before it runs and another in the
+log is a study nobody can follow.
+
+Two sections are declared and empty — **Shadow diagram** and **Sun eye view**.
+They are here so the shape of the tool is visible and so a setting arriving later
+has a decided place to land instead of being wedged into whichever section is
+nearest; the clock-time subset now says in its own tooltip that it moves to
+Shadow diagram when that study is built. Each says plainly that it does nothing
+yet, and neither carries a tick: an empty page is honest, and a switch that does
+nothing is not. They are not greyed out, because a tab that cannot be opened
+cannot explain itself and reads as something broken.
+
+Every tab scrolls on its own rather than the notebook sitting inside one
+scroller. Solar diagrams is two studies and a dozen questions, each with its
+explanation underneath, and is three times General; a single scroller would size
+itself to the longest and leave every short tab with a bar that moves nothing.
+
+Nothing about the command lines changed. `jobs` builds the same argv from the
+same widgets, which is what the tests assert, and the saved settings are keyed on
+names rather than on position for exactly this case — every field kept the name
+it was saved under, so a settings file written before the sections existed opens
+into them unchanged. The one key that went is `advanced_open`; `open_section`
+replaces it, holding a title rather than a number so that inserting a section
+cannot reopen somebody on a different page than the one they left, and a title
+this build has never heard of leaves the notebook where it is. Losing which tab
+was open is the cheapest thing in that file to lose.
+
+### D72 — A shadow diagram is drawn in the plan, and its subject is attribution
+
+The office's shadow diagrams were made from a 3D Document: model the scheme,
+set the sun, place the document on a sheet, twenty-one times. That has two
+costs, and only the first is about effort.
+
+A 3D Document **cannot be created** through the add-on (D49), so every one of
+them is somebody's hand work before this tool can touch it. And a rendered
+shadow is *a* shadow. It cannot show the split between the shade that was
+already there and the shade the proposal adds — which is the only thing a
+consent authority reads the sheet for. Getting that split out of a render means
+building the scheme twice, once present and once absent, and subtracting the
+two by eye.
+
+Computed, it is two ray casts and a boolean:
+
+```
+shaded_before = ~sunlit(context alone)
+shaded_after  = ~sunlit(context and the proposal)
+
+existing   = shaded_before
+additional = shaded_after and not shaded_before
+```
+
+and the same subtraction against a planning envelope answers "how much of that
+could have been cast by anything the controls allow here anyway". All three
+come off one grid and are differenced against the same `before`, so the fills
+abut rather than overlap and their areas add. That last part is tested, because
+overlapping masks would put the blue on top of the grey and the sheet would
+quietly claim the proposal darkened ground it did not.
+
+**One horizontal plane, not the terrain.** Every consent authority draws to a
+flat datum, and it is the only surface on which the outlines stay legible at
+1:1000 — draped on a site mesh the shadow steps at every roof edge and every
+contour. It is not a claim about the ground, and a sloping site really does
+catch a shadow further up the hill than this says.
+
+**The datum is project zero, and this cost a run to learn.** It defaulted to
+the lowest point of the geometry, which is the bottom of the basement
+excavation — 10.83 m under the street on the reference project. A plane down
+there is below the whole site, so everything above shades it: measured, 24% of
+the plane permanently dark and 875,156 m² of "existing shadow" on a suburban
+block. Archicad's zero is conventionally the ground floor level, which is the
+right default; `--shadow-datum` moves it. The related trap is the site mesh
+handed in among the context, which fills the sheet solid grey the same way and
+cannot be seen in the drawing — `permanently_dark_share` is reported so it
+shows up as a number instead.
+
+**One layer to an hour, and a combination to match.** Twenty-one hours on one
+layer is twenty-one overlapping fills. They could go on twenty-one worksheets,
+which is what the communal hourly plans do — but a worksheet carries only what
+this tool draws into it, and a shadow diagram is meaningless without the
+neighbourhood under it. The reference sheets show roads, boundaries and every
+neighbouring building, and that context is the *model*. So each hour gets a
+layer and a Layer Combination that shows it and hides its twenty siblings, and
+a View pinned to that combination is the site plan with exactly one hour on it.
+The combination leaves every other layer as it found it: what belongs on a site
+plan is the practice's decision, already recorded in whatever combination they
+draw site plans with.
+
+**North needs no correction here, and that is worth writing down.** The export
+reports a true north bearing of 0°, which looks like a lost georeference and is
+not: Archicad's Survey Point model position rotates the geometry through
+`IfcSite`'s placement and then writes `TrueNorth` as (0,1), because the world
+coordinates really are north-aligned (see `cross_check_georeferencing`). The
+command runs that cross-check before any number reaches the screen, for the
+same reason `archicad-run` does.
+
+**What is not built.** The LEP envelope is implemented in `core.shadow` and
+reachable from Python, but not from the command line: it needs the site
+boundary as a polygon, and the boundary Archicad holds is in the project frame
+while the shadows are computed in the export's. Fitting one onto the other is
+D46's machinery and has not been wired. Existing-versus-additional needs no
+boundary and is the argument the drawing exists to make.
+
+### D73 — Fills carry an ID and a group, because they cannot carry each other
+
+The drawings say how much sun something gets; the numbers behind them left the
+project by a different door — a CSV, or the run's log. A figure that lives
+outside the file it describes is one somebody reconciles by hand, or scales off
+a drawing with a rule.
+
+Archicad already has the machinery and it is a Schedule: list every Fill whose
+ID contains `SOLAR`, group by ID, sum `Area`. `Area` is a built-in property of
+a Fill and `Element ID` is a writable one, so the only missing part was the
+tool filling the ID in.
+
+```
+SUN STUDY / SOLAR  / 2-3 hrs
+SUN STUDY / SHADOW / JUNE 21 -9AM / ADDITIONAL
+```
+
+`SUN STUDY` first so one filter finds everything the tool drew — the group word
+and not the layer prefix, because `14 |` in an element ID reads as a mistake.
+Then the study, because that is the split a reader wants first and what a
+schedule filters on. Then enough detail that the same schedule breaks down by
+band, or by hour and by whose shadow it is.
+
+**What is deliberately not tagged is the part that matters.** A legend swatch
+or a site boundary caught by the same filter is added to the area, and nothing
+on the schedule says so. The first cut of this tagged the site boundary
+`SUN STUDY / SHADOW / SITE BOUNDARY` and would have added the whole site to
+every shadow total. So only measured fills are tagged; legend swatches, the
+site boundary and the floor footprint under a sun patch are created untagged
+and pass through as `None`. Tested, because none of it is visible in the
+drawing.
+
+**Ordering is refused, not repaired.** Create commands answer in the order they
+were given, and that order is the only link between a hatch and the hour it was
+drawn for. On a count mismatch `stamp_in_order` writes nothing and says so: IDs
+against a shifted list would put "9AM EXISTING" on a fill drawn for three in
+the afternoon, and a schedule would total it without complaint. That is worse
+than no ID at all.
+
+#### Merging is impossible, and grouping is what was actually wanted
+
+`CreateHatches` documents its own limit — *"The 2D coordinates of the hatch
+outline (single contour, no holes)"* — with `additionalProperties: false`, so
+no holes field can be smuggled in. (`CreateSlabs` and `CreateZones` do take
+`holes`; fills do not.) Two apartments, or a shadow and the sunlit courtyard
+inside it, can never be one element.
+
+It is also the wrong goal: merged into one element the schedule loses the
+per-band area, which is the number the IDs were added for. What Archicad offers
+for "these belong together" is a **Group**, and `CreateGroups` (Archicad 26 and
+newer) does it: one group per category, keyed on the same string the ID carries
+so selection and schedule always agree. The elements stay separate, so each
+keeps its own `Area`.
+
+What *was* available was tracing instead of tiling. `series` still merged lit
+cells into maximal rectangles while `penetration` had moved to traced outlines.
+On a synthetic diagonal band at half-metre cells — the shape a real sun-patch
+edge takes — that is 531 rectangles against 17 outlines. The lit area is now
+counted off the mask rather than summed from rectangles: equivalent, and it
+stays right if the shapes ever change again.
+
+#### No contour, as far as the add-on reaches
+
+There is no switch. `CreateHatches` exposes `contourPenIndex`, which sets
+`element.hatch.contPen.penIndex`, and nothing else — no "show contour" flag. So
+`BandStyle.contour_pen` defaults to `None`, meaning *draw it in the fill's own
+pen*, which is invisible against the fill. A black hairline round every cell of
+a patch turns a colour field into a grid of boxes, and at 1:200 the boxes are
+what a reader sees.
+
+A genuinely contour-less fill is reachable one way and it needs a person: make
+a Favorite by hand with the contour switched off and pass its name, since
+`CreateHatches` takes `favoriteName` and applies it before the explicit fields.
+The same route D50 needed for a wall's surface override, and the only one there
+is.
+
+---
+
+### D74 — A refusal to draw is not a report, and the last save is not a step
+
+Both halves of this came off one colleague's run of the reference project. The
+console showed ten sheets built, tiled, given tables and filed, and then:
+
+```
+CommandFailedError: Tapir command SaveProject failed: Failed to save the
+project. (code -2130312308)
+[the study stopped, exit code 1]
+```
+
+**The sheets were empty.** Every band drawing had been refused, one line per
+band, in red, and the run had gone on regardless:
+
+```
+The export and the project disagree about where the apartments are:
+0.70 m of residual, over the 0.5 m limit.
+```
+
+`_draw_zone_groups` answered `True` for *both* "Archicad refused this" and
+"the plan is drawn but incomplete", and the caller appended to `made` without
+consulting either. So the layer was empty and the run still built a layout, a
+view, a layer combination and a table around it. Ten of them. A blank drawing
+under a correct title is worse than a missing sheet, because a reader takes it
+for a finding rather than for a failure.
+
+So a refusal now answers `None` and an incomplete report answers itself. The
+difference is the whole point: an incomplete plan has fills behind it and is
+worth a sheet; a refused one has nothing. `_sheet_per_instant` says so and
+stops when it is handed no labels at all.
+
+**The last save is not a step, and nothing may depend on it.** The first
+`SaveProject` in `_sheet_per_instant` is load-bearing — a layout is unreadable
+until it exists on disk (D39) — and has been guarded since. The last one is
+not: by the time it runs the fills are in the model, the sheets are made,
+straightened, tabled and filed, and the file reaching disk changes nothing
+that follows. It was the function's last statement, unguarded, and it took the
+whole study down with it, losing every step of `massing` that came after.
+
+Why Archicad refuses a save it accepted a minute earlier is its own business —
+a dialog open in front of it, a `.pln` on a network share or under a sync
+client, a lock. `-2130312308` is `APIERR_COMMANDFAILED` — *"the invoked undoable
+command threw an exception"*, the generic answer out of
+`ACAPI_CallUndoableCommand`, not the file-layer error this entry first called it,
+and it names no cause at all. Tapir relays it without adding to it. The tool cannot fix that and should not
+pretend to; what it can do is say so loudly, say that nothing is lost, and
+carry on. The same guard is on the statistics sheet's final save, which had
+the same shape.
+
+---
+
+### D75 — A run measures what it names, and a refusal names what disagrees
+
+Two things from the same communal open space study, both about the run doing
+work whose result nobody could use.
+
+#### The residual now says which Zone
+
+`0.70 m of residual, over the 0.5 m limit` and nothing else. It is a plan fit
+— height is discarded before fitting (`fit_plan_transform` takes `[:, :2]`) —
+and it is *relative*: rigid, so a whole export shifted or rotated fits
+perfectly. What it measures is the paired Zones disagreeing with each other.
+For a communal study those Zones are mostly flats borrowed to place the
+drawing and none of them is the thing being measured, which is also why the
+message must not say "apartments". It did.
+
+Per-pair distances alone are not the diagnosis, which the first attempt got
+wrong. A rigid fit cannot isolate an outlier: it rotates and shifts to split
+the difference, so one Zone moved by 2 m leaves every other pair out too.
+Measured, one 2 m outlier among five pairs reads
+
+```
+1.27, 0.62, 0.58, 0.28, 0.17 m
+```
+
+which is indistinguishable by eye from a uniformly stale export. **Refitting
+without each pair does separate them.** If dropping one takes the rest inside
+the limit, that Zone is the disagreement; if several removals each rescue the
+fit, the export has drifted as a whole; if none does, it is badly out of step.
+Three verdicts, three different remedies, and the refusal now gives one by
+name. Not computed below four pairs, where dropping one leaves two, which fit
+perfectly by construction and would clear whichever Zone was asked about.
+
+#### The site surfaces are not computed for a Zone study
+
+The same run measured 1,070,938 m² of facade and 1,946,135 m² of open ground,
+every sample ray-cast at every instant of the window, to answer a question
+about 828 m² of courtyard. Roughly three thousand times the area, for figures
+nothing in the tool reads: `--model-bands` casts its own rays over its own
+panels, and the facade and ground tables are consumed only by the report of
+them.
+
+So a run measures what it names. Name a Zone and the study is about that Zone;
+name none and it is the ordinary massing run, facade and ground, unchanged.
+`MassingConfig.assess_facade` / `assess_ground` are `bool | None`, `None`
+following the rule, so setting either explicitly still gets both — and the
+rule has one home, read through `measures_facade`, rather than one copy per
+caller. The CLI states nothing.
+
+A surface that was not assessed is `None`, never an empty band table, and
+reads as `facade not assessed` rather than `0 facade samples (0.0 m2)`. The
+two are different findings and only one is worth chasing: a facade measured as
+zero means the subject filter matched nothing.
+
+On the test fixture — a 93 m² zone in a 1,640 m² site, so a mild case — that
+is 4.5x. On the project it came from, the ratio of areas is a thousand times
+larger.
+
+---
+
+### D76 — Which storey to draw on and which storey to sheet are two questions
+
+Reported from a real project: the communal fills came out on level 8, where
+the Zones are not. The study's spaces were sky terraces at 98, 108 and 127 m.
+
+The storey was chosen with `next(iter(...))` over a **set** of the measured
+Zones' storey indices — so which Zone won was arbitrary, and since `str`
+hashing is randomised per process, the same study could put its fills on a
+different floor on the next run. Whichever won, every cell of every Zone was
+then forced onto it: two thirds of that drawing was on a floor its subject is
+not on.
+
+`draw_cell_groups` already had the right path. `on_storey=None` groups the
+cells by their parent and puts each on that parent Zone's own `floorInd`,
+which is what the apartment diagrams have always done; the forced storey
+exists for *open ground*, which belongs to no Zone and genuinely has one
+level. A Zone study is not that case. So a storey is forced only when the
+Zones actually share one.
+
+**And then the sheets disappeared.** The sheet block was gated on that same
+forced storey — `if sheet and on_storey is not None` — so the moment the Zones
+stopped sharing a level, which is precisely the case the forcing exists to
+avoid, no sheet was made at all. Silently: the fills were drawn correctly on
+three storeys and nothing was ever put on paper.
+
+They are two questions. *Where may the fills be forced?* Only onto a shared
+storey. *Which plans do the sheets come from?* All of them —
+`_sheet_per_instant` takes a list and makes a view per storey, so there was
+never a choice to make. `_zone_storeys` answers both and is a pure function,
+because the bug was in the reasoning and not in anything Archicad said.
+
+A Zone whose storey Archicad will not report is dropped from the second answer
+rather than guessed at. It still gets fills, on whatever storey is current,
+which is the best available without a home for it — and the run says so
+instead of making an empty sheet.

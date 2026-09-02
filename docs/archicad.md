@@ -1,7 +1,8 @@
 # Talking to Archicad
 
 Everything in `sun_study/archicad/` is written against the protocol as it actually is,
-read out of the Tapir add-on's own sources. This page records **what was verified,
+read out of the Tapir add-on's own sources and, where Tapir only relays a number,
+out of Graphisoft's own dev kit behind it. This page records **what was verified,
 against which version, and where each fact came from**, plus the two facts that could
 not be verified without an Archicad and the checklist that settles them.
 
@@ -18,6 +19,7 @@ politely refuses, or worse, one it accepts and misinterprets.
 | Archicad | **26** (Windows), the office's version |
 | Tapir add-on | **1.5.7**, from `archicad-addon/Sources/AddOnVersion.hpp` |
 | Minimum add-on | **1.5.1** — `GetElementsByIFCIds` is the binding constraint |
+| API Dev Kit | **26.3000**, extracted at `C:\ACAPI` — Graphisoft's headers, error table, reference and 42 examples |
 | Port | `19723` on `127.0.0.1` |
 
 **AC26 is supported.** `TapirAddOn_AC26_Win.apx` is a published release artefact, and
@@ -67,13 +69,49 @@ A third case is subtler still and is documented under [write-back](#write-back) 
 some commands report per-item outcomes *inside* a successful response, and one of those
 outcomes is an empty object.
 
+### The number is the whole diagnostic, and the dev kit decodes it
+
+Tapir's messages are fixed strings — *"Failed to create new Label"* says nothing about
+why — so the code Archicad hands back is the only thing carrying a reason. It is a plain
+`GSErrCode`, and the dev kit gives the arithmetic that names it
+(`Support/Inc/APIdefs_ErrorCodes.h:27`, `Support/Modules/GSRoot/Definitions.hpp:552`):
+
+```
+APIErrorStart = 0x80000000 | (262 << 16) = 0x81060000 = -2130313216
+name offset   = the number + 2130313216
+```
+
+Every code this tool has met, decoded and cross-read against Graphisoft's published
+table (`Documentation/HTML/APIDevKit/APIHTMLLibrary/Level2/Error_Codes.html`):
+
+| Code | Name | Graphisoft's own words |
+|---|---|---|
+| `-2130313112` | `APIERR_BADPARS` | The passed parameters are inconsistent |
+| `-2130313110` | `APIERR_BADDATABASE` | The command cannot be executed on the current database |
+| `-2130313104` | `APIERR_BADVALUE` | The passed autotext value is not valid |
+| `-2130312913` | `APIERR_LOCKEDLAY` | The referenced layer is locked |
+| `-2130312912` | `APIERR_HIDDENLAY` | The referenced layer is hidden |
+| `-2130312910` | `APIERR_NOTMINE` | The database item is not in the user's workspace |
+| `-2130312909` | `APIERR_NOACCESSRIGHT` | Can't access / create / modify / delete an item in a teamwork server |
+| `-2130312908` | `APIERR_BADPROPERTY` | The property for the passed element or attribute is not available |
+| `-2130312907` | `APIERR_BADCLASSIFICATION` | Can't set the classification for the passed element or attribute |
+| `-2130312308` | `APIERR_COMMANDFAILED` | The invoked undoable command threw an exception |
+
+`write.explain_code` carries the same table, so a failure says the name and the likely
+cause rather than a bare number. Two of these had been read off the message printed
+beside them, and both readings were wrong: the label refusal below, and [D74](decisions.md).
+
+A number whose offset has **no name** is not an AC26 API error at all, whatever its
+module bits claim — `-2130313081` is offset 135, in the gap between `APIERR_BADTOKEN`
+(117) and `APIERR_NO3D` (201). Print such a number; do not translate it.
+
 ### The wait is sized for the export, and it is not proof of failure
 
 One command is slow and the rest are not. `IFCFileOperation` on a real project is
 minutes: 455 MB on `2614_Kogarah`, which walked straight through the five-minute wait
 the tool started with. The default is now **30 minutes**
 (`DEFAULT_TIMEOUT_SECONDS`), raised or lowered with `--timeout` in seconds, or from
-the window with *Archicad wait (min)* under Advanced.
+the window with *Archicad wait (min)* under General.
 
 Two things to know when it does time out:
 
@@ -183,6 +221,20 @@ no zone to draw" over a project where every one of them was still there.
 `read.elements_by_ifc_ids` offers both forms in one request and maps the answer back onto
 whichever the caller asked with. `expanded_ifc_guid` does the conversion.
 
+The dev kit confirms both halves first-hand. Archicad keeps the IFC identifier *as a
+GUID* — `API_IFCEntityDescriptor.ifcGlobalId` is an `API_Guid`, not a string
+(`Support/Inc/APIdefs_IFC.h:57`) — and ships the conversion as API, new in 26:
+
+```cpp
+ACAPI_IFC_IFCGuidToAPIGuid (const GS::UniString& ifcGuid, API_Guid& apiGuid);   // ACAPinc.h:1567
+ACAPI_IFC_APIGuidToIFCGuid (const API_Guid& apiGuid, GS::UniString& ifcGuid);   // ACAPinc.h:1569
+```
+
+Its own documented worked example is `"32vZ_y6Kf8bQUeOicmrSnx"` →
+`"C2E63FBC-194A-4895-A7A8-62C9B0D5CC7B"`. So the two spellings are Graphisoft's design
+rather than a drift between export and project, and `expanded_ifc_guid` implements a
+documented, versioned conversion rather than a guess.
+
 ### `CreateLayout` needs a master, whatever its schema says
 
 The published `inputScheme` requires only `layoutName`. The implementation refuses that
@@ -269,6 +321,14 @@ So each database answers with its own combination, reapplied on every switch.
 A write made outside the model lasts until the next switch and never reaches
 the model at all.
 
+The dev kit says why, and the mechanism is worth carrying: **there is only one
+set of layer flags.** `APILay_Hidden` is a flag on the layer *attribute*, which
+is project-wide (`API_LayerType`), and the active combination is single global
+environment state — `APIEnv_GetCurrLayerCombID` / `APIEnv_ChangeCurrLayerCombID`,
+one index, no database parameter. A switch does not consult a private copy per
+database; it reapplies that window's combination over the one shared set. Every
+consequence below follows from that, and none of them change.
+
 Two consequences worth carrying into any new code:
 
 - **A snapshot taken in one database and restored later restores nothing.** It
@@ -316,10 +376,29 @@ forbids it — the refusal comes from Archicad itself.
 The add-on's own example places a live property label with
 `<PROPERTY-{guid}>` autotext in `text` alongside `parentElementId`, and the
 element-creation base class deliberately suppresses autotext resolution so the
-token is stored rather than frozen. It fails here anyway: the text branch runs
-only when the Label tool's *current default* is a text-class label, and this
-project's is not. Until that is settled, annotation is **static text on a leader**
-— which is what the office's own reference drawing uses.
+token is stored rather than frozen. Graphisoft's own associative-label example
+does the same thing for the same reason, bracketing `ACAPI_Element_GetDefaults`
+with `APIAny_ChangeAutoTextFlagID`
+(`Examples/Element_Test/Src/Element_Basics.cpp:1578`).
+
+**The refusal is about the layer, not the label.** `-2130312912` decodes to
+`APIERR_HIDDENLAY`, *"The referenced layer is hidden"* — it says nothing about
+label classes, which was this page's first reading of it. The mechanism is in
+that same example: it sets `parentType` **before** `GetDefaults`, so what comes
+back — layer included — is the Label tool's default *for that parent type*. The
+coordinates-only call and the `parentElementId` call therefore pick up different
+defaults, which is why one lands and the other does not.
+
+That is a general rule and it governs far more than labels. `API_LayerType`'s own
+remarks state it flatly: *"you cannot create elements on a locked or hidden layer
+... you need to create elements on visible layers, and then modify the visibility
+of the layers."* It binds `CreateHatches`, `CreateWalls` and `CreateTexts` no less.
+Create first, hide afterwards, never the other way round.
+
+**None of this has been re-measured.** It is the dev kit's reading, not a live
+Archicad's: nobody has yet shown the Zone-label default's layer and asked again.
+Until somebody does, annotation stays **static text on a leader** — which is what
+the office's own reference drawing uses.
 
 ### One place the schema and the implementation disagree
 
@@ -525,7 +604,7 @@ machine-checked against a fake transport:
 | Drawing into a Worksheet created in the same session | **fails**: `-2130313110`, before and after `RebuildView` |
 | Properties or classifications on a Fill | **refused by Archicad**: `-2130312908` / `-2130312907` |
 | `CreateLabels` with coordinates and static text | **works** |
-| `CreateLabels` with `parentElementId` (live property autotext) | **fails**: `-2130312912`, the Label tool default is not text-class |
+| `CreateLabels` with `parentElementId` (live property autotext) | **fails**: `-2130312912` = `APIERR_HIDDENLAY` — the parent-type default's layer is hidden. Not yet re-measured |
 | Property values onto hotlinked Zones | **refused**: 6 of 10 apartments are hotlink instances, read-only in the host |
 | `CreateWorksheets` then `ChangeWindow` then `CreateHatches` | **works on an existing worksheet**: 6396 fills and 19 captions landed in `Solar Penetration Outlines`, none of them on the floor plan |
 | Leaving a worksheet, programmatically | **cannot be done on AC26**: `windowType` alone, with `storyIndex`, and with a floor plan's `databaseId` all answer `{"success": true}` and change nothing |

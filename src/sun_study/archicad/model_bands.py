@@ -46,7 +46,7 @@ make a floor plan current first.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -55,7 +55,7 @@ from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import BandStyle, LayerState, ensure_layer
 from sun_study.archicad.layers import borrowed
-from sun_study.archicad.penetration import MAX_FIT_RESIDUAL_M, box_centre
+from sun_study.archicad.penetration import MAX_FIT_RESIDUAL_M, box_centre, zone_label
 from sun_study.archicad.read import elements_by_ifc_ids, zones
 from sun_study.archicad.series import ensure_model_database
 from sun_study.core.facade import PanelRectangle
@@ -282,6 +282,7 @@ def fit_to_project(connection: ArchicadConnection, model: IfcModel) -> PlanTrans
 
     source: list[list[float]] = []
     target: list[list[float]] = []
+    keys: list[str] = []
     for space in spaces:
         guids = found.get(space.global_id, [])
         if len(guids) != 1:
@@ -291,6 +292,7 @@ def fit_to_project(connection: ArchicadConnection, model: IfcModel) -> PlanTrans
             continue
         source.append(box_centre(space.mesh.vertices))
         target.append(box_centre(np.array(zone.outline, dtype=np.float64)))
+        keys.append(zone_label(zone, space.global_id))
 
     if len(source) < 2:
         raise ArchicadError(
@@ -299,13 +301,14 @@ def fit_to_project(connection: ArchicadConnection, model: IfcModel) -> PlanTrans
             f"would be built beside the building rather than on it."
         )
 
-    transform = fit_plan_transform(np.array(source), np.array(target))
+    transform = replace(fit_plan_transform(np.array(source), np.array(target)), keys=tuple(keys))
     if transform.rmse_m > MAX_FIT_RESIDUAL_M:
         raise ArchicadError(
             f"The export and the project do not agree on where the building is: "
             f"fitting {len(source)} Zones leaves {transform.rmse_m:.2f} m of "
             f"residual, over the {MAX_FIT_RESIDUAL_M:g} m limit. The export is "
-            f"probably not of this project's current state."
+            f"probably not of this project's current state.\n"
+            + transform.describe_disagreement(MAX_FIT_RESIDUAL_M)
         )
     return transform
 

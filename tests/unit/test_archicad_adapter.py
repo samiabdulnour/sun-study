@@ -20,6 +20,7 @@ import json
 import math
 import threading
 import time
+import types
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import replace
@@ -4437,3 +4438,201 @@ def test_legend_rows_clear_each_other() -> None:
     assert min(gaps) > TEXT_MODEL_HEIGHT_M, (
         "consecutive labels must not overlap at the height they are drawn at"
     )
+
+
+# -- what a run does when the drawing, or the saving, is refused ----------
+# Both were measured on a colleague's run of the reference project: seven
+# band plans and ten instant sheets were built and filed for layers that had
+# nothing on them, and then the study exited 1 at its last statement.
+
+
+class _SaveRefusing:
+    """Answers every command, and refuses to save from the nth one on.
+
+    The first save has to succeed, because that is what makes a new layout
+    readable and the run returns early without it; the interesting failure is
+    the last one, after the work is finished.
+    """
+
+    def __init__(self, refuse_from: int) -> None:
+        self.refuse_from = refuse_from
+        self.saves = 0
+
+    def run_tapir(self, command: str, parameters: dict[str, Any] | None = None) -> Any:
+        if command == "SaveProject":
+            self.saves += 1
+            if self.saves >= self.refuse_from:
+                raise CommandFailedError(
+                    "Tapir command SaveProject failed: Failed to save the project. "
+                    "(code -2130312308)"
+                )
+        return {}
+
+
+def _sheet_collaborators(monkey: pytest.MonkeyPatch) -> None:
+    """Stand in for everything ``_sheet_per_instant`` talks to but the save."""
+    import sun_study.cli as cli
+    from sun_study.archicad.sheets import SheetReport
+
+    placed = types.SimpleNamespace(
+        describe=lambda: "placed 1 drawings at 1:300 on layout 'Sun Study Communal'",
+        database_id="lay",
+    )
+    monkey.setattr(cli, "project_map", lambda *_: [types.SimpleNamespace(storey_index=8)])
+    monkey.setattr(cli, "tool_layers", lambda *_: [])
+    monkey.setattr(cli, "ensure_layer_combination", lambda *a, **k: "Sun Study Communal")
+    monkey.setattr(
+        cli,
+        "views_for_storeys",
+        lambda *a, **k: [types.SimpleNamespace(navigator_id="v8", name="Communal")],
+    )
+    monkey.setattr(cli, "layout_from_views", lambda *a, **k: placed)
+    monkey.setattr(cli, "layout_sheet", lambda *a, **k: (object(), None))
+    monkey.setattr(cli, "straighten_and_tile", lambda *a, **k: SheetReport(0, 0))
+    monkey.setattr(cli, "ensure_model_database", lambda *_: None)
+
+
+def test_a_refused_last_save_does_not_throw_the_finished_study_away(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Measured: a study that had drawn, sheeted, tiled and filed everything
+    exited 1 on its final ``SaveProject`` -- the one statement in the function
+    that nothing else depends on -- and lost every step that came after it."""
+    import sun_study.cli as cli
+
+    connection = _SaveRefusing(refuse_from=2)
+    monkey = pytest.MonkeyPatch()
+    _sheet_collaborators(monkey)
+    try:
+        cli._sheet_per_instant(
+            connection,  # type: ignore[arg-type]
+            labels=["Communal"],
+            storeys=[8],
+            layer_prefix="14 |",
+            master_layout=None,
+        )
+    finally:
+        monkey.undo()
+
+    assert connection.saves == 2, "the last save is still attempted"
+    said = capsys.readouterr()
+    assert "would not save" in said.err
+    assert "Save it in Archicad" in said.err, "and the run says what to do about it"
+
+
+def test_no_sheets_are_made_for_a_run_that_drew_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The other half of the same run: every band was refused, so there was
+    nothing to put on a sheet, and ten layouts were built anyway."""
+    import sun_study.cli as cli
+
+    connection = _SaveRefusing(refuse_from=99)
+    monkey = pytest.MonkeyPatch()
+    _sheet_collaborators(monkey)
+    monkey.setattr(cli, "layout_from_views", _refuse("a layout should never be asked for here"))
+    try:
+        cli._sheet_per_instant(
+            connection,  # type: ignore[arg-type]
+            labels=[],
+            storeys=[8],
+            layer_prefix="14 |",
+            master_layout=None,
+        )
+    finally:
+        monkey.undo()
+
+    assert connection.saves == 0, "nothing was made, so there is nothing to save"
+    assert "nothing was drawn" in capsys.readouterr().err
+
+
+def _refuse(why: str) -> Any:
+    def never(*_: Any, **__: Any) -> Any:
+        raise AssertionError(why)
+
+    return never
+
+
+@pytest.mark.parametrize("helper", ["_draw_zone_groups", "_draw_groups"])
+def test_a_refused_drawing_is_told_apart_from_an_incomplete_one(helper: str) -> None:
+    """The caller decides whether to build a sheet on the answer to this.
+
+    A report that comes back incomplete still has fills behind it and is worth
+    a sheet; a refusal leaves the layer empty, and a sheet made over an empty
+    layer is a blank drawing that a reader takes for a finding.
+    """
+    import sun_study.cli as cli
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(
+        cli, "draw_cell_groups", _refuse_with(ArchicadError("the export and the project disagree"))
+    )
+    extra = {"on_storey": 0} if helper == "_draw_zone_groups" else {}
+    try:
+        answer = getattr(cli, helper)(
+            object(), [], {}, layer_name="14 | Communal", title="Communal", **extra
+        )
+    finally:
+        monkey.undo()
+
+    assert answer is None, "a refusal is not a report, and must not read as one"
+
+
+def _refuse_with(error: Exception) -> Any:
+    def never(*_: Any, **__: Any) -> Any:
+        raise error
+
+    return never
+
+
+# -- which storey a communal Zone is drawn on -----------------------------
+# Reported from a real project: the fills came out on level 8 when the Zones
+# live elsewhere. The study's spaces were sky terraces at three heights, and
+# a single storey was picked for all of them out of an unordered set.
+
+
+def test_zones_sharing_a_storey_are_forced_onto_it() -> None:
+    import sun_study.cli as cli
+
+    assert cli._zone_storeys([8, 8, 8]) == (8, [8])
+
+
+def test_zones_on_different_storeys_are_each_drawn_on_their_own() -> None:
+    """No storey is forced, which selects the per-Zone path in the drawing.
+
+    Picking one, as this did, put two thirds of a three-terrace study on a
+    floor those terraces are not on.
+    """
+    import sun_study.cli as cli
+
+    on_storey, storeys = cli._zone_storeys([24, 27, 31])
+    assert on_storey is None, "nothing to force them onto"
+    assert storeys == [24, 27, 31], "and a plan of each, so all three reach paper"
+
+
+def test_the_sheets_are_not_lost_when_the_storeys_differ() -> None:
+    """The bug behind the bug. The sheet block was gated on the forced storey,
+    so the case the forcing exists to avoid also silently produced no sheets
+    at all -- fills drawn correctly on three levels, nothing on paper."""
+    import sun_study.cli as cli
+
+    _, storeys = cli._zone_storeys([24, 27, 31])
+    assert storeys, "a run that drew something has somewhere to draw it from"
+
+
+def test_the_storey_does_not_depend_on_set_ordering() -> None:
+    """It was chosen with next(iter(set)) over a set of GUID-keyed storeys, so
+    which one won was arbitrary -- and str hashing is per-process, so the same
+    study could put its fills on a different floor on the next run."""
+    import sun_study.cli as cli
+
+    assert cli._zone_storeys([31, 24, 27]) == cli._zone_storeys([24, 31, 27])
+    assert cli._zone_storeys([31, 24, 27])[1] == [24, 27, 31], "and sorted, not incidental"
+
+
+def test_a_zone_with_no_storey_is_dropped_rather_than_guessed_at() -> None:
+    import sun_study.cli as cli
+
+    assert cli._zone_storeys([None, 12]) == (None, [12])
+    assert cli._zone_storeys([None]) == (None, []), "nothing to make a sheet from"
+    assert cli._zone_storeys([]) == (None, [])

@@ -749,3 +749,91 @@ def test_a_flat_zone_reads_the_same_either_way() -> None:
     assert planar is not None and draped is not None
     assert draped.total_area_m2 == pytest.approx(planar.total_area_m2, rel=0.02)
     assert np.allclose(draped.positions[:, 2], planar.positions[0, 2], atol=0.01)
+
+
+# -- a run measures what it names -----------------------------------------
+# A colleague's communal open space study spent its time on two surfaces
+# nobody had asked for: 1,070,938 m2 of facade and 1,946,135 m2 of ground,
+# ray-cast at every instant, to answer a question about 828 m2 of courtyard.
+# Nothing reads those tables but the report of them, so it bought nothing.
+
+
+def test_naming_a_zone_makes_the_study_about_that_zone() -> None:
+    result = run_massing(
+        SAMPLE,
+        timezone=SYDNEY,
+        massing_config=MassingConfig(timezone=SYDNEY, zone_names=("Apartment L00-A",)),
+    )
+
+    assert result.zone is not None, "the thing that was asked for"
+    assert result.facade is None, "and not the two that were not"
+    assert result.ground is None
+    assert len(result.scene.facade_samples) == 0, "never sampled, not sampled and discarded"
+    assert len(result.scene.ground_samples) == 0
+
+
+def test_naming_no_zone_is_the_ordinary_massing_run() -> None:
+    """The metric a massing loop maximises, unchanged. Naming nothing must not
+    read as asking for nothing."""
+    result = run_massing(
+        SAMPLE,
+        timezone=SYDNEY,
+        massing_config=MassingConfig(timezone=SYDNEY, facade_spacing_m=2.0),
+    )
+
+    assert result.facade is not None and result.facade.total_area_m2 > 0
+    assert result.ground is not None and result.ground.total_area_m2 > 0
+
+
+def test_a_surface_can_be_asked_for_alongside_a_zone() -> None:
+    """The rule is a default, not a rule you cannot get out of."""
+    result = run_massing(
+        SAMPLE,
+        timezone=SYDNEY,
+        massing_config=MassingConfig(
+            timezone=SYDNEY,
+            zone_names=("Apartment L00-A",),
+            facade_spacing_m=2.0,
+            assess_facade=True,
+        ),
+    )
+
+    assert result.facade is not None, "explicitly asked for, so measured"
+    assert result.ground is None, "not asked for, so not"
+    assert result.zone is not None
+
+
+def test_a_skipped_surface_is_not_reported_as_zero() -> None:
+    """ "Not measured" and "measured as nothing" are different findings, and
+    the second is worth chasing: a facade of zero area means the subject
+    filter matched nothing at all."""
+    scene = build_massing_scene(
+        read_ifc(SAMPLE), MassingConfig(timezone=SYDNEY, zone_names=("Apartment L00-A",))
+    )
+
+    said = scene.describe()
+    assert "facade not assessed" in said
+    assert "0 facade samples" not in said
+    assert "0.0 m2" not in said
+
+
+def test_a_skipped_surface_costs_nothing_rather_than_being_computed_and_dropped() -> None:
+    """The whole point. Returning None from a full computation would report
+    the same and save nothing."""
+    import time
+
+    def seconds(**kw: object) -> float:
+        start = time.perf_counter()
+        run_massing(
+            SAMPLE,
+            timezone=SYDNEY,
+            massing_config=MassingConfig(timezone=SYDNEY, **kw),  # type: ignore[arg-type]
+        )
+        return time.perf_counter() - start
+
+    whole_site = seconds()
+    zone_only = seconds(zone_names=("Apartment L00-A",))
+    assert zone_only < whole_site / 2, (
+        f"a zone study took {zone_only:.3f}s against {whole_site:.3f}s for the "
+        f"whole site, which is not the saving this exists for"
+    )

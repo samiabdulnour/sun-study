@@ -361,8 +361,15 @@ class MassingResult:
     ruleset: Ruleset
     area_key: str
     threshold_minutes: float
-    facade: BandedResult
-    ground: BandedResult
+    facade: BandedResult | None
+    """The subject's upright faces, banded. ``None`` when not assessed.
+
+    Not an empty table: a run that did not measure the facade and one that
+    measured no facade area are different findings, and only one of them is
+    worth investigating. See ``MassingConfig.assess_facade``.
+    """
+    ground: BandedResult | None
+    """The open ground, banded. ``None`` when not assessed, as above."""
     sun_position_count: int
     assessment_date: dt.date
     zone: BandedResult | None = None
@@ -386,25 +393,27 @@ class MassingResult:
 
     def summary(self) -> str:
         hours = self.threshold_minutes / 60.0
-        return (
-            f"facade area with >{hours:g}hrs on "
-            f"{self.assessment_date.isoformat()}: "
-            f"{self.facade.at_or_above_threshold_share:.2%} "
-            f"({self.facade.at_or_above_threshold_m2:.1f} of "
-            f"{self.facade.total_area_m2:.1f} m2)\n"
-            f"  open ground with >{hours:g}hrs: "
-            f"{self.ground.at_or_above_threshold_share:.2%} "
-            f"({self.ground.at_or_above_threshold_m2:.1f} of "
-            f"{self.ground.total_area_m2:.1f} m2)"
-            + (
-                f"\n  named zones with >{hours:g}hrs: "
-                f"{self.zone.at_or_above_threshold_share:.2%} "
-                f"({self.zone.at_or_above_threshold_m2:.1f} of "
-                f"{self.zone.total_area_m2:.1f} m2)"
-                if self.zone is not None
-                else ""
+        lines = [
+            f"{where} with >{hours:g}hrs{on}: "
+            f"{table.at_or_above_threshold_share:.2%} "
+            f"({table.at_or_above_threshold_m2:.1f} of {table.total_area_m2:.1f} m2)"
+            for where, on, table in (
+                ("facade area", f" on {self.assessment_date.isoformat()}", self.facade),
+                ("open ground", "", self.ground),
+                ("named zones", "", self.zone),
             )
-        )
+            if table is not None
+        ]
+        if not lines:
+            return "nothing was measured: no surface was asked for."
+        # The date rides on whichever line comes first, because a run that
+        # skipped the facade would otherwise report figures with no date on
+        # them at all.
+        if self.facade is None:
+            lines[0] = lines[0].replace(
+                " with >", f" on {self.assessment_date.isoformat()} with >", 1
+            )
+        return "\n  ".join(lines)
 
 
 def run_massing(
@@ -457,7 +466,9 @@ def run_massing(
             return np.zeros(0)
         return cumulative_minutes(sunlit_matrix(points, occluder, sun_vectors), weights)
 
-    def banded(points: SamplePoints) -> BandedResult:
+    def banded(points: SamplePoints, wanted: bool) -> BandedResult | None:
+        if not wanted:
+            return None
         return band_by_area(points, minutes_on(points), threshold_minutes=threshold)
 
     zone_sunlit = (
@@ -473,8 +484,8 @@ def run_massing(
         ruleset=rules,
         area_key=area,
         threshold_minutes=threshold,
-        facade=banded(scene.facade_samples),
-        ground=banded(scene.ground_samples),
+        facade=banded(scene.facade_samples, config.measures_facade),
+        ground=banded(scene.ground_samples, config.measures_ground),
         zone=(
             band_by_area(scene.zone_samples, zone_minutes, threshold_minutes=threshold)
             if zone_minutes is not None

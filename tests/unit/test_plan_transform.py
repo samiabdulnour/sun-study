@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from sun_study.core.geometry import fit_plan_transform, rotation_about_z
+from sun_study.core.geometry import PlanTransform, fit_plan_transform, rotation_about_z
 
 SOURCE = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 6.0], [0.0, 6.0], [4.0, 3.0]])
 
@@ -86,3 +86,95 @@ def test_too_few_pairs_is_refused() -> None:
 def test_mismatched_lengths_are_refused() -> None:
     with pytest.raises(ValueError, match="source points against"):
         fit_plan_transform(SOURCE, SOURCE[:3])
+
+
+# -- telling one moved Zone from a stale export ---------------------------
+# A colleague's run refused at 0.70 m of residual and the message named no
+# zone, so there was nothing to check. These are the two causes it has to
+# separate, because the remedies are opposite: edit one zone, or re-export.
+
+LIMIT_M = 0.5
+
+
+def _named(source: np.ndarray, target: np.ndarray) -> PlanTransform:
+    from dataclasses import replace
+
+    fitted = fit_plan_transform(source, target)
+    return replace(fitted, keys=tuple(f"Zone {n + 1}" for n in range(len(source))))
+
+
+def test_one_moved_zone_is_named_and_the_rest_are_cleared() -> None:
+    """The 2 m outlier that produced exactly the residual we were sent."""
+    target = SOURCE.copy()
+    target[2] += [1.8, 0.9]
+    fitted = _named(SOURCE, target)
+
+    assert fitted.rmse_m > LIMIT_M, "the fit is refused, which is why there is a message"
+    blamed = fitted.blame(LIMIT_M)
+    assert blamed is not None and blamed[0] == "Zone 3"
+    assert blamed[1] == pytest.approx(0.0, abs=1e-9), "the other four agree exactly"
+
+
+def test_a_rigid_fit_smears_one_outlier_over_every_pair() -> None:
+    """Why the per-pair distances alone cannot be the diagnosis.
+
+    The fit rotates and shifts to split the difference, so the innocent pairs
+    are left visibly out too and the list looks like a uniformly stale export.
+    This is the measurement the leave-one-out check exists to defeat.
+    """
+    target = SOURCE.copy()
+    target[2] += [1.8, 0.9]
+    fitted = _named(SOURCE, target)
+
+    others = [m for n, m in enumerate(fitted.per_pair_m) if n != 2]
+    assert max(others) > 0.3, "the innocent pairs are not near zero, so they accuse nobody"
+
+
+def test_a_drifted_export_blames_no_single_zone() -> None:
+    """Every pair nudged, which is a stale export. Naming one would be wrong."""
+    drift = np.random.default_rng(0).normal(0.0, 0.6, SOURCE.shape)
+    fitted = _named(SOURCE, SOURCE + drift)
+
+    assert fitted.rmse_m > LIMIT_M
+    assert fitted.blame(LIMIT_M) is None, "several removals rescue it, so none is the cause"
+    assert "No one Zone stands out" in fitted.describe_disagreement(LIMIT_M)
+
+
+def test_a_badly_out_of_step_export_says_no_removal_helps() -> None:
+    drift = np.random.default_rng(1).normal(0.0, 3.0, SOURCE.shape)
+    fitted = _named(SOURCE, SOURCE + drift)
+
+    assert fitted.blame(LIMIT_M) is None
+    said = fitted.describe_disagreement(LIMIT_M)
+    assert "No single Zone explains it" in said
+    assert "still over the 0.5 m limit" in said
+
+
+def test_three_pairs_are_too_few_to_accuse_any_of_them() -> None:
+    """Drop one of three and the remaining two fit perfectly by construction,
+    so a leave-one-out check would clear whichever zone it was asked about."""
+    target = SOURCE[:3].copy()
+    target[1] += [1.5, 0.0]
+    fitted = _named(SOURCE[:3], target)
+
+    assert fitted.without_each_m == (), "not computed, rather than computed and wrong"
+    assert fitted.blame(LIMIT_M) is None
+    assert "too few to tell" in fitted.describe_disagreement(LIMIT_M)
+
+
+def test_the_diagnosis_names_zones_rather_than_indices() -> None:
+    """A GlobalId or a pair number is not something a person can go and look
+    at; the zone's number and name are what the Zone dialog shows."""
+    from dataclasses import replace
+
+    target = SOURCE.copy()
+    target[2] += [1.8, 0.9]
+    fitted = replace(
+        fit_plan_transform(SOURCE, target),
+        keys=("A101", "A102", "COS Courtyard", "A201", "A202"),
+    )
+
+    said = fitted.describe_disagreement(LIMIT_M)
+    assert "COS Courtyard is 1.61 m out" in said, "the worst pair, named and measured"
+    assert "Leaving 'COS Courtyard' out" in said
+    assert "pair 3" not in said, "an index is not something a person can go and look at"
