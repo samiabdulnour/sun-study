@@ -4636,3 +4636,95 @@ def test_a_zone_with_no_storey_is_dropped_rather_than_guessed_at() -> None:
     assert cli._zone_storeys([None, 12]) == (None, [12])
     assert cli._zone_storeys([None]) == (None, []), "nothing to make a sheet from"
     assert cli._zone_storeys([]) == (None, [])
+
+
+# -- what Tapir 1.5.8 changed, and what it did not ------------------------
+# Probed against a live 1.5.8 add-on on Archicad 26, with the creation schemas
+# read out of the installed TapirAddOn_AC26_Win.apx. See docs/archicad.md.
+
+
+def test_a_capability_can_be_asked_about_without_being_required() -> None:
+    """``require_tapir_at_least`` refuses; this one answers.
+
+    The difference matters where there is a working fallback: a 1.5.7 add-on
+    still gets the facade skin, by way of the Wall tool defaults, and asking
+    with a raise would turn an improvement into a version requirement."""
+    connection, _ = connect({})
+
+    assert connection.has_tapir_at_least((1, 5, 1)) is True
+    assert connection.has_tapir_at_least((1, 5, 7)) is True
+    assert connection.has_tapir_at_least((1, 5, 8)) is False, "the fake reports 1.5.7"
+
+
+def test_an_unreadable_version_is_still_a_refusal_rather_than_a_false() -> None:
+    """A garbled version is not the same as an old one, and answering ``False``
+    would quietly take the fallback path on an add-on nobody has identified."""
+    transport = FakeTransport({"GetAddOnVersion": {"version": "not-a-version"}})
+    connection = ArchicadConnection(transport)
+
+    with pytest.raises(TapirUnavailableError):
+        connection.has_tapir_at_least((1, 5, 8))
+
+
+def _one_upright_rectangle() -> Any:
+    import numpy as np
+
+    from sun_study.core.facade import PanelRectangle
+
+    corners = np.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 3.0], [0.0, 0.0, 3.0]],
+        dtype=np.float64,
+    )
+    return PanelRectangle(corners=corners, normal=np.array([0.0, -1.0, 0.0]), area_m2=6.0)
+
+
+def _identity_transform() -> Any:
+    import numpy as np
+
+    from sun_study.core.geometry import PlanTransform
+
+    return PlanTransform(
+        rotation=np.eye(2, dtype=np.float64),
+        offset=np.zeros(2, dtype=np.float64),
+        rmse_m=0.0,
+    )
+
+
+def test_a_band_wall_carries_the_favorite_and_still_wins_on_material() -> None:
+    """``CreateWalls`` gained ``favoriteName`` in 1.5.8, which is the only way
+    to a wall's surface *override* -- and the band's own building material has
+    to survive it. Tapir applies the Favorite first and lets the explicit
+    fields override, so both belong in the same payload."""
+    from sun_study.archicad.model_bands import BandMaterial, _wall_for
+
+    material = BandMaterial(
+        label="0-1h",
+        surface_index=42,
+        surface_id={"guid": "S"},
+        material_id={"guid": "M"},
+    )
+    wall = _wall_for(
+        _one_upright_rectangle(),
+        material,
+        _identity_transform(),
+        0.04,
+        0.03,
+        favorite="Sun Study Band",
+    )
+
+    assert wall["favoriteName"] == "Sun Study Band"
+    assert wall["buildingMaterialId"] == {"guid": "M"}, "the band's colour, not the Favorite's"
+
+
+def test_a_band_wall_without_a_favorite_names_none() -> None:
+    """``favoriteName`` is optional in the schema and an empty string is not
+    the same as absent -- ``ApplyFavoritesToElementDefaults`` reports
+    ``Failed to apply favoriteName ''`` for one."""
+    from sun_study.archicad.model_bands import BandMaterial, _wall_for
+
+    material = BandMaterial(
+        label="0-1h", surface_index=42, surface_id={"guid": "S"}, material_id={"guid": "M"}
+    )
+    wall = _wall_for(_one_upright_rectangle(), material, _identity_transform(), 0.04, 0.03)
+
+    assert "favoriteName" not in wall

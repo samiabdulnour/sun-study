@@ -74,9 +74,12 @@ DEFAULT_TIMEOUT_SECONDS = 1800.0
 #: (``sandbox/python-package/src/tapir_py/core.py``: ``range(19723, 19743)``).
 PORT_RANGE = range(DEFAULT_PORT, 19743)
 
-#: Tapir add-on version this package was written against, from the repository
-#: at the time (``archicad-addon/Sources/AddOnVersion.hpp``).
-VERIFIED_AGAINST_TAPIR_VERSION = "1.5.7"
+#: Tapir add-on version this package was written against. 1.5.7 was read out of
+#: the repository (``archicad-addon/Sources/AddOnVersion.hpp``); 1.5.8 was
+#: re-verified against a live add-on on Archicad 26 -- command registration
+#: probed one by one, and the creation schemas read out of the installed
+#: ``TapirAddOn_AC26_Win.apx`` itself rather than out of the sources.
+VERIFIED_AGAINST_TAPIR_VERSION = "1.5.8"
 
 #: The newest "since" version among the commands this package uses.
 #: ``GetElementsByIFCIds`` arrived in 1.5.1 and is the binding constraint.
@@ -294,8 +297,10 @@ class Database:
     on screen, which is a different thing: ``ChangeWindow`` moves the current
     database while the visible window stays put, so a run can be looking at a
     floor plan with a layout current underneath it. There is no
-    ``GetCurrentDatabase`` -- it is unregistered on Tapir 1.5.7, along with
-    ``GetCurrentWindow`` and ``GetDatabases``.
+    ``GetCurrentDatabase`` -- it is unregistered on Tapir 1.5.7 *and* on 1.5.8,
+    along with ``GetCurrentWindow`` and ``GetDatabases``. Re-probed against a
+    live 1.5.8 add-on: all three still answer *"Archicad does not have the
+    registered Add-On command"*, so this is not a gap an update closes.
 
     So the tool remembers instead of asking. That is sound because the tool is
     the only thing moving the database during a run, and it is honest about
@@ -472,12 +477,7 @@ class ArchicadConnection:
         what the update actually buys.
         """
         version = self.tapir_version
-        try:
-            parts = tuple(int(p) for p in version.split(".")[:3])
-        except ValueError as exc:
-            raise TapirUnavailableError(
-                f"Could not read the Tapir add-on version from {version!r}."
-            ) from exc
+        parts = self._version_parts(version)
 
         if parts < minimum:
             needed = ".".join(str(p) for p in minimum)
@@ -487,6 +487,26 @@ class ArchicadConnection:
                 f"https://github.com/ENZYME-APD/tapir-archicad-automation/releases"
             )
         return version
+
+    def has_tapir_at_least(self, minimum: tuple[int, ...]) -> bool:
+        """Whether the add-on is new enough, without refusing to go on.
+
+        The counterpart to ``require_tapir_at_least``, for a capability that
+        has a working fallback rather than a floor: 1.5.8 lets ``CreateWalls``
+        take a ``favoriteName`` per element, and an older build still gets the
+        skin built, just by way of the shared tool defaults. Asking with a
+        raise would turn an improvement into a version requirement.
+        """
+        return self._version_parts(self.tapir_version) >= minimum
+
+    @staticmethod
+    def _version_parts(version: str) -> tuple[int, ...]:
+        try:
+            return tuple(int(p) for p in version.split(".")[:3])
+        except ValueError as exc:
+            raise TapirUnavailableError(
+                f"Could not read the Tapir add-on version from {version!r}."
+            ) from exc
 
     def describe(self) -> str:
         """One line for the console banner, so the human can see what it found."""

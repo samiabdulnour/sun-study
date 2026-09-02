@@ -17,7 +17,7 @@ politely refuses, or worse, one it accepts and misinterprets.
 | | |
 |---|---|
 | Archicad | **26** (Windows), the office's version |
-| Tapir add-on | **1.5.7**, from `archicad-addon/Sources/AddOnVersion.hpp` |
+| Tapir add-on | **1.5.8**, from a live `GetAddOnVersion`. 1.5.7 before it, read from `archicad-addon/Sources/AddOnVersion.hpp` |
 | Minimum add-on | **1.5.1** — `GetElementsByIFCIds` is the binding constraint |
 | API Dev Kit | **26.3000**, extracted at `C:\ACAPI` — Graphisoft's headers, error table, reference and 42 examples |
 | Port | `19723` on `127.0.0.1` |
@@ -33,6 +33,50 @@ Install from <https://github.com/ENZYME-APD/tapir-archicad-automation/releases>.
 `ArchicadConnection.require_tapir()` checks the version at the handshake, so an old
 add-on fails as a version problem rather than as an unexplained error on whichever
 command happens to need a newer build.
+
+### What 1.5.8 changed here, and what it did not
+
+Re-probed against a live 1.5.8 add-on on Archicad 26 — every command sent with empty
+parameters, so that `4010` *"Archicad does not have the registered Add-On command"*
+separates a missing command from a registered one that merely wants arguments. The
+creation schemas were then read out of the installed `TapirAddOn_AC26_Win.apx` itself,
+which carries them as embedded JSON: that is the authority for *this* build, ahead of
+any release note. **Do not probe by sending every command name.** Several take no
+required parameters and simply run — `SaveProject` saves, and `QuitArchicad` closes
+Archicad with whatever was on screen.
+
+**Still absent, so every workaround below stands:**
+
+| | |
+|---|---|
+| `GetCurrentDatabase`, `GetCurrentWindow`, `GetDatabases` | unregistered. The tool still has to remember where it is ([D63, D64](decisions.md)) |
+| `SetMasterLayout`, `DeleteLayouts` | unregistered. A layout keeps the master it was made on |
+| `SetLayers`, `ModifyLayers`, `ActivateLayerCombination` | none exist. `CreateLayers` with `overwriteExisting` is still the only write ([D59](decisions.md)) |
+| `Create3DDocuments` | no such command |
+| `GetLayers` and the rest of the 1.5.4 attribute family | still require `attributeIds`; `GetAttributesByType` is still the only enumerator |
+| `CreateTexts` with a layer | still no `layerIndex`, so the legend is still created and then moved |
+
+**Changed, and worth having:**
+
+| | |
+|---|---|
+| `favoriteName`, per element, on `CreateWalls` | **the one that matters.** A wall's surface *override* is reachable per wall instead of by way of the shared Wall tool defaults ([D50](decisions.md)) |
+| `favoriteName` on `CreateSlabs`, `CreateMeshes`, `CreateRoofs`, `CreateTexts` | a Favorite reaches settings the schema does not, but somebody must make one by hand per band — no route for generated geometry |
+| `floorIndex` on `CreateWalls`, `CreateTexts`, `CreateMorphs`, `CreateSlabs` | a storey by index, rather than inferred from a Z |
+| Navigator items report `uiId`, `customUiId`, `customName` | the sheet ID (`SSDA 000`) beside the name. `layout.py` still matches masters and subsets by name, which is what `--master-layout` names |
+| `GetSectionElements`, `CreateInteriorElevations` | new, and nothing here needs them |
+
+**Re-tested and still refused:** `CreateMorphs`, in all four forms — a `size` box, the
+same box with an explicit `floorIndex`, a closed `body` tetrahedron, and an open
+`bodyType: "Surface"` shell. Every one answers `-2130313114` *"Failed to create
+morph."* The add-on's own schema says why this is Archicad's doing and not Tapir's: a
+morph's per-face `surfaceId` is *"silently lost on Create on Archicad 25 (presumably
+26 too) ... confirmed fixed and working correctly from Archicad 27 onward"*. Re-test
+when the office moves off 26.
+
+`SaveProject` succeeded on the project it had refused before ([D74](decisions.md)), so
+that refusal was the environment rather than the version. The guard stays: nothing
+about this makes the *last* save load-bearing.
 
 ---
 
@@ -339,7 +383,8 @@ Two consequences worth carrying into any new code:
   Nothing had drifted; the measurement was taken in the wrong place.
 
 Archicad will not say which database is current — `GetCurrentDatabase`,
-`GetCurrentWindow` and `GetDatabases` are all unregistered on Tapir 1.5.7, and
+`GetCurrentWindow` and `GetDatabases` are all unregistered on Tapir 1.5.7 and on
+1.5.8, and
 `GetCurrentWindowType` answers for the *window*, which moves separately. The
 tool therefore remembers: every `ChangeWindow` goes through `run_tapir`, which
 notes where it went, and `ArchicadConnection.database` is that note. It is
@@ -582,10 +627,10 @@ machine-checked against a fake transport:
 | Property **value** writes | **partly blocked**: on one project 2 of 8 zones took every value and 6 refused every value; on another the refusing zones were traced to the locked layer `10 \| Calc.GFA` |
 | `GetDetailsOfElements` layer index, `GetHotlinks` — why a write was refused | **works**: named a locked layer as the cause |
 | `SetDetailsOfElements` with a surface, on a Wall | **refused**: a wall has no settable surface. Only Objects report one at all |
-| `CreateMorphs`, box and explicit body | **refused** on Archicad 26: `Failed to create morph` for every shape tried |
-| `CreateSlabs` / `CreateMeshes` / `CreateRoofs` with a material | **refused**: no `buildingMaterialId` field. Only `CreateWalls` has one |
+| `CreateMorphs`, box and explicit body | **refused** on Archicad 26: `Failed to create morph` for every shape tried, on 1.5.7 and again on 1.5.8 |
+| `CreateSlabs` / `CreateMeshes` / `CreateRoofs` with a material | **refused**: no `buildingMaterialId` field, on 1.5.8 as on 1.5.7. Only `CreateWalls` has one. 1.5.8 gives all three a `favoriteName`, which reaches a material only through a Favorite made by hand |
 | Creating a 3D Document | **not offered**: no command exists. A View of an existing one can be made |
-| `CreateWalls` with a `layerIndex` | **refused**: schema has no such field. New walls land on the tool's default layer |
+| `CreateWalls` with a `layerIndex` | **refused**: schema has no such field. New walls land on the tool's default layer. (`CreateHatches` *does* take one, and `draw.py` uses it) |
 | `SetDetailsOfElements` with a `drawingScale`, on a Drawing | **refused silently**: answers `{"success": true}` and leaves the scale as it was |
 | `SetDetailsOfElements` with a `ratio`, on a Drawing | **works**: the magnification is the only handle on a drawing's size on the page |
 | A Drawing's `bounds` after its `ratio` changes | **stale**: they keep the old size until Archicad regenerates the drawing, which happens when somebody opens the layout ([D55](decisions.md)) |

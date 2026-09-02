@@ -10,7 +10,7 @@ because it is not obvious from the command list:
 * ``GetDetailsOfElements`` reports a ``surfaceId`` **only** for library-part
   based elements (Objects). Walls, Slabs, Roofs and Meshes report geometry and
   nothing about their appearance, so their surface can be neither read nor
-  written. Measured on Archicad 26 with Tapir 1.5.7.
+  written. Measured on Archicad 26 with Tapir 1.5.7, and unchanged on 1.5.8.
 * ``SetDetailsOfElements`` reaches ``floorIndex``, ``layerIndex``,
   ``drawIndex`` and a small ``typeSpecificDetails`` union whose ``WallSettings``
   is purely geometric. There is no setter anywhere in the add-on that attaches
@@ -18,6 +18,17 @@ because it is not obvious from the command list:
 * ``CreateMorphs`` -- the natural element for a coloured skin, since a morph
   takes a ``surfaceId`` directly -- validates its input on this build and then
   fails to create anything. A morph is not reachable here either.
+
+  Re-measured on Tapir 1.5.8, which lists morph work in its release notes
+  (open bodies, ``ModifyMorphs``). All four forms were refused, every one with
+  ``-2130313114`` *"Failed to create morph."*: a ``size`` box, the same box
+  with an explicit ``floorIndex``, a closed ``body`` tetrahedron, and an open
+  ``bodyType: "Surface"`` shell. So the wall route below is not a workaround
+  for a stale add-on. The add-on's own schema names the reason it is Archicad
+  and not Tapir: a morph's per-face ``surfaceId`` is *"silently lost on Create
+  on Archicad 25 (presumably 26 too) ... confirmed fixed and working correctly
+  from Archicad 27 onward"*. Worth re-testing on the day the office moves off
+  26, and not before.
 
 What *is* reachable is creating new geometry that already carries the colour.
 ``CreateWalls`` takes a ``buildingMaterialId``, ``CreateBuildingMaterials``
@@ -70,6 +81,7 @@ __all__ = [
     "draw_model_bands",
     "ensure_band_materials",
     "fit_to_project",
+    "require_wall_favorite",
 ]
 
 #: Prefix on every attribute this module creates, so a project's own surfaces
@@ -313,8 +325,19 @@ def fit_to_project(connection: ArchicadConnection, model: IfcModel) -> PlanTrans
     return transform
 
 
+#: The add-on version that gave ``CreateWalls`` a per-element ``favoriteName``.
+#: Below it the Favorite has to go through the shared Wall tool defaults, which
+#: is a visible change to somebody else's session -- see
+#: ``apply_favorite_to_defaults``.
+PER_ELEMENT_FAVORITE_TAPIR_VERSION = (1, 5, 8)
+
+
 def apply_favorite_to_defaults(connection: ArchicadConnection, favorite: str) -> None:
     """Set the Wall tool's defaults from a Favorite, before anything is built.
+
+    The fallback route, kept for add-ons older than
+    ``PER_ELEMENT_FAVORITE_TAPIR_VERSION``. From 1.5.8 the Favorite rides on
+    each wall instead and the tool defaults are left alone.
 
     This exists for one setting the API cannot reach any other way: **a wall's
     surface override**. A wall shows its building material's surface only when
@@ -325,14 +348,29 @@ def apply_favorite_to_defaults(connection: ArchicadConnection, favorite: str) ->
     right surface -- and rendered uniformly grey.
 
     Nothing in the add-on turns an override off. ``WallSettings`` is geometry
-    only, and ``CreateWalls`` on this build has no ``favoriteName`` field.
+    only, and ``CreateWalls`` before 1.5.8 had no ``favoriteName`` field.
     What is left is the tool defaults, which ``CreateWalls`` inherits: so a
     Favorite made once, by hand, with the override off is enough to fix every
     later run.
 
     The defaults are a shared, visible piece of the session -- changing them
     changes what the next wall somebody draws looks like -- so this is only
-    ever done when a caller names a Favorite.
+    ever done when a caller names a Favorite *and* the add-on is too old to
+    carry it per element.
+    """
+    require_wall_favorite(connection, favorite)
+    connection.run_tapir("ApplyFavoritesToElementDefaults", {"favorites": [favorite]})
+
+
+def require_wall_favorite(connection: ArchicadConnection, favorite: str) -> None:
+    """Stop unless the project really has a Wall Favorite by that name.
+
+    Both routes to a Favorite need this and neither can do without it. A name
+    that matches nothing is not refused by either: the defaults route applies
+    nothing, and ``CreateWalls`` takes an unknown ``favoriteName`` and builds
+    the wall anyway. Both then produce a skin that is silently the wrong
+    colour, which is the one outcome worth failing over -- a grey facade
+    diagram reads as a finding rather than as a missing Favorite.
     """
     known = connection.run_tapir("GetFavoritesByType", {"elementType": "Wall"})
     names = known.get("favorites") if isinstance(known, dict) else None
@@ -344,7 +382,6 @@ def apply_favorite_to_defaults(connection: ArchicadConnection, favorite: str) ->
             f"Without it every band renders in whatever surface the Wall tool "
             f"currently overrides with."
         )
-    connection.run_tapir("ApplyFavoritesToElementDefaults", {"favorites": [favorite]})
 
 
 def clear_model_bands(connection: ArchicadConnection, layer: LayerState) -> int:
@@ -401,8 +438,16 @@ def draw_model_bands(
     # believed itself finished. A floor plan sees all of them.
     ensure_model_database(connection)
 
+    # From 1.5.8 the Favorite rides on each wall, so the session's Wall tool
+    # defaults are left as the person using Archicad left them. Older add-ons
+    # have only the defaults, and still get the same skin.
+    per_element_favorite: str | None = None
     if favorite:
-        apply_favorite_to_defaults(connection, favorite)
+        if connection.has_tapir_at_least(PER_ELEMENT_FAVORITE_TAPIR_VERSION):
+            require_wall_favorite(connection, favorite)
+            per_element_favorite = favorite
+        else:
+            apply_favorite_to_defaults(connection, favorite)
 
     layer = ensure_layer(connection, layer_name)
     materials = ensure_band_materials(connection, bands)
@@ -413,7 +458,14 @@ def draw_model_bands(
     for material, group in zip(materials, rectangles, strict=True):
         areas.append((material.label, sum(r.area_m2 for r in group)))
         data = [
-            _wall_for(rectangle, material, transform, thickness_m, standoff_m)
+            _wall_for(
+                rectangle,
+                material,
+                transform,
+                thickness_m,
+                standoff_m,
+                favorite=per_element_favorite,
+            )
             for rectangle in group
         ]
         for start in range(0, len(data), _BATCH):
@@ -435,17 +487,22 @@ def _wall_for(
     transform: PlanTransform,
     thickness_m: float,
     standoff_m: float,
+    *,
+    favorite: str | None = None,
 ) -> dict[str, Any]:
     """One rectangle as a thin wall, pushed clear of the face behind it.
 
     A wall is the only element this add-on will create with a building
     material on it — ``CreateSlabs``, ``CreateMeshes`` and ``CreateRoofs`` all
-    take a shape and no material — so a flat patch has to be a wall too. That
-    is less of a contortion than it sounds, because a wall *is* a box: give it
-    the rectangle's long side as its length, the short side as its thickness
-    and 40 mm as its height, and it lies on a balcony deck as a coloured
-    plate. The only thing lost is that a wall cannot lean, which is why
-    sloping faces are not panelled at all.
+    take a shape and no material, on 1.5.8 as on 1.5.7. (1.5.8 gives all three
+    a ``favoriteName``, which does reach a material — but by way of a Favorite
+    somebody has to make by hand, one per band, and the bands are chosen per
+    run. That is no route for generated geometry.) So a flat patch has to be a
+    wall too. That is less of a contortion than it sounds, because a wall *is*
+    a box: give it the rectangle's long side as its length, the short side as
+    its thickness and 40 mm as its height, and it lies on a balcony deck as a
+    coloured plate. The only thing lost is that a wall cannot lean, which is
+    why sloping faces are not panelled at all.
 
     The standoff is applied in the export's frame, *before* the transform, so
     that it stays perpendicular to the face. Applying it afterwards would push
@@ -471,7 +528,12 @@ def _wall_for(
         height, width = thickness_m, float(rectangle.height_m)
 
     start, end = ends[0], ends[1]
+    # ``favoriteName`` first, because Tapir applies the Favorite's settings
+    # before the explicit fields and lets them override it. The Favorite is
+    # carrying one thing only -- the surface override switched off -- and the
+    # band's own ``buildingMaterialId`` still has to win.
     return {
+        **({"favoriteName": favorite} if favorite else {}),
         "begCoordinate": {"x": float(start[0]), "y": float(start[1])},
         "endCoordinate": {"x": float(end[0]), "y": float(end[1])},
         "zCoordinate": base_z,

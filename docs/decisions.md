@@ -1252,6 +1252,28 @@ newer published schema does. What is left is the Wall tool's *defaults*, which
 a Favorite. So one Favorite, made by hand from a wall with the override
 switched off, fixes every later run -- and is the only route there is.
 
+**1.5.8 makes it a field, and the difference is whose session it touches.**
+Read out of the installed ``.apx``'s own schema: every wall in ``wallsData``
+now takes an optional ``favoriteName``, *"applied first, then the explicitly
+given fields override them"* -- which is exactly the order this needs, because
+the Favorite carries one thing (the override, off) and the band's own
+``buildingMaterialId`` still has to win. ``draw_model_bands`` therefore names
+the Favorite per wall when the add-on is 1.5.8 or newer, and falls back to
+``apply_favorite_to_defaults`` below that. Both build the same skin. The
+difference is that the defaults are shared, visible state: setting them
+changes what the *next* wall a person draws by hand looks like, and it outlives
+the run. A field on the request changes nothing outside it.
+
+The check is ``has_tapir_at_least``, which answers rather than raises. A
+capability with a working fallback must not become a version requirement --
+somebody on 1.5.7 still gets their facade.
+
+The existence check stays on both paths, in ``require_wall_favorite``. Neither
+route refuses a name that matches nothing: the defaults route applies nothing,
+and ``CreateWalls`` takes an unknown ``favoriteName`` and builds the wall
+anyway. Both then produce a silently grey skin, which reads as a finding
+rather than as a missing Favorite.
+
 Worth knowing for diagnosis: ``GetFavoritePreviewImage`` renders a Favorite in
 3D and returns a PNG, which is the only way from here to *see* what a created
 element looks like. It is what showed the grey.
@@ -1602,7 +1624,8 @@ not restore anything, it writes a layout's opinion over the model, which is
 what ``export_state`` would have done had a database switch ever landed inside
 its ``with``. And the tool has to *remember* where it is, because Archicad
 will not say -- ``GetCurrentDatabase``, ``GetCurrentWindow`` and
-``GetDatabases`` are all unregistered on Tapir 1.5.7, and
+``GetDatabases`` are all unregistered on Tapir 1.5.7 and, re-probed live,
+on 1.5.8 as well, and
 ``GetCurrentWindowType`` answers for the window on screen, which moves
 separately from the database. Every ``ChangeWindow`` in this package goes
 through ``run_tapir``, so the note is taken there and cannot be bypassed by a
@@ -2111,6 +2134,12 @@ and it names no cause at all. Tapir relays it without adding to it. The tool can
 pretend to; what it can do is say so loudly, say that nothing is lost, and
 carry on. The same guard is on the statistics sheet's final save, which had
 the same shape.
+
+`SaveProject` was later called on that same project, on Tapir 1.5.8, and
+answered `{"success": true}`. So the refusal was something about the moment —
+a dialog, a lock, a sync client — and not a broken command or an old add-on.
+That is an argument for the guard rather than against it: a step that works
+until it does not is exactly the kind nothing else may depend on.
 
 ---
 

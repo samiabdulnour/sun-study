@@ -12,7 +12,9 @@ D52 concluded that nothing could be done from here, and that was wrong in a
 particular way worth naming. It is true that a layer *combination* cannot be
 activated: ``SetLayerCombination``, ``ApplyLayerCombination``, ``OpenView``,
 ``ActivateNavigatorItem`` and ``SetCurrentWindow`` are all unregistered on
-Tapir 1.5.7. But a combination is only a set of per-layer visibilities, and
+Tapir 1.5.7 -- and all five, re-probed one by one, on 1.5.8 as well, along
+with ``ActivateLayerCombination``. But a combination is only a set of
+per-layer visibilities, and
 those *are* writable -- ``CreateLayers`` with ``overwriteExisting`` sets them,
 which is how the facade skin already borrows a hidden layer. So the tool can
 have the state a combination would have given it without activating one.

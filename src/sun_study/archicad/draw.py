@@ -107,8 +107,10 @@ class BandStyle:
     A real contour-less fill is reachable one way, and it needs a person: make
     a Favorite by hand with the contour switched off and pass its name as
     ``favourite``. ``CreateHatches`` applies a Favorite's settings first and
-    the explicit fields over the top -- the same route D50 needed for a wall's
-    surface override, and the only one there is.
+    the explicit fields over the top -- the same route D50 takes for a wall's
+    surface override, and the only one there is. (1.5.8 spread ``favoriteName``
+    across the other creation commands; it does not add a contour switch, so
+    this stays as it is.)
     """
 
     @property

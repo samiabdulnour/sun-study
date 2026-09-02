@@ -3389,9 +3389,14 @@ def _warn_if_zone_layers_hidden(
     all four ``06 | Zone.*`` layers were hidden by a site-plan combination and
     the export carried 386 walls, 92 windows and no ``IfcSpace`` at all.
 
-    Nothing here can fix it: Tapir 1.5.7 has no command that changes layer
-    visibility or activates a layer combination, so this asks for a hand in
-    Archicad rather than reaching for one.
+    Nothing here can fix it: no Tapir build through 1.5.8 has a command that
+    *activates* a layer combination, so this asks for a hand in Archicad
+    rather than reaching for one. Writing a layer's visibility is a different
+    question and is reachable -- ``CreateLayers`` with ``overwriteExisting``
+    (D59) -- but it is the wrong reach here. The combination a person chose is
+    a statement about what they want to see, and a run that quietly unhid four
+    zone layers to get its export would hand back a project looking like
+    something they did not ask for.
     """
     # One layer commonly carries both the dwellings and the balconies, so the
     # two options name it twice and it would be reported twice.
