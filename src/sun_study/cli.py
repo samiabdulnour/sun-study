@@ -5780,6 +5780,15 @@ def _shadow_report(
         return
 
     try:
+        # Before a single hatch is created. CreateHatches puts elements in
+        # whatever database is *current*, so with a Layout in front the whole
+        # series lands on a sheet and the plan stays empty -- which is not an
+        # error anybody sees, just a drawing that is not where it was asked
+        # for. The export path has always done this; the --ifc-in path
+        # returned before reaching it, which is how 3,040 fills went missing.
+        # Here, so both routes are covered by one call rather than two that
+        # can drift apart.
+        ensure_model_database(connection)
         drawn = draw_shadow_series(connection, series, storey_index=shadow_storey)
         typer.echo("")
         typer.echo(drawn.describe())
