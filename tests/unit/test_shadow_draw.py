@@ -21,14 +21,19 @@ import pytest
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection
 from sun_study.archicad.shadows import (
-    ORDER,
     combination_name,
     draw_shadow_series,
     layer_name,
     shared_layer_name,
 )
 from sun_study.core.geometry import box, prism
-from sun_study.core.shadow import ADDITIONAL, EXISTING, cast_shadows, ground_plane_grid
+from sun_study.core.shadow import (
+    ADDITIONAL,
+    EXISTING,
+    cast_shadows,
+    default_sources,
+    ground_plane_grid,
+)
 
 WEST_45 = np.array([[-1.0, 0.0, 1.0]]) / np.sqrt(2.0)
 
@@ -170,9 +175,11 @@ def series(labels: list[str] | None = None, envelope: bool = True):  # type: ign
     )
     return cast_shadows(
         grid,
-        context=box((-40.0, -5.0, 0.0), (-30.0, 5.0, 10.0)),
-        proposal=box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
-        envelope=prism([(0, -5), (10, -5), (10, 5), (0, 5)], 0.0, 9.5) if envelope else None,
+        sources=default_sources(
+            box((-40.0, -5.0, 0.0), (-30.0, 5.0, 10.0)),
+            box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+            prism([(0, -5), (10, -5), (10, 5), (0, 5)], 0.0, 9.5) if envelope else None,
+        ),
         sun_vectors=np.repeat(WEST_45, len(labels), axis=0),
         moments=[dt.datetime(2024, 6, 21, 9 + i, tzinfo=dt.UTC) for i in range(len(labels))],
         labels=labels,
@@ -234,17 +241,18 @@ def test_a_plan_fill_carries_its_storey_and_a_worksheet_fill_does_not() -> None:
 def test_the_existing_shadow_is_drawn_under_what_the_proposal_adds() -> None:
     """Back to front: the existing shadow is the ground the argument is read
     against, and the proposal's own addition is the thing being looked at."""
-    assert ORDER.index(EXISTING) < ORDER.index(ADDITIONAL)
+    from sun_study.archicad.shadows import drawing_order, styles_for
+
+    drawn = series(["9AM"])
+    order = drawing_order(drawn.sources)
+    assert order.index(EXISTING) < order.index(ADDITIONAL)
 
     connection, transport = connect(["9AM"])
-    draw_shadow_series(connection, series(["9AM"]))
+    draw_shadow_series(connection, drawn)
 
     pens = [hatch["fillPenIndex"] for hatch in hatches(transport)]
-    from sun_study.archicad.shadows import DEFAULT_STYLES
-
-    assert pens.index(DEFAULT_STYLES[EXISTING].fill_pen) < pens.index(
-        DEFAULT_STYLES[ADDITIONAL].fill_pen
-    )
+    styles = styles_for(drawn.sources)
+    assert pens.index(styles[EXISTING].fill_pen) < pens.index(styles[ADDITIONAL].fill_pen)
 
 
 def test_the_site_boundary_is_drawn_once_not_once_an_hour() -> None:
@@ -333,8 +341,10 @@ def test_an_hour_with_the_sun_down_is_named_rather_than_drawn_black() -> None:
     )
     night = cast_shadows(
         grid,
-        context=box((-40.0, -5.0, 0.0), (-30.0, 5.0, 10.0)),
-        proposal=box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+        sources=default_sources(
+            box((-40.0, -5.0, 0.0), (-30.0, 5.0, 10.0)),
+            box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+        ),
         sun_vectors=np.array([[-1.0, 0.0, -0.5]]),
         moments=[dt.datetime(2024, 6, 21, 17, tzinfo=dt.UTC)],
         labels=["5PM"],
@@ -359,8 +369,10 @@ def test_terrain_in_the_context_is_a_warning_and_not_a_silent_grey_sheet() -> No
     )
     under_a_lid = cast_shadows(
         grid,
-        context=box((-300.0, -300.0, 5.0), (300.0, 300.0, 6.0)),
-        proposal=box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+        sources=default_sources(
+            box((-300.0, -300.0, 5.0), (300.0, 300.0, 6.0)),
+            box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+        ),
         sun_vectors=WEST_45,
         moments=[dt.datetime(2024, 6, 21, 12, tzinfo=dt.UTC)],
         labels=["12PM"],
@@ -382,3 +394,50 @@ def test_the_areas_are_reported_so_nobody_scales_them_off_the_drawing() -> None:
     assert report.areas_m2["9AM"][EXISTING] > 0.0
     assert report.areas_m2["9AM"][ADDITIONAL] > 0.0
     assert "m2" in report.describe()
+
+
+# -- the legend a six-row sheet needs -------------------------------------
+
+
+def test_baselines_are_grey_and_scenarios_are_blue_in_the_sheets_own_colours() -> None:
+    """The ramps are sampled out of SSDA 401's legend, so a run reproduces the
+    sheet rather than approximating it: what will be there recedes in grey,
+    what is being argued about comes forward in blue."""
+    from sun_study.archicad.shadows import BASELINE_RAMP, SCENARIO_RAMP, styles_for
+    from sun_study.core.shadow import BASELINE, SCENARIO, SourceSpec
+
+    styles = styles_for(
+        [
+            SourceSpec("existing", "Existing neighbouring buildings", BASELINE),
+            SourceSpec("future", "Future neighbouring context buildings", BASELINE),
+            SourceSpec("on site", "Existing structures within the site", BASELINE),
+            SourceSpec("tod", "TOD", SCENARIO),
+            SourceSpec("sears", "SEARs", SCENARIO),
+            SourceSpec("proposed", "Proposed building envelope", SCENARIO),
+        ]
+    )
+
+    assert [styles[key].rgb for key in ("existing", "future", "on site")] == list(BASELINE_RAMP)
+    assert [styles[key].rgb for key in ("tod", "sears", "proposed")] == list(SCENARIO_RAMP)
+    # The legend row is the sheet's words, upper-cased the way a title block is.
+    assert styles["on site"].label == "EXISTING STRUCTURES WITHIN THE SITE"
+    # One pen each, so a pen table can be matched row by row.
+    assert len({style.fill_pen for style in styles.values()}) == 6
+
+
+def test_every_baseline_is_drawn_under_every_scenario() -> None:
+    """Scenarios genuinely overlap, so this decides what a reader sees and not
+    merely which hairline wins on a shared edge."""
+    from sun_study.archicad.shadows import drawing_order
+    from sun_study.core.shadow import BASELINE, SCENARIO, SourceSpec
+
+    order = drawing_order(
+        [
+            SourceSpec("tod", "TOD", SCENARIO),
+            SourceSpec("existing", "Existing", BASELINE),
+            SourceSpec("proposed", "Proposed", SCENARIO),
+            SourceSpec("future", "Future", BASELINE),
+        ]
+    )
+
+    assert order == ("existing", "future", "tod", "proposed")

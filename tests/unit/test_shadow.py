@@ -21,9 +21,13 @@ import pytest
 from sun_study.core.geometry import TriangleMesh, box, prism, triangulate
 from sun_study.core.shadow import (
     ADDITIONAL,
+    BASELINE,
     ENVELOPE,
     EXISTING,
+    SCENARIO,
+    ShadowSource,
     cast_shadows,
+    default_sources,
     ground_plane_grid,
 )
 
@@ -48,9 +52,7 @@ def plane(spacing: float = 1.0) -> object:
 def cast(context: TriangleMesh, proposal: TriangleMesh, envelope: TriangleMesh | None = None):  # type: ignore[no-untyped-def]
     return cast_shadows(
         plane(),
-        context=context,
-        proposal=proposal,
-        envelope=envelope,
+        sources=default_sources(context, proposal, envelope),
         sun_vectors=WEST_45,
         moments=[NOON],
         labels=["12PM"],
@@ -119,13 +121,15 @@ def test_the_envelope_is_measured_against_the_same_ground_as_the_proposal() -> N
 
 def test_no_envelope_draws_no_third_fill() -> None:
     """A project with no height control named should get grey and blue and no
-    pink, rather than a pink of zero area or a crash."""
+    pink at all -- not a pink of zero area, which would still put a layer in
+    the project, a row in the legend and a column in the schedule for a
+    category the project does not have."""
     instant = cast(
         box((-40.0, -5.0, 0.0), (-30.0, 5.0, 10.0)), box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0))
     )
 
-    assert instant.regions[ENVELOPE] == ()
-    assert instant.areas_m2[ENVELOPE] == pytest.approx(0.0)
+    assert ENVELOPE not in instant.regions
+    assert ENVELOPE not in instant.areas_m2
 
 
 # -- the sun being down ---------------------------------------------------
@@ -137,8 +141,10 @@ def test_an_hour_before_sunrise_draws_nothing_rather_than_everything() -> None:
     asked about -- so it is flagged and drawn empty instead."""
     series = cast_shadows(
         plane(),
-        context=box((-40.0, -5.0, 0.0), (-30.0, 5.0, 10.0)),
-        proposal=box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+        sources=default_sources(
+            box((-40.0, -5.0, 0.0), (-30.0, 5.0, 10.0)),
+            box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+        ),
         sun_vectors=np.array([[-1.0, 0.0, -0.5]]),
         moments=[NOON],
         labels=["6PM"],
@@ -162,8 +168,7 @@ def test_terrain_handed_in_as_context_shows_up_as_a_number() -> None:
 
     series = cast_shadows(
         plane(),
-        context=lid,
-        proposal=box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+        sources=default_sources(lid, box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0))),
         sun_vectors=WEST_45,
         moments=[NOON],
         labels=["12PM"],
@@ -186,8 +191,7 @@ def test_a_label_for_every_moment_or_none_at_all() -> None:
     with pytest.raises(ValueError, match="2 moments but 1 labels"):
         cast_shadows(
             plane(),
-            context=TriangleMesh.empty(),
-            proposal=box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0)),
+            sources=default_sources(TriangleMesh.empty(), box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0))),
             sun_vectors=np.vstack([WEST_45, WEST_45]),
             moments=[NOON, NOON],
             labels=["12PM"],
@@ -288,3 +292,147 @@ def test_tracing_beats_tiling_wherever_a_patch_has_a_diagonal_edge() -> None:
     traced = drawable_contours(positions, diagonal, 0.5)
 
     assert len(traced) * 10 < len(tiled), "tracing must be an order of magnitude fewer"
+
+
+# -- many sources ---------------------------------------------------------
+#
+# The six-row sheet. SSDA 401 attributes its shadow to existing neighbours,
+# future neighbours, structures kept on the site, two height limits and the
+# proposed envelope, and the arithmetic that separates them is the whole
+# argument the sheet makes. Every figure below is worked out on paper from the
+# same due-west 45-degree sun the rest of this file uses.
+
+
+def cast_sources(*sources: ShadowSource):  # type: ignore[no-untyped-def]
+    return cast_shadows(
+        plane(),
+        sources=list(sources),
+        sun_vectors=WEST_45,
+        moments=[NOON],
+        labels=["12PM"],
+        spacing_m=1.0,
+    ).instants[0]
+
+
+def baseline(key: str, x0: float, x1: float, height: float) -> ShadowSource:
+    return ShadowSource(key, key.title(), box((x0, -5.0, 0.0), (x1, 5.0, height)), BASELINE)
+
+
+def scenario(key: str, x0: float, x1: float, height: float) -> ShadowSource:
+    return ShadowSource(key, key.title(), box((x0, -5.0, 0.0), (x1, 5.0, height)), SCENARIO)
+
+
+def test_baselines_are_charged_only_for_ground_the_earlier_ones_left_lit() -> None:
+    """Existing neighbours, then future neighbours. Each 10 m cube covers its
+    own footprint plus 10 m of shadow -- 200 m2 -- but the second one is
+    standing 5 m into the first one's shadow, so 150 m2 of its 200 was already
+    dark and it is charged for the 50 m2 it actually darkened."""
+    instant = cast_sources(
+        baseline("existing", -40.0, -30.0, 10.0),
+        baseline("future", -35.0, -25.0, 10.0),
+    )
+
+    assert instant.areas_m2["existing"] == pytest.approx(200.0)
+    assert instant.areas_m2["future"] == pytest.approx(50.0)
+
+
+def test_baseline_fills_tile_so_their_areas_add_to_the_whole_shadow() -> None:
+    """The property that lets a reader add the grey rows up. Two baselines
+    covering x -40 to -15 between them, and no square metre counted twice."""
+    instant = cast_sources(
+        baseline("existing", -40.0, -30.0, 10.0),
+        baseline("future", -35.0, -25.0, 10.0),
+    )
+
+    total = instant.areas_m2["existing"] + instant.areas_m2["future"]
+    assert total == pytest.approx(250.0)
+
+
+def test_two_scenarios_overlap_because_they_are_rival_answers() -> None:
+    """A height limit and the scheme are alternatives on the same land, and
+    neither is subtracted from the other. Both 10 m wide: the 10 m massing
+    covers 200 m2 and the 20 m one covers 300 m2, each measured whole."""
+    instant = cast_sources(
+        baseline("existing", -40.0, -30.0, 10.0),
+        scenario("tod", 0.0, 10.0, 10.0),
+        scenario("sears", 0.0, 10.0, 20.0),
+    )
+
+    assert instant.areas_m2["tod"] == pytest.approx(200.0)
+    assert instant.areas_m2["sears"] == pytest.approx(300.0)
+
+
+def test_a_scenario_is_charged_against_every_baseline_not_merely_the_first() -> None:
+    """The bug this is here to catch. A scheme standing entirely inside the
+    combined shadow of the existing *and* the future context adds nothing; a
+    version that differenced against the first baseline alone would charge it
+    100 m2 for ground the future context had already darkened."""
+    instant = cast_sources(
+        baseline("existing", -40.0, -30.0, 10.0),
+        baseline("future", -20.0, -10.0, 10.0),
+        scenario("proposed", -30.0, -20.0, 10.0),
+    )
+
+    assert instant.areas_m2["proposed"] == pytest.approx(0.0)
+    assert instant.regions["proposed"] == ()
+
+
+def test_the_six_row_sheet_comes_back_with_six_rows_in_the_order_given() -> None:
+    """SSDA 401's legend, end to end. The order is the sheet's argument and it
+    survives the round trip, because the layer, the Element ID and the legend
+    row are all read off it."""
+    series = cast_shadows(
+        plane(),
+        sources=[
+            baseline("existing neighbours", -40.0, -35.0, 10.0),
+            baseline("future context", -34.0, -30.0, 10.0),
+            baseline("existing on site", -29.0, -25.0, 8.0),
+            scenario("tod", 0.0, 10.0, 10.0),
+            scenario("sears", 0.0, 10.0, 15.0),
+            scenario("proposed envelope", 0.0, 10.0, 20.0),
+        ],
+        sun_vectors=WEST_45,
+        moments=[NOON],
+        labels=["12PM"],
+        spacing_m=1.0,
+    )
+
+    assert [source.key for source in series.sources] == [
+        "existing neighbours",
+        "future context",
+        "existing on site",
+        "tod",
+        "sears",
+        "proposed envelope",
+    ]
+    assert [source.role for source in series.sources] == [BASELINE] * 3 + [SCENARIO] * 3
+    assert set(series.instants[0].areas_m2) == {source.key for source in series.sources}
+
+
+def test_two_sources_may_not_share_a_key() -> None:
+    """The key is the layer fragment and the Element ID segment. Two rows
+    sharing one would draw the second over the first and total them together
+    in the schedule, silently."""
+    with pytest.raises(ValueError, match="share a key"):
+        cast_sources(baseline("tod", -40.0, -30.0, 10.0), scenario("tod", 0.0, 10.0, 10.0))
+
+
+def test_a_source_with_no_geometry_is_not_a_reason_to_fail() -> None:
+    """'This project has no future context' is an ordinary answer. The row
+    stays in the legend, its fill is empty, and nothing is cast for it."""
+    instant = cast_sources(
+        baseline("existing", -40.0, -30.0, 10.0),
+        ShadowSource("future", "Future", TriangleMesh.empty(), BASELINE),
+        scenario("proposed", 0.0, 10.0, 20.0),
+    )
+
+    assert instant.areas_m2["future"] == pytest.approx(0.0)
+    assert instant.regions["future"] == ()
+    assert instant.areas_m2["proposed"] == pytest.approx(300.0)
+
+
+def test_an_unknown_role_is_refused_rather_than_treated_as_a_baseline() -> None:
+    """Silently defaulting would put a SEARs massing in the baseline and
+    charge the proposal only for what it added on top of it."""
+    with pytest.raises(ValueError, match="Unknown source role"):
+        cast_sources(ShadowSource("odd", "Odd", box((0, -5, 0), (10, 5, 10)), "comparator"))

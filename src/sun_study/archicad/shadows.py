@@ -69,56 +69,99 @@ from sun_study.archicad.layout import (
 )
 from sun_study.archicad.views import views_for_storeys
 from sun_study.core.patches import Ring
-from sun_study.core.shadow import ADDITIONAL, ENVELOPE, EXISTING, ShadowSeries
+from sun_study.core.shadow import (
+    BASELINE,
+    SCENARIO,
+    ShadowSeries,
+    SourceSpec,
+)
 
 __all__ = [
+    "BASELINE_RAMP",
     "DEFAULT_PER_SHEET",
-    "DEFAULT_STYLES",
+    "SCENARIO_RAMP",
     "ShadowDrawReport",
     "ShadowSheetReport",
     "build_shadow_sheets",
     "combination_name",
     "draw_shadow_series",
+    "drawing_order",
     "layer_name",
     "sheet_name",
+    "styles_for",
 ]
 
-#: The three fills, styled as the reference sheets style them. Pen indices are
-#: a guess and are meant to be overridden -- a pen number means whatever one
-#: project's pen table says it means -- but the colours are not a guess: they
-#: are read off the office's own legend, so a pen can be *matched* to them
-#: rather than picked. ``draw.match_pens`` is what does the matching.
-DEFAULT_STYLES: dict[str, BandStyle] = {
-    EXISTING: BandStyle(
-        "EXISTING BUILDING SHADOWS",
-        float("inf"),
-        fill_pen=93,
-        rgb=(166, 166, 166),
-    ),
-    ENVELOPE: BandStyle(
-        "LEP ENVELOPE",
-        float("inf"),
-        fill_pen=94,
-        rgb=(244, 204, 204),
-    ),
-    ADDITIONAL: BandStyle(
-        "ADDITIONAL SHADOW CAST BY PROPOSED BUILDING",
-        float("inf"),
-        fill_pen=95,
-        rgb=(164, 194, 217),
-    ),
-}
-
-#: Drawing order, back to front. The existing shadow is the ground everything
-#: else is read against, so it goes down first; the envelope next, because the
-#: argument is "the proposal against what was allowed anyway"; the proposal's
-#: own addition last, on top, because it is the thing being looked at.
+#: The greys a baseline is drawn in, lightest first, and the blues a scenario
+#: is drawn in, palest first.
 #:
-#: They do not in fact overlap -- ``core.shadow`` differences all three against
-#: the same "before" so the fills abut -- but the order still decides what a
-#: reader sees where two of them share an edge, and an arbitrary one would
-#: change between runs.
-ORDER = (EXISTING, ENVELOPE, ADDITIONAL)
+#: Not a guess and not a taste. These six are sampled straight out of the
+#: legend of SSDA 401 -- the Campsie SSDA sheet -- so a run reproduces the
+#: sheet the office already draws by hand rather than approximating it. The
+#: split is the one the sheet itself makes: what will be there is grey and
+#: recedes, what is being argued about is blue and comes forward, and within
+#: each ramp the later entry is the stronger one because it is the newer claim.
+#:
+#: Both ramps repeat if a project names more sources than there are steps.
+#: Six is what the busiest reference sheet needed; a seventh would cycle back
+#: to the lightest, which is visibly wrong on the sheet and is meant to be --
+#: the answer then is to pass a colour, not to have the tool invent one.
+BASELINE_RAMP: tuple[tuple[int, int, int], ...] = (
+    (235, 235, 235),
+    (216, 216, 216),
+    (158, 158, 158),
+)
+SCENARIO_RAMP: tuple[tuple[int, int, int], ...] = (
+    (204, 216, 225),
+    (168, 193, 205),
+    (147, 174, 192),
+)
+
+#: Where the shadow pens start. A pen number means whatever one project's pen
+#: table says it means, so these are meant to be overridden; the colours above
+#: are what lets a pen be *matched* rather than picked, and
+#: ``draw.match_pens`` is what does the matching.
+FIRST_SHADOW_PEN = 93
+
+
+def styles_for(sources: Sequence[SourceSpec]) -> dict[str, BandStyle]:
+    """A style per source, coloured by role and by position within its role.
+
+    Derived from the source list rather than written out, because the legend
+    is now the project's to declare: a sheet with six rows and a sheet with
+    two are the same code path, and a table of hard-coded categories could
+    only ever draw the one it was written for.
+    """
+    styles: dict[str, BandStyle] = {}
+    seen = {BASELINE: 0, SCENARIO: 0}
+    for index, source in enumerate(sources):
+        ramp = BASELINE_RAMP if source.role == BASELINE else SCENARIO_RAMP
+        position = seen[source.role]
+        seen[source.role] += 1
+        styles[source.key] = BandStyle(
+            source.label.upper(),
+            float("inf"),
+            fill_pen=FIRST_SHADOW_PEN + index,
+            rgb=ramp[position % len(ramp)],
+        )
+    return styles
+
+
+def drawing_order(sources: Sequence[SourceSpec]) -> tuple[str, ...]:
+    """Back to front: every baseline, then every scenario.
+
+    The baselines are the ground the rest is read against, so they go down
+    first whatever order they were named in; the scenarios go on top in the
+    order the project named them, which is the order its argument runs --
+    what the controls allow, then what is being asked for.
+
+    Scenarios genuinely do overlap (see ``core.shadow.SCENARIO``), so unlike
+    the old three-fill drawing this order decides what a reader actually sees
+    where two of them cover the same ground, not merely which hairline wins on
+    a shared edge. Last named is on top, and that is the one being applied for.
+    """
+    return tuple(s.key for s in sources if s.role == BASELINE) + tuple(
+        s.key for s in sources if s.role == SCENARIO
+    )
 
 
 def layer_name(label: str) -> str:
@@ -151,6 +194,9 @@ class ShadowDrawReport:
     """What was drawn, and everything a reader should be suspicious of."""
 
     fills: int
+    sources: tuple[SourceSpec, ...]
+    """The legend this run drew, in order. Needed to read ``areas_m2``."""
+
     layers: tuple[str, ...]
     combinations: tuple[str, ...]
     cleared: int
@@ -192,9 +238,10 @@ class ShadowDrawReport:
         if self.grouped.describe():
             lines.append(self.grouped.describe())
         for label, areas in self.areas_m2.items():
-            existing = areas.get(EXISTING, 0.0)
-            added = areas.get(ADDITIONAL, 0.0)
-            lines.append(f"  {label}: existing {existing:,.0f} m2, added {added:,.0f} m2")
+            written = ", ".join(
+                f"{source.key} {areas.get(source.key, 0.0):,.0f}" for source in self.sources
+            )
+            lines.append(f"  {label}: {written} m2")
         return "\n".join(lines)
 
 
@@ -303,8 +350,9 @@ def draw_shadow_series(
     if not series.instants:
         raise ArchicadError("No instants to draw.")
 
-    palette = dict(DEFAULT_STYLES)
+    palette = styles_for(series.sources)
     palette.update(styles or {})
+    order = drawing_order(series.sources)
 
     shared = ensure_layer(connection, shared_layer_name())
     wanted = [layer_name(instant.label) for instant in series.instants]
@@ -323,7 +371,7 @@ def draw_shadow_series(
         layer = ensure_layer(connection, name)
         made_layers.append(name)
         cleared += clear_layer(connection, layer.index)
-        for category in ORDER:
+        for category in order:
             style = palette.get(category)
             if style is None:
                 continue
@@ -384,6 +432,7 @@ def draw_shadow_series(
 
     return ShadowDrawReport(
         fills=len(fills),
+        sources=series.sources,
         layers=tuple(made_layers),
         combinations=tuple(combinations),
         cleared=cleared,

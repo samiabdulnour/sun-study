@@ -2001,12 +2001,13 @@ coordinates really are north-aligned (see `cross_check_georeferencing`). The
 command runs that cross-check before any number reaches the screen, for the
 same reason `archicad-run` does.
 
-**What is not built.** The LEP envelope is implemented in `core.shadow` and
-reachable from Python, but not from the command line: it needs the site
-boundary as a polygon, and the boundary Archicad holds is in the project frame
-while the shadows are computed in the export's. Fitting one onto the other is
-D46's machinery and has not been wired. Existing-versus-additional needs no
-boundary and is the argument the drawing exists to make.
+**What was not built at the time, and now is.** The LEP envelope was
+implemented in `core.shadow` and reachable from Python but not from the command
+line, because extruding one wants the site boundary as a polygon and the
+boundary Archicad holds is in the project frame while the shadows are computed
+in the export's. D77 goes around that rather than through it: a height-limit
+massing on a real project is *modelled*, not extruded at run time, so it needs
+finding, not building.
 
 ### D73 — Fills carry an ID and a group, because they cannot carry each other
 
@@ -2237,3 +2238,64 @@ A Zone whose storey Archicad will not report is dropped from the second answer
 rather than guessed at. It still gets fills, on whatever storey is current,
 which is the best available without a home for it — and the run says so
 instead of making an empty sheet.
+
+
+### D77 — A shadow diagram's legend is the project's to declare, not the tool's
+
+`core.shadow` was written for three fills — existing, envelope, additional —
+and three is a number taken from one sheet. Set the office's own reference
+sheets side by side and it does not hold: SSDA 411 carries two rows, and SSDA
+401, the Campsie SSDA set, carries six — existing neighbouring buildings,
+future neighbouring context buildings, existing structures within the site, the
+current LEP 2023 height limit, the Canterbury Bankstown LEP height limit, and
+the proposed building envelope. The same sheet redrawn for Crows Nest swaps the
+two LEP rows for a TOD height limit and a SEARs massing. Three hard-coded
+constants could draw one of those and never the others, and the constants were
+load-bearing in five modules: layer names, Element IDs, group keys, the style
+table, the drawing order and the console table.
+
+So `cast_shadows` takes an ordered list of sources instead, and every one of
+those six spellings is read off it.
+
+**The roles are the decision, not the count.** Making the list variable is
+mechanical; deciding how its members combine is not, and getting it wrong
+produces a drawing that reads perfectly and is wrong. Two roles:
+
+A **baseline** is something that will be there — the existing neighbours, the
+buildings approved next door, the structures being kept on the site. Baselines
+accumulate in the order given, each charged only for the ground the earlier
+ones had not already darkened. Their fills abut and their areas add to the
+total shadow, which is what lets a reader add the grey rows up.
+
+A **scenario** is something that might be — what a height limit allows, what
+the SEARs massing is, what is being applied for. Each is cast against the whole
+baseline and against *no other scenario*, so two scenarios overlap. That
+overlap is the comparison the sheet exists to make. Differencing them against
+each other would show the second one only where it beat the first, which is not
+a shadow of anything, and the arithmetic would still produce a plausible
+drawing — which is why the role is two flags at the command line rather than
+one flag with a keyword in it. A SEARs massing silently demoted to a baseline
+would charge the proposal only for what it added on top, and nobody reading the
+sheet could catch it.
+
+Cost stays linear: one ray cast per source, a baseline against the baselines
+before it and a scenario against all of them. The old three-fill study is
+`default_sources`, still the behaviour of a run that names nothing, and its
+tests pass unchanged.
+
+**Sources are found by Element ID, not by layer.** The six massings of a
+comparison like this are one modelling exercise by one person and they do not
+land on six tidy layers; they are, however, named. Prefix-matched, because
+`TOD-01`, `TOD-02` and `TOD-PODIUM` are one massing and listing them
+individually is a rule nobody keeps current against a model still being drawn.
+An element no rule claims is reported by count and by example rather than
+dropped quietly: a neighbouring building missing from the baseline is a drawing
+whose proposal fill has grown to cover ground that building was already
+darkening — wrong in the applicant's favour, and invisible.
+
+**Colours are read, not chosen.** The two ramps — three greys for baselines,
+three blues for scenarios — are sampled straight out of SSDA 401's own legend,
+so a run reproduces the sheet the office already draws rather than approximating
+it. A seventh source in either role cycles back to the lightest step, which is
+visibly wrong on the sheet on purpose: the answer there is to pass a colour, not
+to have the tool invent one.

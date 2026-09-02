@@ -17,6 +17,7 @@ apartment percentage that nobody questions.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -36,6 +37,7 @@ from sun_study.core.sampling import (
     horizontal_grid,
     triangle_samples,
 )
+from sun_study.core.shadow import BASELINE, ShadowSource, default_sources
 from sun_study.ingest.ifc import IfcElement, IfcModel
 
 FloatArray = npt.NDArray[np.float64]
@@ -49,6 +51,7 @@ __all__ = [
     "SceneConfig",
     "SceneConfigError",
     "ShadowScene",
+    "ShadowSourceRule",
     "WindowAssignment",
     "build_massing_scene",
     "build_scene",
@@ -1399,6 +1402,10 @@ class MassingConfig:
     An element matching either route is context.
     """
 
+    shadow_sources: tuple[ShadowSourceRule, ...] = ()
+    """The legend of a shadow diagram, in drawing order. Empty is the old
+    three-fill study; see ``build_shadow_scene``."""
+
     facade_spacing_m: float = DEFAULT_MASSING_SPACING_M
     ground_spacing_m: float = DEFAULT_MASSING_SPACING_M
     surface_offset_m: float = DEFAULT_SURFACE_OFFSET_M
@@ -1833,77 +1840,189 @@ def _geometry_overhead(model: IfcModel, spaces: Sequence[IfcElement]) -> dict[st
 
 
 @dataclass(frozen=True)
+class ShadowSourceRule:
+    """One legend row, and how to find the geometry behind it.
+
+    A selector is tried two ways and claims the element if either lands: as a
+    whole **layer name**, or as a prefix of the **Element ID**. That is the
+    same either/or ``_is_context`` already offers for context, and it is here
+    for the same reason -- which of the two a practice has actually filled in
+    is not something this tool gets to assume.
+
+    Both routes are real on real projects. On the Crows Nest model the six
+    massings are separated by layer and carry no Element ID at all: ``03 |
+    Site context.TOD Buildings`` is the TOD height limit, ``03 | Site
+    Context.Existing Buildings To Stay`` is what is being kept. On a model
+    where the massings share a layer, the ID is the only thing left, and it is
+    what a person types when they mean "this block is the SEARs one".
+
+    The ID route matches by prefix because that is how an ID is used:
+    ``TOD-01``, ``TOD-02``, ``TOD-PODIUM`` are one massing, and requiring them
+    to be listed individually is a rule nobody keeps current against a model
+    still being drawn. The layer route matches in full, because a layer name
+    is a thing that exists exactly and a prefix of one would quietly sweep in
+    ``...TOD Buildings 2D`` beside ``...TOD Buildings``.
+    """
+
+    key: str
+    """Dictionary key, layer-name fragment, Element ID segment on the fill."""
+
+    label: str
+    """The legend row, in the sheet's words."""
+
+    selectors: tuple[str, ...]
+    """Layer names, or Element ID prefixes. Case- and space-insensitive."""
+
+    role: str = BASELINE
+    """``BASELINE`` or ``SCENARIO``. See ``core.shadow`` -- it is the arithmetic."""
+
+
+@dataclass(frozen=True)
 class ShadowScene:
-    """A model split into what already stands and what is being applied for.
+    """A model split into the things a shadow diagram attributes shadow to.
 
     The same reduction a massing study uses -- ``massing_subject``, height cut
     included -- read for a different question. A massing study wants one
     occluder set because a tower shading its own podium is part of what it
-    measures; a shadow diagram wants two, because the entire point of the
-    drawing is which of them cast what.
+    measures; a shadow diagram wants one per legend row, because the entire
+    point of the drawing is which of them cast what.
     """
 
-    context: TriangleMesh
-    """Everything that already stands: neighbours, survey, retained fabric."""
-
-    proposal: TriangleMesh
-    """The scheme. What ``--subject-layer`` names, or whatever is not context."""
+    sources: tuple[ShadowSource, ...]
+    """One per legend row, in the order the project declared them."""
 
     bounds: tuple[FloatArray, FloatArray]
-    """Minimum and maximum corner of both together, which is what the shadow
-    plane has to cover before its margin is added."""
+    """Minimum and maximum corner of everything together, which is what the
+    shadow plane has to cover before its margin is added."""
 
     orientation: SiteOrientation
     provenance: dict[str, object]
 
+    unmatched: tuple[tuple[str, int], ...] = ()
+    """Layers holding solids no rule claimed, and how many, commonest first.
+
+    By layer and not by Element ID because on a real project the ID is usually
+    blank -- 17,276 of 22,513 solids on the Crows Nest model carry none -- and
+    a list of empty strings tells nobody anything. A layer name does: *1,742 on
+    ``01 | Wall.Unit Internal``* reads at a glance as interior clutter that
+    should cast nothing, and *490 on ``03 | Site Context.Existing Buildings To
+    Stay``* reads as a missing legend row.
+
+    Reported rather than swallowed. A neighbouring building no selector claims
+    is silently *absent from the baseline*, and the
+    only visible effect is that the proposal's own fill grows to cover ground
+    that building was already darkening -- a drawing that is wrong in the
+    applicant's favour and reads perfectly. So the caller is told, by count and
+    by example, and can decide whether that is survey clutter or the argument.
+    """
+
     def describe(self) -> str:
-        return (
-            f"context {self.context.triangle_count} triangles | "
-            f"proposal {self.proposal.triangle_count} triangles | "
-            f"north {self.orientation.normalised_bearing_deg:.1f} deg"
-        )
+        parts = " | ".join(f"{source.key} {source.mesh.triangle_count}" for source in self.sources)
+        return f"{parts} triangles | north {self.orientation.normalised_bearing_deg:.1f} deg"
+
+
+def _claims(element: IfcElement, selectors: Sequence[str]) -> bool:
+    """Whether any selector picks this element, by layer or by Element ID.
+
+    ``element.name`` is where Archicad's Element ID lands in an IFC export --
+    the same field ``_is_livable_opening`` reads for D24 -- and ``_on_layer``
+    is the same layer comparison the rest of this module uses. Both are
+    whitespace-tolerant and case-insensitive, because a name typed at a
+    command line will not match ``03 |  Site context.TOD Buildings`` byte for
+    byte and failing on that is a trap rather than a safeguard.
+    """
+    wanted = [s for s in selectors if s.strip()]
+    if _on_layer(element, wanted):
+        return True
+    actual = " ".join(element.name.split()).casefold()
+    return any(actual.startswith(" ".join(s.split()).casefold()) for s in wanted)
 
 
 def build_shadow_scene(model: IfcModel, config: MassingConfig) -> ShadowScene:
-    """Split the model into context and proposal, for a shadow diagram.
+    """Split the model into the sources a shadow diagram attributes shadow to.
 
-    A proposal that comes back empty is refused rather than drawn. With
-    nothing in it every hour's "additional" fill is empty, the sheets come out
-    showing only the existing shadow, and there is nothing on the drawing that
-    says why -- which is the precise failure this package exists to prevent.
-    Naming no ``--subject-layer`` at all is fine and means "everything that is
-    not context"; what is refused is naming layers that match nothing.
+    With ``shadow_sources`` declared, every solid is offered to each rule in
+    turn and the first one to claim it wins -- so the order rules are named in
+    is also how ambiguity is resolved, and a more specific prefix belongs
+    before a more general one.
+
+    With none declared, this falls back to the three-fill study: context,
+    proposal, and the planning envelope if one was given. A proposal that comes
+    back empty is refused rather than drawn, because with nothing in it every
+    hour's "additional" fill is empty, the sheets come out showing only the
+    existing shadow, and nothing on the drawing says why.
     """
     orientation = model.orientation(config.timezone)
     reduced = massing_subject(model, config)
-
-    context = TriangleMesh.concatenate([element.mesh for element in reduced.context])
-    proposal = TriangleMesh.concatenate([element.mesh for element in reduced.subject])
-    if not proposal.triangle_count:
+    everything = [element for element in reduced.solids if element.mesh.triangle_count]
+    if not everything:
         raise SceneConfigError(
-            "Nothing in the model is the proposal, so there is no additional shadow to "
-            "draw and the sheets would show only what already stands. Check "
-            "--subject-layer against the project's layer names."
+            "No solid geometry in the model at all, so there is no shadow to cast. "
+            "Check the export carries 3D elements and not only Zones."
         )
 
-    everything = [element for element in reduced.solids if element.mesh.triangle_count]
+    unmatched: Counter[str] = Counter()
+    if config.shadow_sources:
+        claimed: dict[str, list[IfcElement]] = {rule.key: [] for rule in config.shadow_sources}
+        for element in everything:
+            for rule in config.shadow_sources:
+                if _claims(element, rule.selectors):
+                    claimed[rule.key].append(element)
+                    break
+            else:
+                unmatched[element.layer or "(no layer)"] += 1
+
+        empty = [rule.key for rule in config.shadow_sources if not claimed[rule.key]]
+        if empty:
+            raise SceneConfigError(
+                f"Nothing in the model matches the selector(s) for {empty}, so those "
+                f"legend rows would be drawn blank and the sheet would silently "
+                f"understate the shadow. A selector is a layer name or an Element ID "
+                f"prefix; run 'sun-study archicad-info' to see the project's layers."
+            )
+
+        sources = tuple(
+            ShadowSource(
+                key=rule.key,
+                label=rule.label,
+                mesh=TriangleMesh.concatenate([e.mesh for e in claimed[rule.key]]),
+                role=rule.role,
+            )
+            for rule in config.shadow_sources
+        )
+    else:
+        context = TriangleMesh.concatenate([element.mesh for element in reduced.context])
+        proposal = TriangleMesh.concatenate([element.mesh for element in reduced.subject])
+        if not proposal.triangle_count:
+            raise SceneConfigError(
+                "Nothing in the model is the proposal, so there is no additional shadow to "
+                "draw and the sheets would show only what already stands. Check "
+                "--subject-layer against the project's layer names."
+            )
+        sources = default_sources(context, proposal)
+
     lower = np.min([element.bounds[0] for element in everything], axis=0).astype(np.float64)
     upper = np.max([element.bounds[1] for element in everything], axis=0).astype(np.float64)
 
     return ShadowScene(
-        context=context,
-        proposal=proposal,
+        sources=sources,
         bounds=(lower, upper),
         orientation=orientation,
+        unmatched=tuple(unmatched.most_common()),
         provenance={
             "mode": "shadow",
             "source": model.path.name,
             "schema": model.schema,
             "true_north_bearing_deg": orientation.normalised_bearing_deg,
-            "context_elements": len(reduced.context),
-            "proposal_elements": len(reduced.subject),
             "elements_above_cut": reduced.elements_above_cut,
-            "context_triangles": context.triangle_count,
-            "proposal_triangles": proposal.triangle_count,
+            "unmatched_elements": sum(unmatched.values()),
+            "sources": {
+                source.key: {
+                    "label": source.label,
+                    "role": source.role,
+                    "triangles": source.mesh.triangle_count,
+                }
+                for source in sources
+            },
         },
     )

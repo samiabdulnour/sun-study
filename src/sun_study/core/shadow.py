@@ -18,11 +18,26 @@ ray casts and a boolean:
     existing   = shaded_before
     additional = shaded_after and not shaded_before
 
-and the same subtraction a third time, against a planning envelope, answers
-"how much of that could have been cast by anything the controls allow here
-anyway" -- which is the question the applicant is arguing and the objector is
-disputing. All three come off one grid, so the three fills tile without a seam
-and their areas add up.
+and the same subtraction against a planning envelope answers "how much of that
+could have been cast by anything the controls allow here anyway" -- which is
+the question the applicant is arguing and the objector is disputing.
+
+How many subtractions there are is the project's business, not this module's.
+A sheet's legend is however many rows it took to make the argument: two on one
+of the office's jobs, six on the Campsie SSDA set, four on a site where the
+comparison is a TOD height limit against a SEARs massing. So what comes in is
+an ordered list of *sources*, each either a BASELINE -- something that will be
+there, charged only for the ground the baselines before it had not already
+darkened -- or a SCENARIO, something that might be, charged against the whole
+baseline and against no other scenario.
+
+That distinction is the one thing here worth being careful about. Baselines
+tile: their fills abut and their areas add to the total shadow. Scenarios
+deliberately do not, because two of them are rival answers about the same
+land, and a drawing that differenced them against each other would show the
+second one only where it beat the first -- which is not a shadow of anything.
+Everything comes off one grid either way, so any two fills that do abut, abut
+exactly.
 
 The plane
 ---------
@@ -67,21 +82,51 @@ BoolArray = npt.NDArray[np.bool_]
 
 __all__ = [
     "ADDITIONAL",
+    "BASELINE",
     "ENVELOPE",
     "EXISTING",
+    "SCENARIO",
     "ShadowInstant",
     "ShadowSeries",
+    "ShadowSource",
+    "SourceSpec",
     "cast_shadows",
+    "default_sources",
     "ground_plane_grid",
 ]
 
-#: The three fills, in the order they are drawn and legended. Keys rather than
-#: an enum because they are also layer-name fragments, dictionary keys in the
-#: report and column headings in the CSV, and a StrEnum that has to be
-#: ``str()``-ed at every one of those is a worse deal than three constants.
+#: The default three fills, in the order they are drawn and legended. Keys
+#: rather than an enum because they are also layer-name fragments, dictionary
+#: keys in the report and column headings in the CSV, and a StrEnum that has
+#: to be ``str()``-ed at every one of those is a worse deal than three
+#: constants.
+#:
+#: They are a *default*, not the vocabulary. A real sheet's legend is however
+#: many rows that project argued its case in: the Campsie SSDA set carries six
+#: -- existing neighbours, future neighbours, existing structures on the site,
+#: two LEP height limits and the proposed envelope -- where another job in the
+#: same office carries two. Three hard-coded categories could draw the second
+#: sheet and never the first, so what the engine actually takes is a list.
 EXISTING = "existing"
 ADDITIONAL = "additional"
 ENVELOPE = "envelope"
+
+#: What a source is *for*, which is the whole of how its fill is computed.
+#:
+#: A baseline is a thing that will be there: the existing neighbours, the
+#: buildings already approved next door, the structures on the site being kept.
+#: Baselines accumulate in the order given, each charged only for the ground
+#: the ones before it had not already darkened, so their fills abut and their
+#: areas add.
+#:
+#: A scenario is a thing that *might* be there, and every scenario is an
+#: answer to the same question about the same land -- what a height limit
+#: allows, what the SEARs massing is, what is being applied for. Each is cast
+#: against the whole baseline and none against another, so two scenarios
+#: overlap on purpose: that overlap is the comparison the sheet exists to
+#: make, and differencing them against each other would destroy it.
+BASELINE = "baseline"
+SCENARIO = "scenario"
 
 #: How far above the datum the samples sit. A point exactly on a plane that
 #: coincides with a ground slab starts its ray inside that slab and reads as
@@ -98,8 +143,67 @@ DEFAULT_MARGIN_M = 150.0
 
 
 @dataclass(frozen=True)
+class SourceSpec:
+    """A source stripped of its geometry: what the drawing end needs.
+
+    The mesh is the heaviest thing in a shadow run and the drawing end has no
+    use for it -- it wants to know what the categories were called, what order
+    they go in and which of them is a scenario, so the layers, the legend and
+    the console table can all be built from one list instead of three that
+    drift. Carried on the series for exactly that reason.
+    """
+
+    key: str
+    """Dictionary key, layer-name fragment and Element ID segment."""
+
+    label: str
+    """What the legend row says. The sheet's words, not the tool's."""
+
+    role: str = BASELINE
+
+
+@dataclass(frozen=True)
+class ShadowSource:
+    """One thing that casts a shadow, and what its shadow means."""
+
+    key: str
+    label: str
+    mesh: TriangleMesh
+    role: str = BASELINE
+
+    @property
+    def spec(self) -> SourceSpec:
+        return SourceSpec(key=self.key, label=self.label, role=self.role)
+
+
+def default_sources(
+    context: TriangleMesh,
+    proposal: TriangleMesh,
+    envelope: TriangleMesh | None = None,
+) -> tuple[ShadowSource, ...]:
+    """The three-fill study, as a source list.
+
+    What a run with nothing named produces, and the shape every sheet in the
+    office's simpler set is drawn in: what already stands, what the controls
+    allowed anyway, and what the proposal adds on top of both being read
+    against the same ground.
+    """
+    sources = [
+        ShadowSource(EXISTING, "Shadow cast by existing buildings", context, BASELINE),
+    ]
+    if envelope is not None and envelope.triangle_count:
+        sources.append(
+            ShadowSource(ENVELOPE, "Shadow cast by the planning envelope", envelope, SCENARIO)
+        )
+    sources.append(
+        ShadowSource(ADDITIONAL, "Additional shadow cast by proposed building", proposal, SCENARIO)
+    )
+    return tuple(sources)
+
+
+@dataclass(frozen=True)
 class ShadowInstant:
-    """One moment, and the three shadow fills at it.
+    """One moment, and one shadow fill per source at it.
 
     ``regions`` holds the rings to draw per category, already reduced to
     what a single-contour fill can carry: outlines where the shadow is solid,
@@ -135,6 +239,15 @@ class ShadowSeries:
     """Every instant asked for, and what the grid they were measured on was."""
 
     instants: tuple[ShadowInstant, ...]
+    sources: tuple[SourceSpec, ...]
+    """The categories, in drawing order, back to front.
+
+    On the series rather than rederived at each end, because the layer a fill
+    lands on, the Element ID it is stamped with, the legend row it is
+    explained by and the column it is totalled in are four spellings of one
+    list, and four places to keep them in step is three too many.
+    """
+
     spacing_m: float
     datum_m: float
     sample_count: int
@@ -198,20 +311,20 @@ def _shaded(grid: SamplePoints, occluder: Occluder, sun_vectors: FloatArray) -> 
 def cast_shadows(
     grid: SamplePoints,
     *,
-    context: TriangleMesh,
-    proposal: TriangleMesh,
-    envelope: TriangleMesh | None = None,
+    sources: Sequence[ShadowSource],
     sun_vectors: FloatArray,
     moments: Sequence[dt.datetime],
     labels: Sequence[str],
     spacing_m: float,
 ) -> ShadowSeries:
-    """Trace the three shadow fills at every instant.
+    """Trace one shadow fill per source at every instant.
 
-    ``context`` is everything that already stands -- neighbours, and any part
-    of the site not being applied for. ``proposal`` is the scheme. ``envelope``
-    is the planning control made solid, usually the site boundary extruded to
-    a height limit; ``None`` leaves that category empty and draws no pink.
+    ``sources`` is the legend, in the order it is drawn and read, back to
+    front. Its two roles are what the arithmetic turns on -- see ``BASELINE``
+    and ``SCENARIO`` -- and they are not interchangeable: a scenario demoted
+    to a baseline would charge the SEARs massing only for what the TOD
+    massing had not already darkened, which is a comparison between two
+    alternatives that were never going to stand at the same time.
 
     ``sun_vectors`` must be unit vectors towards the sun **in the model
     frame**, one row per moment, exactly as ``analysis.sunlit_matrix`` wants
@@ -219,9 +332,9 @@ def cast_shadows(
     produce a shadow diagram that is confidently wrong by the site's north
     angle, and nothing downstream can detect it.
 
-    Three casts, not four: the envelope is compared against the same
-    ``shaded_before`` as the proposal, so the pink and the blue are answers to
-    the same question about the same land and can be read against each other.
+    One ray cast per source, and no more. A baseline is cast against the
+    baselines before it, a scenario against all of them; nothing is cast
+    twice, so the cost is linear in the legend rather than in its powerset.
     """
     if len(moments) != len(labels):
         raise ValueError(f"{len(moments)} moments but {len(labels)} labels")
@@ -230,39 +343,71 @@ def cast_shadows(
         raise ValueError(f"sun_vectors must have shape (n, 3), got {directions.shape}")
     if len(directions) != len(moments):
         raise ValueError(f"{len(directions)} sun vectors for {len(moments)} moments")
+    if not sources:
+        raise ValueError("No shadow sources, so there is nothing to draw.")
+    seen = [source.key for source in sources]
+    if len(set(seen)) != len(seen):
+        raise ValueError(f"Two shadow sources share a key: {sorted(seen)}")
+    unknown = {source.role for source in sources} - {BASELINE, SCENARIO}
+    if unknown:
+        raise ValueError(f"Unknown source role(s) {sorted(unknown)}")
 
     cell_area = spacing_m * spacing_m
     above_horizon = directions[:, 2] > 0.0
+    empty = np.zeros((len(grid), len(moments)), dtype=bool)
 
-    before = _shaded(grid, Occluder(context), directions)
-    after = _shaded(grid, Occluder(TriangleMesh.concatenate([context, proposal])), directions)
-    with_envelope = (
-        _shaded(grid, Occluder(TriangleMesh.concatenate([context, envelope])), directions)
-        if envelope is not None and envelope.triangle_count
-        else np.zeros_like(before)
-    )
+    # Baselines first, cumulatively. ``standing`` is the mesh of everything
+    # that will be there; ``before`` is the ground it has already darkened,
+    # and it is the datum every scenario is then charged against.
+    masks: dict[str, BoolArray] = {}
+    standing: list[TriangleMesh] = []
+    before = empty
+    for source in sources:
+        if source.role != BASELINE:
+            continue
+        standing.append(source.mesh)
+        # A baseline with no geometry darkens nothing. Worth short-circuiting
+        # rather than casting: an empty source is what "the project has no
+        # future context" looks like, and it should cost nothing and draw
+        # nothing rather than raise.
+        shaded = (
+            _shaded(grid, Occluder(TriangleMesh.concatenate(standing)), directions)
+            if any(mesh.triangle_count for mesh in standing)
+            else empty
+        )
+        masks[source.key] = shaded & ~before
+        before = shaded
+
+    baseline = TriangleMesh.concatenate(standing) if standing else TriangleMesh.empty()
+
+    # Then every scenario against that same datum, and never against each
+    # other. Two scenarios overlapping is the point: see ``SCENARIO``.
+    for source in sources:
+        if source.role != SCENARIO:
+            continue
+        after = (
+            _shaded(grid, Occluder(TriangleMesh.concatenate([baseline, source.mesh])), directions)
+            if source.mesh.triangle_count
+            else before
+        )
+        masks[source.key] = after & ~before
 
     instants: list[ShadowInstant] = []
     for index, (moment, label) in enumerate(zip(moments, labels, strict=True)):
         down = not bool(above_horizon[index])
-        masks = {
-            EXISTING: before[:, index],
-            # Both differenced against the same "before", so the fills abut
-            # instead of overlapping and their areas add.
-            ADDITIONAL: after[:, index] & ~before[:, index],
-            ENVELOPE: with_envelope[:, index] & ~before[:, index],
+        at_this_hour = {
+            source.key: (np.zeros(len(grid), dtype=bool) if down else masks[source.key][:, index])
+            for source in sources
         }
-        if down:
-            masks = {key: np.zeros_like(mask) for key, mask in masks.items()}
         instants.append(
             ShadowInstant(
                 moment=moment,
                 label=label,
                 regions={
                     key: tuple(drawable_contours(grid.positions, mask, spacing_m))
-                    for key, mask in masks.items()
+                    for key, mask in at_this_hour.items()
                 },
-                areas_m2={key: float(mask.sum()) * cell_area for key, mask in masks.items()},
+                areas_m2={key: float(mask.sum()) * cell_area for key, mask in at_this_hour.items()},
                 below_horizon=down,
             )
         )
@@ -271,6 +416,7 @@ def cast_shadows(
     always_dark = float((~lit_ever).mean()) if len(grid) else 0.0
     return ShadowSeries(
         instants=tuple(instants),
+        sources=tuple(source.spec for source in sources),
         spacing_m=spacing_m,
         datum_m=float(grid.positions[:, 2].min()) if len(grid) else 0.0,
         sample_count=len(grid),

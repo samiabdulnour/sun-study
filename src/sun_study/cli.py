@@ -158,8 +158,8 @@ from sun_study.core.occlusion import Occluder
 from sun_study.core.orientation import sun_vectors_in_model_frame
 from sun_study.core.sampling import SamplePoints
 from sun_study.core.shadow import (
-    ADDITIONAL,
-    EXISTING,
+    BASELINE,
+    SCENARIO,
     cast_shadows,
     ground_plane_grid,
 )
@@ -175,6 +175,7 @@ from sun_study.ingest.scene import (
     MassingConfig,
     SceneConfig,
     SceneConfigError,
+    ShadowSourceRule,
     build_shadow_scene,
     massing_subject,
     open_ground_grid,
@@ -5376,6 +5377,56 @@ def _shadow_moments(
     return moments, labels
 
 
+def _shadow_source_rules(
+    baselines: Sequence[str], scenarios: Sequence[str]
+) -> tuple[ShadowSourceRule, ...]:
+    """Parse ``--shadow-source`` and ``--shadow-scenario`` into legend rows.
+
+    ``"Future Context=03 | Site Context.Future buildings"`` -- the legend row's
+    own words on the left, and on the right whatever finds its geometry: a
+    layer name, or a prefix of an Element ID. Either is tried, because which
+    of the two a practice has filled in is not something to assume. On the
+    Crows Nest model the massings are separated by layer and carry no Element
+    ID at all.
+
+    Two flags rather than one with a role in it, because the role is not a
+    detail of a source: it decides whether that source's shadow is charged
+    against the ones before it or against all of them, and a sheet whose SEARs
+    massing was silently treated as a baseline is wrong in a way nobody
+    reading it could catch. Baselines are drawn first whatever order the two
+    flags were interleaved in; within a role, the order given is the order
+    drawn, back to front.
+    """
+    rules: list[ShadowSourceRule] = []
+    for role, given in ((BASELINE, baselines), (SCENARIO, scenarios)):
+        for text in given:
+            label, separator, prefixes = text.partition("=")
+            if not separator or not label.strip() or not prefixes.strip():
+                raise typer.BadParameter(
+                    f"{text!r} is not LABEL=SELECTOR. Write it as "
+                    f'"Future Context=03 | Site Context.Future buildings" -- the '
+                    f"legend row on the left, and on the right the layer name or "
+                    f"Element ID prefix that finds its geometry."
+                )
+            wanted = tuple(part.strip() for part in prefixes.split(",") if part.strip())
+            rules.append(
+                ShadowSourceRule(
+                    key=label.strip(),
+                    label=label.strip(),
+                    selectors=wanted,
+                    role=role,
+                )
+            )
+    keys = [rule.key.casefold() for rule in rules]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicated:
+        raise typer.BadParameter(
+            f"Two shadow sources are called {duplicated}. The name is the layer "
+            f"fragment and the Element ID segment, so it has to be unique."
+        )
+    return tuple(rules)
+
+
 @app.command("shadows")
 def shadows(
     port: Annotated[int, typer.Option("--port", help="Which Archicad to talk to.")] = DEFAULT_PORT,
@@ -5395,6 +5446,28 @@ def shadows(
     ] = None,
     context_layer: Annotated[
         list[str] | None, typer.Option("--context-layer", help="Layers that already stand.")
+    ] = None,
+    shadow_source: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--shadow-source",
+            help=(
+                'A legend row that will be there, as "LABEL=layer or ID prefix,...". '
+                "Repeatable. These accumulate: each is charged only for ground the "
+                "earlier ones had not already darkened."
+            ),
+        ),
+    ] = None,
+    shadow_scenario: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--shadow-scenario",
+            help=(
+                'A legend row that might be there, as "LABEL=layer or ID prefix,...". '
+                "Repeatable. Each is cast against every --shadow-source and against "
+                "no other scenario, so two scenarios overlap -- which is the comparison."
+            ),
+        ),
     ] = None,
     require_layer: Annotated[list[str] | None, typer.Option("--require-layer")] = None,
     hide_layer: Annotated[list[str] | None, typer.Option("--hide-layer")] = None,
@@ -5461,6 +5534,7 @@ def shadows(
         exclude_above_m=exclude_above,
         subject_layers=tuple(subject_layer or ()),
         context_layers=tuple(context_layer or ()),
+        shadow_sources=_shadow_source_rules(shadow_source or [], shadow_scenario or []),
     )
 
     if ifc_in is not None:
@@ -5511,7 +5585,19 @@ def shadows(
             with export_state(
                 connection,
                 combination=layer_combination,
-                require=(*(subject_layer or []), *(context_layer or []), *(require_layer or [])),
+                # The source selectors go in too. The translator exports what
+                # is *shown*, so a TOD massing sitting on a layer the export
+                # combination hides would leave its legend row matching
+                # nothing -- a refusal at best, and at worst a sheet missing
+                # the comparison it exists to make. A selector that is an
+                # Element ID rather than a layer name simply matches no layer
+                # and costs nothing here.
+                require=(
+                    *(subject_layer or []),
+                    *(context_layer or []),
+                    *(selector for rule in config.shadow_sources for selector in rule.selectors),
+                    *(require_layer or []),
+                ),
                 hide=tuple(hide_layer or ()),
             ) as plan:
                 typer.echo(plan.describe())
@@ -5600,8 +5686,7 @@ def _shadow_report(
     )
     series = cast_shadows(
         grid,
-        context=scene.context,
-        proposal=scene.proposal,
+        sources=scene.sources,
         sun_vectors=sun,
         moments=moments,
         labels=labels,
@@ -5622,15 +5707,31 @@ def _shadow_report(
             fg=typer.colors.YELLOW,
         )
 
+    # Unmatched solids before the numbers, because they are the reason a
+    # number below could be wrong in a direction nobody would question.
+    if scene.unmatched:
+        total = sum(count for _, count in scene.unmatched)
+        typer.secho(
+            f"  {total} solid(s) match no --shadow-source or --shadow-scenario and "
+            f"cast nothing. On a developed model most of that is interior and should "
+            f"cast nothing; a *context* layer in this list is a missing legend row, "
+            f"and its shadow will be absent from the sheet rather than attributed "
+            f"elsewhere.",
+            fg=typer.colors.YELLOW,
+        )
+        for layer, count in scene.unmatched[:8]:
+            typer.echo(f"      {count:6}  {layer}")
+
     typer.echo("")
-    typer.secho(f"  {'instant':<18}{'existing m2':>13}{'added m2':>12}", bold=True)
+    heading = "".join(f"{source.key[:12]:>14}" for source in series.sources)
+    typer.secho(f"  {'instant':<18}{heading}", bold=True)
     for instant in series.instants:
         note = "  (sun below the horizon)" if instant.below_horizon else ""
-        typer.echo(
-            f"  {instant.caption:<18}"
-            f"{instant.areas_m2[EXISTING]:13,.0f}"
-            f"{instant.areas_m2[ADDITIONAL]:12,.0f}{note}"
+        cells = "".join(
+            f"{instant.areas_m2.get(source.key, 0.0):14,.0f}" for source in series.sources
         )
+        typer.echo(f"  {instant.caption:<18}{cells}{note}")
+    typer.secho("  areas in m2. Baselines add up; scenarios overlap by design.", dim=True)
 
     if not draw and not sheet:
         typer.echo("")
