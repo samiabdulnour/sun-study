@@ -86,6 +86,7 @@ __all__ = [
     "ENVELOPE",
     "EXISTING",
     "SCENARIO",
+    "Draped",
     "ShadowInstant",
     "ShadowSeries",
     "ShadowSource",
@@ -297,12 +298,26 @@ def ground_plane_grid(
     )
 
 
+@dataclass(frozen=True)
+class Draped:
+    """A grid moved onto the ground, and which of it found ground at all."""
+
+    grid: SamplePoints
+    on_terrain: BoolArray
+    """Per sample. False where the survey does not reach, and those samples
+    are on the fallback datum rather than on anything real."""
+
+    @property
+    def off_terrain_share(self) -> float:
+        return float(1.0 - self.on_terrain.mean()) if len(self.on_terrain) else 0.0
+
+
 def drape_onto_terrain(
     grid: SamplePoints,
     terrain: TriangleMesh,
     *,
     offset_m: float = DEFAULT_DATUM_OFFSET_M,
-) -> tuple[SamplePoints, float]:
+) -> Draped:
     """Move every sample down or up onto the terrain surface beneath it.
 
     The flat datum is a convention, not a claim about the ground (D72), and on
@@ -325,11 +340,13 @@ def drape_onto_terrain(
     survey rarely reaches that far. It is reported as ``off_terrain`` so a
     caller can say how much of the drawing is still flat.
 
-    Returns the draped grid and the share of samples that found no terrain.
+    Returns the draped grid and which samples found ground. Where a caller
+    clips to the survey, that flag is the clip.
     """
     positions = np.array(grid.positions, dtype=np.float64, copy=True)
+    none_found = np.zeros(len(positions), dtype=bool)
     if not terrain.triangle_count or not len(positions):
-        return grid, 1.0 if len(positions) else 0.0
+        return Draped(grid=grid, on_terrain=none_found)
 
     # The grid is regular and axis-aligned, so a triangle's plan bounding box
     # maps straight to a block of cells. Walking 33,000 triangles and touching
@@ -338,7 +355,7 @@ def drape_onto_terrain(
     xs = np.unique(positions[:, 0])
     ys = np.unique(positions[:, 1])
     if len(xs) < 2 or len(ys) < 2:
-        return grid, 0.0
+        return Draped(grid=grid, on_terrain=none_found)
     step_x, step_y = xs[1] - xs[0], ys[1] - ys[0]
     x0, y0 = xs[0], ys[0]
     nx, ny = len(xs), len(ys)
@@ -352,6 +369,29 @@ def drape_onto_terrain(
 
     height = np.full((nx, ny), -np.inf, dtype=np.float64)
     corners = terrain.vertices[terrain.faces]
+
+    # Near-vertical faces cannot catch a shadow, and they are what a "terrain"
+    # made of solids is full of: site context extruded from datum zero up to
+    # the ground, roads modelled as slabs, each with a skirt joining its base
+    # to its top. Interpolating a skirt puts a sample somewhere down the side
+    # of the block instead of on the ground above it.
+    #
+    # Kept on |nz| rather than nz, so both faces of a closed solid survive:
+    # winding is not dependable in an IFC export, and the *highest* surface
+    # wins below anyway, which picks the top of a solid without needing to
+    # know which way its normals were written. Degenerate triangles have no
+    # normal and no plan area, and drop out here rather than dividing by zero
+    # further down.
+    normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    lengths = np.linalg.norm(normals, axis=1)
+    # About six degrees off vertical: enough to drop a skirt that is not quite
+    # plumb, shallow enough to keep a steep bank that really is ground.
+    steep_enough = lengths > 0.0
+    steep_enough &= np.abs(normals[:, 2]) / np.maximum(lengths, 1e-12) > 0.1
+    corners = corners[steep_enough]
+    if not len(corners):
+        return Draped(grid=grid, on_terrain=none_found)
+
     a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
 
     lo_x = np.floor((np.minimum(np.minimum(a[:, 0], b[:, 0]), c[:, 0]) - x0) / step_x)
@@ -390,8 +430,9 @@ def drape_onto_terrain(
     found = np.isfinite(height) & (into >= 0)
     rows = into[found]
     positions[rows, 2] = height[found] + offset_m
-    off_terrain = 1.0 - (len(rows) / len(positions))
-    return replace(grid, positions=positions), float(off_terrain)
+    on_terrain = np.zeros(len(positions), dtype=bool)
+    on_terrain[rows] = True
+    return Draped(grid=replace(grid, positions=positions), on_terrain=on_terrain)
 
 
 def _shaded(grid: SamplePoints, occluder: Occluder, sun_vectors: FloatArray) -> BoolArray:
@@ -414,8 +455,16 @@ def cast_shadows(
     moments: Sequence[dt.datetime],
     labels: Sequence[str],
     spacing_m: float,
+    receiving: BoolArray | None = None,
 ) -> ShadowSeries:
     """Trace one shadow fill per source at every instant.
+
+    ``receiving`` marks the samples that are real ground. Where a study is
+    draped onto a survey that does not cover the whole grid, the rest sit on a
+    fallback datum abutting terrain that may be tens of metres higher or
+    lower, and a shadow crossing that step is an artefact of the seam rather
+    than anything on the site. Masked out here rather than dropped from the
+    grid, so the lattice stays regular and the contours still tile.
 
     ``sources`` is the legend, in the order it is drawn and read, back to
     front. Its two roles are what the arithmetic turns on -- see ``BASELINE``
@@ -453,6 +502,11 @@ def cast_shadows(
     cell_area = spacing_m * spacing_m
     above_horizon = directions[:, 2] > 0.0
     empty = np.zeros((len(grid), len(moments)), dtype=bool)
+    ground = (
+        np.ones(len(grid), dtype=bool) if receiving is None else np.asarray(receiving, dtype=bool)
+    )
+    if len(ground) != len(grid):
+        raise ValueError(f"{len(ground)} receiving flags for {len(grid)} samples")
 
     # Baselines first, cumulatively. ``standing`` is the mesh of everything
     # that will be there; ``before`` is the ground it has already darkened,
@@ -494,7 +548,9 @@ def cast_shadows(
     for index, (moment, label) in enumerate(zip(moments, labels, strict=True)):
         down = not bool(above_horizon[index])
         at_this_hour = {
-            source.key: (np.zeros(len(grid), dtype=bool) if down else masks[source.key][:, index])
+            source.key: (
+                np.zeros(len(grid), dtype=bool) if down else masks[source.key][:, index] & ground
+            )
             for source in sources
         }
         instants.append(
@@ -510,8 +566,11 @@ def cast_shadows(
             )
         )
 
+    # Over the ground that exists, not over the whole rectangle: samples off
+    # the survey are drawn nowhere, so counting them as permanently dark would
+    # raise an alarm about a region the drawing does not make a claim about.
     lit_ever = (~before).any(axis=1) if before.size else np.zeros(len(grid), dtype=bool)
-    always_dark = float((~lit_ever).mean()) if len(grid) else 0.0
+    always_dark = float((~lit_ever[ground]).mean()) if ground.any() else 0.0
     return ShadowSeries(
         instants=tuple(instants),
         sources=tuple(source.spec for source in sources),

@@ -5843,13 +5843,23 @@ def _shadow_report(
     grid = ground_plane_grid(
         scene.bounds, datum_m=datum, spacing_m=shadow_grid, margin_m=shadow_margin
     )
+    receiving = None
     if scene.terrain.triangle_count:
-        grid, off_terrain = drape_onto_terrain(grid, scene.terrain)
+        draped = drape_onto_terrain(grid, scene.terrain)
+        grid, receiving = draped.grid, draped.on_terrain
         typer.echo(
             f"  draped onto {scene.terrain.triangle_count:,} terrain triangles; "
-            f"{off_terrain:.0%} of the grid reaches past the survey and stays at "
-            f"{datum:g} m"
+            f"{draped.off_terrain_share:.0%} of the grid reaches past the survey and "
+            f"is left undrawn"
         )
+        if not receiving.any():
+            typer.secho(
+                "  no sample found any ground, so nothing would be drawn. Check the "
+                "terrain view covers the site.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
     sun = sun_vectors_in_model_frame(
         solar_position(moments, scene.orientation.latitude_deg, scene.orientation.longitude_deg),
         scene.orientation.normalised_bearing_deg,
@@ -5861,6 +5871,7 @@ def _shadow_report(
         moments=moments,
         labels=labels,
         spacing_m=shadow_grid,
+        receiving=receiving,
     )
 
     lower, upper = scene.bounds

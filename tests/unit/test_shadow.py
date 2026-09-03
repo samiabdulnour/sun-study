@@ -458,10 +458,12 @@ def test_a_sample_lands_on_the_terrain_under_it() -> None:
         margin_m=0.0,
     )
 
-    draped, off_terrain = drape_onto_terrain(grid, ramp, offset_m=0.0)
+    draped = drape_onto_terrain(grid, ramp, offset_m=0.0)
 
-    assert off_terrain == pytest.approx(0.0)
-    assert np.max(np.abs(draped.positions[:, 2] - draped.positions[:, 0])) == pytest.approx(0.0)
+    assert draped.off_terrain_share == pytest.approx(0.0)
+    assert np.max(
+        np.abs(draped.grid.positions[:, 2] - draped.grid.positions[:, 0])
+    ) == pytest.approx(0.0)
 
 
 def test_ground_beyond_the_survey_keeps_the_flat_datum() -> None:
@@ -485,12 +487,13 @@ def test_ground_beyond_the_survey_keeps_the_flat_datum() -> None:
         offset_m=0.0,
     )
 
-    draped, off_terrain = drape_onto_terrain(grid, patch, offset_m=0.0)
+    draped = drape_onto_terrain(grid, patch, offset_m=0.0)
 
-    on = np.isclose(draped.positions[:, 2], 5.0)
+    on = draped.on_terrain
     assert on.sum() == 16, "the 4 x 4 patch"
-    assert np.allclose(draped.positions[~on, 2], 2.0), "the rest keeps the datum"
-    assert off_terrain == pytest.approx(1.0 - 16 / len(draped.positions))
+    assert np.allclose(draped.grid.positions[on, 2], 5.0)
+    assert np.allclose(draped.grid.positions[~on, 2], 2.0), "the rest keeps the datum"
+    assert draped.off_terrain_share == pytest.approx(1.0 - 16 / len(on))
 
 
 def test_terrain_is_the_receiver_and_never_an_occluder() -> None:
@@ -503,7 +506,7 @@ def test_terrain_is_the_receiver_and_never_an_occluder() -> None:
         vertices=np.array([[-60, -60, 8], [60, -60, 8], [60, 60, 8], [-60, 60, 8]], dtype=float),
         faces=np.array([[0, 1, 2], [0, 2, 3]]),
     )
-    grid, _ = drape_onto_terrain(plane(), hill, offset_m=0.05)
+    grid = drape_onto_terrain(plane(), hill, offset_m=0.05).grid
 
     lit = cast_shadows(
         grid,
@@ -518,3 +521,53 @@ def test_terrain_is_the_receiver_and_never_an_occluder() -> None:
     # shade them.
     assert lit.permanently_dark_share < 0.5
     assert lit.instants[0].areas_m2["existing"] > 0.0
+
+
+def test_ground_the_survey_does_not_reach_is_drawn_nowhere() -> None:
+    """Clipping to the survey. Off-survey samples sit on a fallback datum that
+    abuts real terrain tens of metres higher or lower, and a shadow crossing
+    that step is an artefact of the seam. They are masked rather than dropped,
+    so the lattice stays regular and the contours still tile."""
+    from sun_study.core.shadow import drape_onto_terrain
+
+    patch = TriangleMesh(
+        vertices=np.array([[-10, -5, 0], [0, -5, 0], [0, 5, 0], [-10, 5, 0]], dtype=float),
+        faces=np.array([[0, 1, 2], [0, 2, 3]]),
+    )
+    draped = drape_onto_terrain(plane(), patch)
+
+    clipped = cast_shadows(
+        draped.grid,
+        sources=[baseline("existing", -40.0, -30.0, 10.0)],
+        sun_vectors=WEST_45,
+        moments=[NOON],
+        labels=["12PM"],
+        spacing_m=1.0,
+        receiving=draped.on_terrain,
+    )
+    whole = cast_shadows(
+        draped.grid,
+        sources=[baseline("existing", -40.0, -30.0, 10.0)],
+        sun_vectors=WEST_45,
+        moments=[NOON],
+        labels=["12PM"],
+        spacing_m=1.0,
+    )
+
+    assert draped.on_terrain.sum() < len(draped.on_terrain), "the survey is smaller"
+    assert clipped.instants[0].areas_m2["existing"] < whole.instants[0].areas_m2["existing"]
+
+
+def test_a_receiving_mask_of_the_wrong_length_is_refused() -> None:
+    """Silently recycling it against the wrong grid would clip the drawing
+    somewhere nobody chose."""
+    with pytest.raises(ValueError, match="receiving flags"):
+        cast_shadows(
+            plane(),
+            sources=[baseline("existing", -40.0, -30.0, 10.0)],
+            sun_vectors=WEST_45,
+            moments=[NOON],
+            labels=["12PM"],
+            spacing_m=1.0,
+            receiving=np.ones(3, dtype=bool),
+        )
