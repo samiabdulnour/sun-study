@@ -72,7 +72,7 @@ from sun_study.archicad.layout import (
 )
 from sun_study.archicad.read import elements_by_ifc_ids
 from sun_study.archicad.views import views_for_storeys
-from sun_study.core.geometry import PlanTransform, fit_plan_transform
+from sun_study.core.geometry import FloatArray, PlanTransform, fit_plan_transform
 from sun_study.core.patches import Ring
 from sun_study.core.shadow import (
     BASELINE,
@@ -93,6 +93,7 @@ __all__ = [
     "drawing_order",
     "fit_project_frame",
     "layer_name",
+    "require_hatch_favourite",
     "sheet_name",
     "styles_for",
 ]
@@ -179,6 +180,44 @@ def drawing_order(sources: Sequence[SourceSpec]) -> tuple[str, ...]:
 FRAME_ROTATION_TOLERANCE_DEG = 1.0
 
 
+#: How far past the typical residual a pair may sit before it is dropped.
+#: A bounding box is axis-aligned in whichever frame it is measured, so a long
+#: element's box centre moves when the frame turns and the pair is honestly
+#: mismatched; one GlobalId can also answer with several Archicad elements,
+#: and taking the first pairs a whole building against one of its slabs.
+#: Neither is rare and both drag a least-squares fit badly -- measured on
+#: Crows Nest, 400 mixed pairs fitted 29.55 m of residual and a rotation 1.5
+#: degrees off the project's own north, where 36 compact ones fitted 0.55 m.
+OUTLIER_MULTIPLE = 3.0
+
+#: Below this, dropping more pairs stops being outlier rejection and starts
+#: being a fit to whatever survived.
+MINIMUM_PAIRS = 8
+
+
+def _robust_fit(source: FloatArray, target: FloatArray) -> PlanTransform:
+    """Fit, drop the pairs that disagree most, and fit again.
+
+    Least squares assumes the error is noise. Here a good part of it is not:
+    it is pairs that are genuinely matched wrong, and one of those moves the
+    answer much further than a hundred slightly noisy ones. Two rounds is
+    enough -- the first is dragged by the outliers but still close enough to
+    rank them, and the second is fitted on what is left.
+    """
+    fitted = fit_plan_transform(source, target)
+    for _ in range(2):
+        residuals = np.linalg.norm(fitted.apply(source) - target, axis=1)
+        typical = float(np.median(residuals))
+        if typical <= 0.0:
+            break
+        keep = residuals <= typical * OUTLIER_MULTIPLE
+        if keep.all() or int(keep.sum()) < MINIMUM_PAIRS:
+            break
+        source, target = source[keep], target[keep]
+        fitted = fit_plan_transform(source, target)
+    return fitted
+
+
 def fit_project_frame(
     connection: ArchicadConnection,
     samples: Sequence[tuple[str, float, float]],
@@ -241,7 +280,7 @@ def fit_project_frame(
     if len(source) < 3:
         return None, "too few bounding boxes came back to fit a rotation"
 
-    fitted = fit_plan_transform(np.array(source), np.array(target))
+    fitted = _robust_fit(np.array(source), np.array(target))
     turned = math.degrees(math.atan2(fitted.rotation[1, 0], fitted.rotation[0, 0]))
     note = (
         f"  drawing frame: rotated {turned:+.2f} deg, shifted "
@@ -365,7 +404,32 @@ class ShadowSheetReport:
         return "\n".join(lines)
 
 
-def _fill(ring: Ring, style: BandStyle, layer_index: int, storey: int | None) -> dict[str, Any]:
+def require_hatch_favourite(connection: ArchicadConnection, favourite: str) -> None:
+    """Stop unless the project really has a Fill Favorite by that name.
+
+    An unknown name is not refused by ``CreateHatches`` -- it draws the hatch
+    anyway, with the tool's own settings and a contour round every cell. That
+    is a plan of boxes rather than a shadow, and it reads as a drawing defect
+    rather than as a missing Favorite, so it is worth failing over.
+    """
+    known = connection.run_tapir("GetFavoritesByType", {"elementType": "Hatch"})
+    names = known.get("favorites") if isinstance(known, dict) else None
+    if isinstance(names, list) and favourite not in [str(name) for name in names]:
+        raise ArchicadError(
+            f"No Fill favorite named {favourite!r}. Make one in Archicad from a fill "
+            f"with its contour switched off and the fill type you want, name it "
+            f"{favourite!r}, and run this again. The project has: "
+            + ", ".join(sorted(str(name) for name in names)[:12])
+        )
+
+
+def _fill(
+    ring: Ring,
+    style: BandStyle,
+    layer_index: int,
+    storey: int | None,
+    favourite: str | None = None,
+) -> dict[str, Any]:
     """One ring as a hatch on one layer.
 
     ``floorInd`` is sent only when there is a storey to send. A worksheet has
@@ -378,13 +442,24 @@ def _fill(ring: Ring, style: BandStyle, layer_index: int, storey: int | None) ->
         "layerIndex": layer_index,
         "fillPenIndex": style.fill_pen,
         "fillBackgroundPenIndex": style.background_pen,
-        "contourPenIndex": style.outline_pen,
         # Explicitly off. A Fill inherits the Fill tool's current default, and
         # on a real project that default has "Show Area Text" on -- which
         # prints a square-metre figure across every rectangle of a tiled
         # shadow, and a shadow with a courtyard in it is tiled.
         "showArea": False,
     }
+    if favourite is None:
+        # ``CreateHatches`` has a contour pen and no switch to turn the
+        # contour off, so the nearest reachable thing is to draw it in the
+        # fill's own pen and let it disappear against it.
+        hatch["contourPenIndex"] = style.outline_pen
+    else:
+        # A Favorite's settings are applied first and the explicit fields over
+        # the top, so naming a contour pen here would put back the contour the
+        # Favorite exists to remove. Omitted on purpose. The fill type comes
+        # from the Favorite for the same reason; the pen does not, because the
+        # pen is what separates one legend row from the next.
+        hatch["favoriteName"] = favourite
     if storey is not None:
         hatch["floorInd"] = storey
     return hatch
@@ -428,6 +503,7 @@ def draw_shadow_series(
     boundary: Ring | None = None,
     boundary_pen: int = 1,
     transform: PlanTransform | None = None,
+    favourite: str | None = None,
 ) -> ShadowDrawReport:
     """Draw every instant onto its own layer, and record a combination for each.
 
@@ -448,6 +524,8 @@ def draw_shadow_series(
     connection.require_tapir_at_least(
         DRAWING_MINIMUM_TAPIR_VERSION, "CreateHatches, which draws the shadow,"
     )
+    if favourite:
+        require_hatch_favourite(connection, favourite)
     if not series.instants:
         raise ArchicadError("No instants to draw.")
 
@@ -490,7 +568,7 @@ def draw_shadow_series(
             if style is None:
                 continue
             for ring in instant.regions.get(category, ()):
-                fills.append(_fill(placed(ring), style, layer.index, storey_index))
+                fills.append(_fill(placed(ring), style, layer.index, storey_index, favourite))
                 # The hour *and* the category, so one schedule breaks down by
                 # both: how much shadow at 9am, and how much of it is ours.
                 element_ids.append(fill_id(SHADOW, instant.caption, category.upper()))
@@ -503,6 +581,7 @@ def draw_shadow_series(
                 BandStyle("SITE BOUNDARY", float("inf"), fill_pen=boundary_pen, background_pen=0),
                 shared.index,
                 storey_index,
+                favourite,
             )
         )
         # Deliberately *not* given an Element ID. A schedule that totals

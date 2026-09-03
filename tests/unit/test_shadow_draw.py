@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 from sun_study.archicad import naming
-from sun_study.archicad.connection import ArchicadConnection
+from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.shadows import (
     combination_name,
     draw_shadow_series,
@@ -150,6 +150,10 @@ class ShadowTransport:
                     },
                 ]
             }
+        if command == "GetFavoritesByType":
+            # The project's Fill Favorites. An unknown name is refused rather
+            # than drawn with the tool's own settings, so the list matters.
+            return {"favorites": ["General_Fill", "LORIINI"]}
         if command == "SetPropertyValuesOfElements":
             self.stamped.extend(given["elementPropertyValues"])
             return {"executionResults": [{"success": True} for _ in given["elementPropertyValues"]]}
@@ -486,3 +490,43 @@ def test_no_transform_leaves_the_coordinates_alone() -> None:
     draw_shadow_series(connection, series(["9AM"]), transform=None)
 
     assert hatches(transport), "still drawn"
+
+
+def test_a_favourite_replaces_the_contour_rather_than_fighting_it() -> None:
+    """CreateHatches has a contour pen and no switch to turn the contour off,
+    so a contour-less fill can only come from a Favorite. A Favorite's
+    settings are applied first and the explicit fields over the top, so naming
+    a contour pen alongside it would put back the very thing it exists to
+    remove."""
+    connection, transport = connect(["9AM"])
+    draw_shadow_series(connection, series(["9AM"]), favourite="LORIINI")
+    drawn = hatches(transport)
+
+    assert drawn
+    assert all(h.get("favoriteName") == "LORIINI" for h in drawn)
+    assert all("contourPenIndex" not in h for h in drawn), "the Favorite decides it"
+    # The pen still does separate one legend row from the next; that is not
+    # the Favorite's business.
+    assert len({h["fillPenIndex"] for h in drawn}) > 1
+
+
+def test_without_a_favourite_the_contour_is_hidden_in_the_fills_own_pen() -> None:
+    """The nearest thing to contour-less this add-on reaches unaided."""
+    connection, transport = connect(["9AM"])
+    draw_shadow_series(connection, series(["9AM"]))
+    drawn = hatches(transport)
+
+    assert drawn
+    assert all("favoriteName" not in h for h in drawn)
+    assert all(h["contourPenIndex"] == h["fillPenIndex"] for h in drawn)
+
+
+def test_a_favourite_the_project_does_not_have_is_refused() -> None:
+    """CreateHatches takes an unknown favoriteName and draws the hatch anyway,
+    with the tool's own settings and a contour round every cell. That is a
+    plan of boxes rather than a shadow, and it reads as a drawing defect
+    rather than as a missing Favorite."""
+    connection, _ = connect(["9AM"])
+
+    with pytest.raises(ArchicadError, match="No Fill favorite"):
+        draw_shadow_series(connection, series(["9AM"]), favourite="Nope")

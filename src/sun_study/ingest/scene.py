@@ -1987,6 +1987,20 @@ def _frame_samples(elements: Sequence[IfcElement]) -> tuple[tuple[str, float, fl
     usable = [e for e in elements if e.global_id and e.mesh.triangle_count]
     if not usable:
         return ()
+
+    # Compact ones first. The other side of each pair is a *bounding box*
+    # centre read out of Archicad, and a box is axis-aligned in whichever
+    # frame it is measured -- so for a long element the box centre moves when
+    # the frame turns, and the pair is mismatched by metres through no fault
+    # of the join. A 2 m balustrade panel does not have that problem. Sorted
+    # rather than filtered, because a model made entirely of long elements
+    # should still get the best fit available rather than no fit at all.
+    def span(element: IfcElement) -> float:
+        lo, hi = element.bounds
+        return float(max(hi[0] - lo[0], hi[1] - lo[1]))
+
+    usable.sort(key=span)
+    usable = usable[: FRAME_SAMPLE_LIMIT * 4]
     stride = max(1, len(usable) // FRAME_SAMPLE_LIMIT)
     return tuple(
         (

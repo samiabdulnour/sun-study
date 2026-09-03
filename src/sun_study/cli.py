@@ -5530,6 +5530,18 @@ def shadows(
     context_layer: Annotated[
         list[str] | None, typer.Option("--context-layer", help="Layers that already stand.")
     ] = None,
+    shadow_favourite: Annotated[
+        str | None,
+        typer.Option(
+            "--shadow-favourite",
+            help=(
+                "Name of a Fill Favorite to draw the shadows with. The way to get a "
+                "fill with no contour and the project's own fill type: CreateHatches "
+                "has a contour pen and no switch to turn the contour off, so a "
+                "contour-less fill has to come from a Favorite made by hand."
+            ),
+        ),
+    ] = None,
     shadow_from_views: Annotated[
         Path | None,
         typer.Option(
@@ -5665,6 +5677,7 @@ def shadows(
             draw=draw,
             sheet=sheet,
             shadow_storey=shadow_storey,
+            shadow_favourite=shadow_favourite,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5694,6 +5707,7 @@ def shadows(
             draw=draw,
             sheet=sheet,
             shadow_storey=shadow_storey,
+            shadow_favourite=shadow_favourite,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5766,6 +5780,7 @@ def shadows(
             draw=draw,
             sheet=sheet,
             shadow_storey=shadow_storey,
+            shadow_favourite=shadow_favourite,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5787,6 +5802,7 @@ def _shadow_report(
     draw: bool,
     sheet: bool,
     shadow_storey: int,
+    shadow_favourite: str | None,
     drawing_scale: float,
     master_layout: str | None,
     shadow_subset: str | None,
