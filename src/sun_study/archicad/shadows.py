@@ -72,7 +72,7 @@ from sun_study.archicad.layout import (
 )
 from sun_study.archicad.read import elements_by_ifc_ids
 from sun_study.archicad.views import views_for_storeys
-from sun_study.core.geometry import FloatArray, PlanTransform, fit_plan_transform
+from sun_study.core.geometry import PlanTransform, rotation_about_z
 from sun_study.core.patches import Ring
 from sun_study.core.shadow import (
     BASELINE,
@@ -91,8 +91,8 @@ __all__ = [
     "combination_name",
     "draw_shadow_series",
     "drawing_order",
-    "fit_project_frame",
     "layer_name",
+    "project_frame",
     "require_hatch_favourite",
     "sheet_name",
     "styles_for",
@@ -171,135 +171,112 @@ def drawing_order(sources: Sequence[SourceSpec]) -> tuple[str, ...]:
     )
 
 
+#: How far a turned element may miss its Archicad counterpart before the run
+#: says so. Generous, because the check is against bounding-box centres and
+#: those carry their own error -- it is looking for a frame that is wrong, not
+#: for a frame that is imprecise.
+FRAME_CHECK_TOLERANCE_M = 5.0
+
+
 #: How far the fitted rotation may sit from the one the project's own north
 #: angle implies before the run says so. A north-aligned export is rotated by
 #: exactly (90 degrees - the project's north bearing); the fit is done on
 #: geometry instead, so the two agreeing is an independent check that the
 #: right thing is being corrected for. A degree is far wider than the
 #: bounding-box noise the fit carries and far narrower than any real mistake.
-FRAME_ROTATION_TOLERANCE_DEG = 1.0
+#: How far a turned element may miss its Archicad counterpart before the run
+#: says so. Generous, because the check is against bounding-box centres and
+#: those carry their own error -- it is looking for a frame that is wrong, not
+#: for a frame that is imprecise.
+FRAME_CHECK_TOLERANCE_M = 5.0
 
 
-#: How far past the typical residual a pair may sit before it is dropped.
-#: A bounding box is axis-aligned in whichever frame it is measured, so a long
-#: element's box centre moves when the frame turns and the pair is honestly
-#: mismatched; one GlobalId can also answer with several Archicad elements,
-#: and taking the first pairs a whole building against one of its slabs.
-#: Neither is rare and both drag a least-squares fit badly -- measured on
-#: Crows Nest, 400 mixed pairs fitted 29.55 m of residual and a rotation 1.5
-#: degrees off the project's own north, where 36 compact ones fitted 0.55 m.
-OUTLIER_MULTIPLE = 3.0
-
-#: Below this, dropping more pairs stops being outlier rejection and starts
-#: being a fit to whatever survived.
-MINIMUM_PAIRS = 8
-
-
-def _robust_fit(source: FloatArray, target: FloatArray) -> PlanTransform:
-    """Fit, drop the pairs that disagree most, and fit again.
-
-    Least squares assumes the error is noise. Here a good part of it is not:
-    it is pairs that are genuinely matched wrong, and one of those moves the
-    answer much further than a hundred slightly noisy ones. Two rounds is
-    enough -- the first is dragged by the outliers but still close enough to
-    rank them, and the second is fitted on what is left.
-    """
-    fitted = fit_plan_transform(source, target)
-    for _ in range(2):
-        residuals = np.linalg.norm(fitted.apply(source) - target, axis=1)
-        typical = float(np.median(residuals))
-        if typical <= 0.0:
-            break
-        keep = residuals <= typical * OUTLIER_MULTIPLE
-        if keep.all() or int(keep.sum()) < MINIMUM_PAIRS:
-            break
-        source, target = source[keep], target[keep]
-        fitted = fit_plan_transform(source, target)
-    return fitted
-
-
-def fit_project_frame(
+def project_frame(
     connection: ArchicadConnection,
     samples: Sequence[tuple[str, float, float]],
     *,
-    north_radians: float | None = None,
-) -> tuple[PlanTransform | None, str]:
-    """Fit the rotation and shift taking export coordinates into the project's.
+    north_radians: float,
+    export_bearing_deg: float,
+) -> tuple[PlanTransform, str]:
+    """The rotation and shift taking export coordinates into the project's.
 
-    A shadow is computed where the exporter put the geometry and drawn where
-    Archicad keeps it. With a Survey Point export those differ by the site's
-    north angle -- 31.5 degrees on Crows Nest -- and a fill drawn without the
-    correction is the right shape in the wrong place, which no one reading the
-    sheet could catch.
+    The rotation is *derived*, not fitted. Both frames say plainly which way
+    they think north is -- Archicad through its georeferencing, the export
+    through ``IfcSite`` -- and the angle between those two answers is the
+    angle between the frames. On Crows Nest the export reports north along its
+    own +Y and the project reports +Y at a bearing of 328.4 degrees, so the
+    turn is -31.6, exactly.
 
-    Matched on IFC GlobalId, one pair per element: its plan centre as the
-    export sees it against the centre of its bounding box as Archicad reports
-    it. A bounding box is axis-aligned in whichever frame it is measured, so a
-    rotated object's box centre drifts slightly from its true centre and the
-    fit carries a few hundred millimetres of noise. That is immaterial against
-    a rotation -- errors that are not systematic average out over hundreds of
-    pairs -- and the residual is reported so a caller can say so.
+    It was fitted from geometry first, and that was the wrong way round. The
+    pairs available are an element's plan centre against the centre of its
+    *bounding box* as Archicad reports it, and a box is axis-aligned in
+    whichever frame it is measured, so a long element's pair is mismatched by
+    metres through no fault of the join; a GlobalId can also answer with
+    several Archicad elements. Measured on this project the fit gave -33.12
+    degrees over 400 pairs, +0.00 over the compact ones alone -- which were
+    all on one facade and could not pin a rotation at all -- and -32.37 with
+    both fixed. The true answer never moved. Two numbers Archicad states
+    outright beat a regression over noisy pairs.
 
-    Returns ``None`` rather than raising when the join cannot be made. A
-    project that will not give up its bounding boxes should lose the
-    correction and be told, not lose the drawing.
+    The shift is still measured, because nothing states it: it is the median
+    of what is left after turning, which ignores a mismatched pair instead of
+    being dragged by it. Geometry then gets the last word as a *check* -- if
+    the turned pairs do not land on their Archicad counterparts, something
+    here is wrong and the run says so rather than drawing a plausible sheet.
     """
-    if not samples:
-        return None, "no elements offered for fitting, so the drawing frame is unchecked"
-    found = elements_by_ifc_ids(connection, [gid for gid, _, _ in samples])
+    project_bearing = (270.0 + math.degrees(north_radians)) % 360.0
+    turn = ((project_bearing - export_bearing_deg + 180.0) % 360.0) - 180.0
+    rotation = rotation_about_z(turn)[:2, :2]
+
+    offset = np.zeros(2, dtype=np.float64)
+    residual = float("nan")
+    used = 0
+    found = elements_by_ifc_ids(connection, [gid for gid, _, _ in samples]) if samples else {}
     pairs = [(x, y, found[gid][0]) for gid, x, y in samples if found.get(gid)]
-    if len(pairs) < 3:
-        return None, (
-            f"only {len(pairs)} of {len(samples)} elements could be matched back to "
-            f"Archicad, which is too few to fit a rotation. The fills are drawn in the "
-            f"export's own coordinates; if that export was north-aligned they will be "
-            f"rotated off the project."
-        )
-
-    boxes: list[Any] = []
-    for start in range(0, len(pairs), 500):
-        boxes.extend(
-            connection.run_tapir(
-                "Get3DBoundingBoxes",
-                {
-                    "elements": [
-                        {"elementId": {"guid": g}} for _, _, g in pairs[start : start + 500]
-                    ]
-                },
-            )["boundingBoxes3D"]
-        )
-
-    source: list[list[float]] = []
-    target: list[list[float]] = []
-    for (x, y, _), entry in zip(pairs, boxes, strict=False):
-        box = entry.get("boundingBox3D") if isinstance(entry, dict) else None
-        if not box:
-            continue
-        source.append([x, y])
-        target.append([(box["xMin"] + box["xMax"]) / 2.0, (box["yMin"] + box["yMax"]) / 2.0])
-    if len(source) < 3:
-        return None, "too few bounding boxes came back to fit a rotation"
-
-    fitted = _robust_fit(np.array(source), np.array(target))
-    turned = math.degrees(math.atan2(fitted.rotation[1, 0], fitted.rotation[0, 0]))
-    note = (
-        f"  drawing frame: rotated {turned:+.2f} deg, shifted "
-        f"{fitted.offset[0]:+.2f}, {fitted.offset[1]:+.2f} m, from {len(source)} matched "
-        f"elements (residual {fitted.rmse_m:.2f} m)"
-    )
-    if north_radians is not None:
-        implied = 90.0 - math.degrees(north_radians)
-        # Compared on the shorter way round, so +179 and -179 are not read as
-        # two degrees apart when they are one.
-        gap = abs((-implied - turned + 180.0) % 360.0 - 180.0)
-        if gap > FRAME_ROTATION_TOLERANCE_DEG:
-            note += (
-                "\n"
-                f"  WARNING: the project's north angle implies {-implied:+.2f} deg, "
-                f"{gap:.2f} deg from what the geometry fits. One of the two is not "
-                f"describing this export; check the fills against the model before "
-                f"the sheet goes anywhere."
+    if pairs:
+        boxes: list[Any] = []
+        for start_at in range(0, len(pairs), 500):
+            chunk = pairs[start_at : start_at + 500]
+            boxes.extend(
+                connection.run_tapir(
+                    "Get3DBoundingBoxes",
+                    {"elements": [{"elementId": {"guid": g}} for _, _, g in chunk]},
+                )["boundingBoxes3D"]
             )
+        source: list[list[float]] = []
+        target: list[list[float]] = []
+        for (x, y, _), entry in zip(pairs, boxes, strict=False):
+            box = entry.get("boundingBox3D") if isinstance(entry, dict) else None
+            if box:
+                source.append([x, y])
+                target.append(
+                    [(box["xMin"] + box["xMax"]) / 2.0, (box["yMin"] + box["yMax"]) / 2.0]
+                )
+        if source:
+            turned = np.array(source) @ rotation.T
+            gaps = np.array(target) - turned
+            # Median per axis: a mismatched pair moves it by one place in the
+            # ordering rather than by its whole error.
+            offset = np.median(gaps, axis=0)
+            residual = float(np.median(np.linalg.norm(gaps - offset, axis=1)))
+            used = len(source)
+
+    fitted = PlanTransform(rotation=rotation, offset=offset, rmse_m=residual)
+    note = (
+        f"  drawing frame: rotated {turn:+.2f} deg from the two norths "
+        f"(project +Y at {project_bearing:.2f}, export at {export_bearing_deg:.2f}), "
+        f"shifted {offset[0]:+.2f}, {offset[1]:+.2f} m"
+    )
+    if used:
+        note += f", checked against {used} elements (typical miss {residual:.2f} m)"
+        if residual > FRAME_CHECK_TOLERANCE_M:
+            note += (
+                "\n  WARNING: turned by that angle, the export's elements do not land "
+                "on their Archicad counterparts. Check a fill against the model before "
+                "the sheet goes anywhere."
+            )
+    else:
+        note += ", with nothing to check it against"
     return fitted, note
 
 

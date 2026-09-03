@@ -1975,6 +1975,12 @@ def _claims(element: IfcElement, selectors: Sequence[str]) -> bool:
 #: to a single batched request.
 FRAME_SAMPLE_LIMIT = 400
 
+#: Longest an element may be, in plan, and still make a usable pair. Well
+#: above a wall panel or a slab and well below a whole building, which is the
+#: distinction that matters: the error a bounding box introduces scales with
+#: the element, and it is the big ones that wreck a fit.
+FRAME_SAMPLE_MAX_SPAN_M = 20.0
+
 
 def _frame_samples(elements: Sequence[IfcElement]) -> tuple[tuple[str, float, float], ...]:
     """Evenly spread GlobalIds and plan centres, for fitting the draw frame.
@@ -1988,19 +1994,28 @@ def _frame_samples(elements: Sequence[IfcElement]) -> tuple[tuple[str, float, fl
     if not usable:
         return ()
 
-    # Compact ones first. The other side of each pair is a *bounding box*
-    # centre read out of Archicad, and a box is axis-aligned in whichever
-    # frame it is measured -- so for a long element the box centre moves when
-    # the frame turns, and the pair is mismatched by metres through no fault
-    # of the join. A 2 m balustrade panel does not have that problem. Sorted
-    # rather than filtered, because a model made entirely of long elements
-    # should still get the best fit available rather than no fit at all.
+    # Compact ones only, but *spread*, and the order of those two words is
+    # the whole lesson. The other side of each pair is a bounding box centre
+    # read out of Archicad, and a box is axis-aligned in whichever frame it is
+    # measured -- so a long element's centre moves when the frame turns and
+    # the pair is mismatched by metres through no fault of the join. Hence the
+    # filter.
+    #
+    # But sorting by size instead of filtering takes the smallest elements in
+    # the model, which are balustrade panels on one facade of one building,
+    # and points a few metres apart cannot pin a rotation at all: measured, it
+    # fitted +0.00 degrees and a 55 m shift against a true -31.6. So the
+    # filter keeps whatever is compact and the stride below keeps them spread
+    # across the site.
     def span(element: IfcElement) -> float:
         lo, hi = element.bounds
         return float(max(hi[0] - lo[0], hi[1] - lo[1]))
 
-    usable.sort(key=span)
-    usable = usable[: FRAME_SAMPLE_LIMIT * 4]
+    compact = [e for e in usable if span(e) <= FRAME_SAMPLE_MAX_SPAN_M]
+    # Unless that leaves too little to fit on, in which case a worse pair is
+    # better than none and the outlier rejection at the far end can sort them.
+    usable = compact if len(compact) >= FRAME_SAMPLE_LIMIT // 4 else usable
+
     stride = max(1, len(usable) // FRAME_SAMPLE_LIMIT)
     return tuple(
         (

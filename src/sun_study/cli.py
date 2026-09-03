@@ -115,7 +115,7 @@ from sun_study.archicad.series import (
 from sun_study.archicad.shadows import (
     build_shadow_sheets,
     draw_shadow_series,
-    fit_project_frame,
+    project_frame,
 )
 from sun_study.archicad.sheets import (
     TableRow,
@@ -5960,18 +5960,13 @@ def _shadow_report(
         # wrong place at the wrong angle, which nobody reading the sheet can
         # catch. Fitted from the geometry itself and cross-checked against the
         # project's own north.
-        frame, note = fit_project_frame(
+        frame, note = project_frame(
             connection,
             scene.frame_samples,
             north_radians=read_geo_location(connection).north_radians,
+            export_bearing_deg=scene.orientation.normalised_bearing_deg,
         )
         typer.echo(note)
-        if frame is None:
-            typer.secho(
-                "  the fills are drawn in the export's own coordinates; check them "
-                "against the model before the sheet goes anywhere.",
-                fg=typer.colors.YELLOW,
-            )
         drawn = draw_shadow_series(connection, series, storey_index=shadow_storey, transform=frame)
         typer.echo("")
         typer.echo(drawn.describe())
