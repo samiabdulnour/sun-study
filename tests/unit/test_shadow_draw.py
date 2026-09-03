@@ -441,3 +441,48 @@ def test_every_baseline_is_drawn_under_every_scenario() -> None:
     )
 
     assert order == ("existing", "future", "tod", "proposed")
+
+
+# -- the frame the fills are drawn in --------------------------------------
+
+
+def test_every_ring_is_moved_into_the_project_frame() -> None:
+    """The bug this exists to end. A shadow is computed where the exporter put
+    the geometry and drawn where Archicad keeps it, and with a Survey Point
+    export those differ by the site's north angle -- 31.5 degrees on the Crows
+    Nest model. Drawn uncorrected, every fill is the right shape in the wrong
+    place at the wrong angle, and the sheet looks perfectly plausible."""
+    import numpy as np
+
+    from sun_study.core.geometry import PlanTransform, rotation_about_z
+
+    turn = PlanTransform(
+        rotation=rotation_about_z(-31.516)[:2, :2],
+        offset=np.array([12.0, -5.0]),
+        rmse_m=0.0,
+    )
+    connection, transport = connect(["9AM"])
+    drawn = series(["9AM"])
+    draw_shadow_series(connection, drawn, transform=turn)
+    turned = [h["coordinates"] for h in hatches(transport)]
+
+    connection, transport = connect(["9AM"])
+    draw_shadow_series(connection, drawn)
+    plain = [h["coordinates"] for h in hatches(transport)]
+
+    assert len(turned) == len(plain) and turned, "the same fills, moved"
+    # Every one of them, not merely the first: a half-corrected drawing still
+    # tiles and still looks like a shadow while sitting off the model.
+    for moved, original in zip(turned, plain, strict=True):
+        source = np.array([[p["x"], p["y"]] for p in original])
+        assert np.allclose(np.array([[p["x"], p["y"]] for p in moved]), turn.apply(source))
+
+
+def test_no_transform_leaves_the_coordinates_alone() -> None:
+    """A project that cannot be joined back to its export loses the correction
+    and is told so; it must not lose the drawing, or silently gain a rotation
+    nobody fitted."""
+    connection, transport = connect(["9AM"])
+    draw_shadow_series(connection, series(["9AM"]), transform=None)
+
+    assert hatches(transport), "still drawn"

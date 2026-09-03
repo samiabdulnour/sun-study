@@ -38,9 +38,12 @@ redraws into the layers the first one made.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+import numpy as np
 
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
@@ -67,7 +70,9 @@ from sun_study.archicad.layout import (
     layout_from_views,
     storey_items,
 )
+from sun_study.archicad.read import elements_by_ifc_ids
 from sun_study.archicad.views import views_for_storeys
+from sun_study.core.geometry import PlanTransform, fit_plan_transform
 from sun_study.core.patches import Ring
 from sun_study.core.shadow import (
     BASELINE,
@@ -86,6 +91,7 @@ __all__ = [
     "combination_name",
     "draw_shadow_series",
     "drawing_order",
+    "fit_project_frame",
     "layer_name",
     "sheet_name",
     "styles_for",
@@ -162,6 +168,100 @@ def drawing_order(sources: Sequence[SourceSpec]) -> tuple[str, ...]:
     return tuple(s.key for s in sources if s.role == BASELINE) + tuple(
         s.key for s in sources if s.role == SCENARIO
     )
+
+
+#: How far the fitted rotation may sit from the one the project's own north
+#: angle implies before the run says so. A north-aligned export is rotated by
+#: exactly (90 degrees - the project's north bearing); the fit is done on
+#: geometry instead, so the two agreeing is an independent check that the
+#: right thing is being corrected for. A degree is far wider than the
+#: bounding-box noise the fit carries and far narrower than any real mistake.
+FRAME_ROTATION_TOLERANCE_DEG = 1.0
+
+
+def fit_project_frame(
+    connection: ArchicadConnection,
+    samples: Sequence[tuple[str, float, float]],
+    *,
+    north_radians: float | None = None,
+) -> tuple[PlanTransform | None, str]:
+    """Fit the rotation and shift taking export coordinates into the project's.
+
+    A shadow is computed where the exporter put the geometry and drawn where
+    Archicad keeps it. With a Survey Point export those differ by the site's
+    north angle -- 31.5 degrees on Crows Nest -- and a fill drawn without the
+    correction is the right shape in the wrong place, which no one reading the
+    sheet could catch.
+
+    Matched on IFC GlobalId, one pair per element: its plan centre as the
+    export sees it against the centre of its bounding box as Archicad reports
+    it. A bounding box is axis-aligned in whichever frame it is measured, so a
+    rotated object's box centre drifts slightly from its true centre and the
+    fit carries a few hundred millimetres of noise. That is immaterial against
+    a rotation -- errors that are not systematic average out over hundreds of
+    pairs -- and the residual is reported so a caller can say so.
+
+    Returns ``None`` rather than raising when the join cannot be made. A
+    project that will not give up its bounding boxes should lose the
+    correction and be told, not lose the drawing.
+    """
+    if not samples:
+        return None, "no elements offered for fitting, so the drawing frame is unchecked"
+    found = elements_by_ifc_ids(connection, [gid for gid, _, _ in samples])
+    pairs = [(x, y, found[gid][0]) for gid, x, y in samples if found.get(gid)]
+    if len(pairs) < 3:
+        return None, (
+            f"only {len(pairs)} of {len(samples)} elements could be matched back to "
+            f"Archicad, which is too few to fit a rotation. The fills are drawn in the "
+            f"export's own coordinates; if that export was north-aligned they will be "
+            f"rotated off the project."
+        )
+
+    boxes: list[Any] = []
+    for start in range(0, len(pairs), 500):
+        boxes.extend(
+            connection.run_tapir(
+                "Get3DBoundingBoxes",
+                {
+                    "elements": [
+                        {"elementId": {"guid": g}} for _, _, g in pairs[start : start + 500]
+                    ]
+                },
+            )["boundingBoxes3D"]
+        )
+
+    source: list[list[float]] = []
+    target: list[list[float]] = []
+    for (x, y, _), entry in zip(pairs, boxes, strict=False):
+        box = entry.get("boundingBox3D") if isinstance(entry, dict) else None
+        if not box:
+            continue
+        source.append([x, y])
+        target.append([(box["xMin"] + box["xMax"]) / 2.0, (box["yMin"] + box["yMax"]) / 2.0])
+    if len(source) < 3:
+        return None, "too few bounding boxes came back to fit a rotation"
+
+    fitted = fit_plan_transform(np.array(source), np.array(target))
+    turned = math.degrees(math.atan2(fitted.rotation[1, 0], fitted.rotation[0, 0]))
+    note = (
+        f"  drawing frame: rotated {turned:+.2f} deg, shifted "
+        f"{fitted.offset[0]:+.2f}, {fitted.offset[1]:+.2f} m, from {len(source)} matched "
+        f"elements (residual {fitted.rmse_m:.2f} m)"
+    )
+    if north_radians is not None:
+        implied = 90.0 - math.degrees(north_radians)
+        # Compared on the shorter way round, so +179 and -179 are not read as
+        # two degrees apart when they are one.
+        gap = abs((-implied - turned + 180.0) % 360.0 - 180.0)
+        if gap > FRAME_ROTATION_TOLERANCE_DEG:
+            note += (
+                "\n"
+                f"  WARNING: the project's north angle implies {-implied:+.2f} deg, "
+                f"{gap:.2f} deg from what the geometry fits. One of the two is not "
+                f"describing this export; check the fills against the model before "
+                f"the sheet goes anywhere."
+            )
+    return fitted, note
 
 
 def layer_name(label: str) -> str:
@@ -327,6 +427,7 @@ def draw_shadow_series(
     storey_index: int | None = 0,
     boundary: Ring | None = None,
     boundary_pen: int = 1,
+    transform: PlanTransform | None = None,
 ) -> ShadowDrawReport:
     """Draw every instant onto its own layer, and record a combination for each.
 
@@ -349,6 +450,19 @@ def draw_shadow_series(
     )
     if not series.instants:
         raise ArchicadError("No instants to draw.")
+
+    def placed(ring: Ring) -> Ring:
+        """One ring, moved from the export's frame into the project's.
+
+        Every ring goes through here, so a run either corrects all of them or
+        none. Half-corrected is the one outcome worth engineering against: the
+        fills would still tile against each other and still look like a
+        shadow, while sitting somewhere the model is not.
+        """
+        if transform is None:
+            return ring
+        moved = transform.apply(np.asarray(ring, dtype=np.float64))
+        return tuple((float(x), float(y)) for x, y in moved)
 
     palette = styles_for(series.sources)
     palette.update(styles or {})
@@ -376,7 +490,7 @@ def draw_shadow_series(
             if style is None:
                 continue
             for ring in instant.regions.get(category, ()):
-                fills.append(_fill(ring, style, layer.index, storey_index))
+                fills.append(_fill(placed(ring), style, layer.index, storey_index))
                 # The hour *and* the category, so one schedule breaks down by
                 # both: how much shadow at 9am, and how much of it is ours.
                 element_ids.append(fill_id(SHADOW, instant.caption, category.upper()))
@@ -385,7 +499,7 @@ def draw_shadow_series(
         cleared += clear_layer(connection, shared.index)
         fills.append(
             _fill(
-                boundary,
+                placed(boundary),
                 BandStyle("SITE BOUNDARY", float("inf"), fill_pen=boundary_pen, background_pen=0),
                 shared.index,
                 storey_index,

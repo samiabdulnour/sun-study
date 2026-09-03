@@ -1913,6 +1913,22 @@ class ShadowScene:
     terrain: TriangleMesh = field(default_factory=TriangleMesh.empty)
     """The ground the shadows land on. Empty means the flat datum."""
 
+    frame_samples: tuple[tuple[str, float, float], ...] = ()
+    """``(IFC GlobalId, x, y)`` per element, for fitting the drawing frame.
+
+    A shadow is computed in the export's coordinates and drawn in Archicad's,
+    and those are not the same frame: an export made with the Survey Point
+    option is north-aligned, so it is the *project* that is rotated relative
+    to it -- 31.5 degrees on Crows Nest. Drawn without correcting for that,
+    every fill is a plausible-looking shadow of the right shape in the wrong
+    place at the wrong angle, which is the failure D72 warned about and
+    ``core.geometry.PlanTransform`` exists to prevent.
+
+    Carried as GlobalIds because that is the only thing both sides agree on:
+    ``archicad.read.elements_by_ifc_ids`` turns them into Archicad elements
+    whose own coordinates give the other half of each matched pair.
+    """
+
     unmatched: tuple[tuple[str, int], ...] = ()
     """Layers holding solids no rule claimed, and how many, commonest first.
 
@@ -1951,6 +1967,35 @@ def _claims(element: IfcElement, selectors: Sequence[str]) -> bool:
         return True
     actual = " ".join(element.name.split()).casefold()
     return any(actual.startswith(" ".join(s.split()).casefold()) for s in wanted)
+
+
+#: How many elements to offer the frame fit. The rotation is over-determined
+#: by a handful of well-spread pairs, and every extra one is a bounding box
+#: read back out of Archicad; a few hundred is plenty and keeps the round trip
+#: to a single batched request.
+FRAME_SAMPLE_LIMIT = 400
+
+
+def _frame_samples(elements: Sequence[IfcElement]) -> tuple[tuple[str, float, float], ...]:
+    """Evenly spread GlobalIds and plan centres, for fitting the draw frame.
+
+    Spread by stride rather than taken from the front, because the front of
+    the list is one storey of one building and a fit from points a few metres
+    apart pins a rotation badly. What is wanted is the widest spread the model
+    offers, which a stride over the whole list approximates for free.
+    """
+    usable = [e for e in elements if e.global_id and e.mesh.triangle_count]
+    if not usable:
+        return ()
+    stride = max(1, len(usable) // FRAME_SAMPLE_LIMIT)
+    return tuple(
+        (
+            e.global_id,
+            float((e.bounds[0][0] + e.bounds[1][0]) / 2.0),
+            float((e.bounds[0][1] + e.bounds[1][1]) / 2.0),
+        )
+        for e in usable[::stride]
+    )
 
 
 def build_shadow_scene_from_files(
@@ -2046,6 +2091,7 @@ def build_shadow_scene_from_files(
         bounds=(lower, upper),
         orientation=orientation,
         terrain=terrain,
+        frame_samples=_frame_samples(everything),
         provenance={
             "mode": "shadow",
             "source": "published views",
@@ -2143,6 +2189,11 @@ def build_shadow_scene(model: IfcModel, config: MassingConfig) -> ShadowScene:
     return ShadowScene(
         sources=sources,
         terrain=terrain,
+        frame_samples=_frame_samples(
+            [e for rule in config.shadow_sources for e in claimed.get(rule.key, [])]
+            if config.shadow_sources
+            else everything
+        ),
         bounds=(lower, upper),
         orientation=orientation,
         unmatched=tuple(unmatched.most_common()),

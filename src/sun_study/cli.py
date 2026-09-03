@@ -112,7 +112,11 @@ from sun_study.archicad.series import (
     find_worksheet,
     restore_after,
 )
-from sun_study.archicad.shadows import build_shadow_sheets, draw_shadow_series
+from sun_study.archicad.shadows import (
+    build_shadow_sheets,
+    draw_shadow_series,
+    fit_project_frame,
+)
 from sun_study.archicad.sheets import (
     TableRow,
     draw_statistics,
@@ -5933,7 +5937,26 @@ def _shadow_report(
         # Here, so both routes are covered by one call rather than two that
         # can drift apart.
         ensure_model_database(connection)
-        drawn = draw_shadow_series(connection, series, storey_index=shadow_storey)
+        # The shadow was computed where the exporter put the geometry and is
+        # about to be drawn where Archicad keeps it. With a Survey Point
+        # export those frames differ by the site's north angle -- 31.5 degrees
+        # on Crows Nest -- and an uncorrected fill is the right shape in the
+        # wrong place at the wrong angle, which nobody reading the sheet can
+        # catch. Fitted from the geometry itself and cross-checked against the
+        # project's own north.
+        frame, note = fit_project_frame(
+            connection,
+            scene.frame_samples,
+            north_radians=read_geo_location(connection).north_radians,
+        )
+        typer.echo(note)
+        if frame is None:
+            typer.secho(
+                "  the fills are drawn in the export's own coordinates; check them "
+                "against the model before the sheet goes anywhere.",
+                fg=typer.colors.YELLOW,
+            )
+        drawn = draw_shadow_series(connection, series, storey_index=shadow_storey, transform=frame)
         typer.echo("")
         typer.echo(drawn.describe())
         if sheet:
