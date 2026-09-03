@@ -436,3 +436,85 @@ def test_an_unknown_role_is_refused_rather_than_treated_as_a_baseline() -> None:
     charge the proposal only for what it added on top of it."""
     with pytest.raises(ValueError, match="Unknown source role"):
         cast_sources(ShadowSource("odd", "Odd", box((0, -5, 0), (10, 5, 10)), "comparator"))
+
+
+# -- the ground the shadow lands on ---------------------------------------
+
+
+def test_a_sample_lands_on_the_terrain_under_it() -> None:
+    """A ramp rising one metre per metre east. Every sample should sit at the
+    height of the ground beneath it, exactly -- this is interpolation over a
+    heightfield, not a ray cast with a tolerance to argue about."""
+    from sun_study.core.shadow import drape_onto_terrain
+
+    ramp = TriangleMesh(
+        vertices=np.array([[0, 0, 0], [10, 0, 10], [10, 10, 10], [0, 10, 0]], dtype=float),
+        faces=np.array([[0, 1, 2], [0, 2, 3]]),
+    )
+    grid = ground_plane_grid(
+        (np.array([0.0, 0.0, 0.0]), np.array([10.0, 10.0, 1.0])),
+        datum_m=0.0,
+        spacing_m=1.0,
+        margin_m=0.0,
+    )
+
+    draped, off_terrain = drape_onto_terrain(grid, ramp, offset_m=0.0)
+
+    assert off_terrain == pytest.approx(0.0)
+    assert np.max(np.abs(draped.positions[:, 2] - draped.positions[:, 0])) == pytest.approx(0.0)
+
+
+def test_ground_beyond_the_survey_keeps_the_flat_datum() -> None:
+    """The grid runs a margin past everything so a shadow leaving the site is
+    not clipped, and a survey rarely reaches that far. Those samples stay flat
+    rather than falling to zero, and the share is reported so a reader knows
+    how much of the drawing is still a convention."""
+    from sun_study.core.shadow import drape_onto_terrain
+
+    patch = TriangleMesh(
+        vertices=np.array([[0, 0, 5], [4, 0, 5], [4, 4, 5], [0, 4, 5]], dtype=float),
+        faces=np.array([[0, 1, 2], [0, 2, 3]]),
+    )
+    grid = ground_plane_grid(
+        (np.array([0.0, 0.0, 0.0]), np.array([8.0, 8.0, 1.0])),
+        datum_m=2.0,
+        spacing_m=1.0,
+        margin_m=0.0,
+        # Off, so the numbers below are the datum and the terrain themselves
+        # rather than either plus the 50 mm the grid otherwise lifts by.
+        offset_m=0.0,
+    )
+
+    draped, off_terrain = drape_onto_terrain(grid, patch, offset_m=0.0)
+
+    on = np.isclose(draped.positions[:, 2], 5.0)
+    assert on.sum() == 16, "the 4 x 4 patch"
+    assert np.allclose(draped.positions[~on, 2], 2.0), "the rest keeps the datum"
+    assert off_terrain == pytest.approx(1.0 - 16 / len(draped.positions))
+
+
+def test_terrain_is_the_receiver_and_never_an_occluder() -> None:
+    """The failure this exists to end. Handed in among the sources, a site
+    mesh puts every sample below the hill in permanent shade and the sheet
+    prints solid grey; handed in as terrain it carries the shadow instead."""
+    from sun_study.core.shadow import drape_onto_terrain
+
+    hill = TriangleMesh(
+        vertices=np.array([[-60, -60, 8], [60, -60, 8], [60, 60, 8], [-60, 60, 8]], dtype=float),
+        faces=np.array([[0, 1, 2], [0, 2, 3]]),
+    )
+    grid, _ = drape_onto_terrain(plane(), hill, offset_m=0.05)
+
+    lit = cast_shadows(
+        grid,
+        sources=[baseline("existing", -40.0, -30.0, 20.0)],
+        sun_vectors=WEST_45,
+        moments=[NOON],
+        labels=["12PM"],
+        spacing_m=1.0,
+    )
+
+    # A shadow, not a blackout: the hill carries the samples, it does not
+    # shade them.
+    assert lit.permanently_dark_share < 0.5
+    assert lit.instants[0].areas_m2["existing"] > 0.0

@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import numpy.typing as npt
@@ -92,6 +92,7 @@ __all__ = [
     "SourceSpec",
     "cast_shadows",
     "default_sources",
+    "drape_onto_terrain",
     "ground_plane_grid",
 ]
 
@@ -294,6 +295,103 @@ def ground_plane_grid(
         height_m=offset_m,
         spacing_m=spacing_m,
     )
+
+
+def drape_onto_terrain(
+    grid: SamplePoints,
+    terrain: TriangleMesh,
+    *,
+    offset_m: float = DEFAULT_DATUM_OFFSET_M,
+) -> tuple[SamplePoints, float]:
+    """Move every sample down or up onto the terrain surface beneath it.
+
+    The flat datum is a convention, not a claim about the ground (D72), and on
+    a site that falls it is wrong in a way that matters: a shadow really does
+    reach further up a hill than a level plane says, and the drawing that
+    matters most -- how far the proposal's shadow climbs towards the
+    neighbours -- is exactly the one the flat plane understates. Crows Nest
+    falls about ninety metres across the model.
+
+    Terrain is a heightfield, not a solid, so this projects each triangle into
+    plan and interpolates its z rather than casting a ray: an Archicad Mesh is
+    a single-valued surface, and the barycentric answer is exact where a ray
+    would be an approximation with a tolerance to tune. Where two triangles
+    cover one sample -- a fold, or two meshes overlapping -- the *highest*
+    wins, because that is the surface a shadow would land on.
+
+    Samples outside the terrain's own footprint keep the datum they came in
+    with. That is a real case rather than an error: the grid runs a margin
+    past everything so a shadow leaving the site is not clipped, and the
+    survey rarely reaches that far. It is reported as ``off_terrain`` so a
+    caller can say how much of the drawing is still flat.
+
+    Returns the draped grid and the share of samples that found no terrain.
+    """
+    positions = np.array(grid.positions, dtype=np.float64, copy=True)
+    if not terrain.triangle_count or not len(positions):
+        return grid, 1.0 if len(positions) else 0.0
+
+    # The grid is regular and axis-aligned, so a triangle's plan bounding box
+    # maps straight to a block of cells. Walking 33,000 triangles and touching
+    # only the cells each one covers is linear in the terrain; testing every
+    # sample against every triangle would be 2.8 x 10^10 tests.
+    xs = np.unique(positions[:, 0])
+    ys = np.unique(positions[:, 1])
+    if len(xs) < 2 or len(ys) < 2:
+        return grid, 0.0
+    step_x, step_y = xs[1] - xs[0], ys[1] - ys[0]
+    x0, y0 = xs[0], ys[0]
+    nx, ny = len(xs), len(ys)
+
+    # Where each sample sits in that lattice, so a cell index can be turned
+    # back into the row of ``positions`` it belongs to.
+    col = np.rint((positions[:, 0] - x0) / step_x).astype(np.int64)
+    row = np.rint((positions[:, 1] - y0) / step_y).astype(np.int64)
+    into = np.full((nx, ny), -1, dtype=np.int64)
+    into[col, row] = np.arange(len(positions))
+
+    height = np.full((nx, ny), -np.inf, dtype=np.float64)
+    corners = terrain.vertices[terrain.faces]
+    a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
+
+    lo_x = np.floor((np.minimum(np.minimum(a[:, 0], b[:, 0]), c[:, 0]) - x0) / step_x)
+    hi_x = np.ceil((np.maximum(np.maximum(a[:, 0], b[:, 0]), c[:, 0]) - x0) / step_x)
+    lo_y = np.floor((np.minimum(np.minimum(a[:, 1], b[:, 1]), c[:, 1]) - y0) / step_y)
+    hi_y = np.ceil((np.maximum(np.maximum(a[:, 1], b[:, 1]), c[:, 1]) - y0) / step_y)
+
+    for index in range(len(corners)):
+        i0, i1 = int(max(lo_x[index], 0)), int(min(hi_x[index], nx - 1))
+        j0, j1 = int(max(lo_y[index], 0)), int(min(hi_y[index], ny - 1))
+        if i0 > i1 or j0 > j1:
+            continue
+        gx = x0 + np.arange(i0, i1 + 1) * step_x
+        gy = y0 + np.arange(j0, j1 + 1) * step_y
+        px, py = np.meshgrid(gx, gy, indexing="ij")
+
+        # Barycentric coordinates in plan. A degenerate triangle -- one seen
+        # edge-on, which a vertical cliff in a mesh really is -- has zero area
+        # in plan and is skipped rather than dividing by it.
+        ax, ay = a[index, 0], a[index, 1]
+        v0x, v0y = b[index, 0] - ax, b[index, 1] - ay
+        v1x, v1y = c[index, 0] - ax, c[index, 1] - ay
+        denominator = v0x * v1y - v1x * v0y
+        if abs(denominator) < 1e-12:
+            continue
+        wx, wy = px - ax, py - ay
+        u = (wx * v1y - v1x * wy) / denominator
+        v = (v0x * wy - wx * v0y) / denominator
+        inside = (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1.0 + 1e-9)
+        if not inside.any():
+            continue
+        z = a[index, 2] + u * (b[index, 2] - a[index, 2]) + v * (c[index, 2] - a[index, 2])
+        block = height[i0 : i1 + 1, j0 : j1 + 1]
+        np.maximum(block, np.where(inside, z, -np.inf), out=block)
+
+    found = np.isfinite(height) & (into >= 0)
+    rows = into[found]
+    positions[rows, 2] = height[found] + offset_m
+    off_terrain = 1.0 - (len(rows) / len(positions))
+    return replace(grid, positions=positions), float(off_terrain)
 
 
 def _shaded(grid: SamplePoints, occluder: Occluder, sun_vectors: FloatArray) -> BoolArray:

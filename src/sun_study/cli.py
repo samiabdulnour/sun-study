@@ -162,6 +162,7 @@ from sun_study.core.shadow import (
     BASELINE,
     SCENARIO,
     cast_shadows,
+    drape_onto_terrain,
     ground_plane_grid,
 )
 from sun_study.core.shadow import (
@@ -5473,6 +5474,17 @@ def shadows(
     context_layer: Annotated[
         list[str] | None, typer.Option("--context-layer", help="Layers that already stand.")
     ] = None,
+    shadow_terrain: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--shadow-terrain",
+            help=(
+                "Layer or ID prefix of the ground the shadows land ON. Repeatable. "
+                "Terrain is the receiver, never an occluder -- as an occluder it makes "
+                "the whole sheet solid grey."
+            ),
+        ),
+    ] = None,
     shadow_source: Annotated[
         list[str] | None,
         typer.Option(
@@ -5561,6 +5573,7 @@ def shadows(
         subject_layers=tuple(subject_layer or ()),
         context_layers=tuple(context_layer or ()),
         shadow_sources=_shadow_source_rules(shadow_source or [], shadow_scenario or []),
+        shadow_terrain=tuple(shadow_terrain or ()),
     )
 
     if ifc_in is not None:
@@ -5717,6 +5730,13 @@ def _shadow_report(
     grid = ground_plane_grid(
         scene.bounds, datum_m=datum, spacing_m=shadow_grid, margin_m=shadow_margin
     )
+    if scene.terrain.triangle_count:
+        grid, off_terrain = drape_onto_terrain(grid, scene.terrain)
+        typer.echo(
+            f"  draped onto {scene.terrain.triangle_count:,} terrain triangles; "
+            f"{off_terrain:.0%} of the grid reaches past the survey and stays at "
+            f"{datum:g} m"
+        )
     sun = sun_vectors_in_model_frame(
         solar_position(moments, model.latitude_deg, model.longitude_deg),
         scene.orientation.normalised_bearing_deg,

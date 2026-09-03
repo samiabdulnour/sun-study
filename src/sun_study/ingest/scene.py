@@ -1402,6 +1402,16 @@ class MassingConfig:
     An element matching either route is context.
     """
 
+    shadow_terrain: tuple[str, ...] = ()
+    """Layers (or Element ID prefixes) holding the ground the shadows land on.
+
+    Named separately because terrain is the one thing in a shadow study that
+    is neither a source nor clutter. As an occluder it is a catastrophe --
+    every sample below the hill reads permanently dark and the sheet prints
+    solid grey -- and as an omission it costs the drawing its accuracy on a
+    falling site. It is the *receiver*: see ``core.shadow.drape_onto_terrain``.
+    """
+
     shadow_sources: tuple[ShadowSourceRule, ...] = ()
     """The legend of a shadow diagram, in drawing order. Empty is the old
     three-fill study; see ``build_shadow_scene``."""
@@ -1898,6 +1908,9 @@ class ShadowScene:
     orientation: SiteOrientation
     provenance: dict[str, object]
 
+    terrain: TriangleMesh = field(default_factory=TriangleMesh.empty)
+    """The ground the shadows land on. Empty means the flat datum."""
+
     unmatched: tuple[tuple[str, int], ...] = ()
     """Layers holding solids no rule claimed, and how many, commonest first.
 
@@ -1961,6 +1974,20 @@ def build_shadow_scene(model: IfcModel, config: MassingConfig) -> ShadowScene:
             "Check the export carries 3D elements and not only Zones."
         )
 
+    # Terrain first, and out of the running for every source rule. It is the
+    # receiving surface, so an element that is terrain must not also be an
+    # occluder -- that is the solid-grey failure -- and must not be counted as
+    # unclaimed either, because it was claimed, just not by a legend row.
+    terrain_parts = [e for e in everything if _claims(e, config.shadow_terrain)]
+    terrain = TriangleMesh.concatenate([e.mesh for e in terrain_parts])
+    if config.shadow_terrain and not terrain.triangle_count:
+        raise SceneConfigError(
+            f"Nothing matches the terrain selector(s) {list(config.shadow_terrain)}, so "
+            f"the shadows would land on a flat datum while the run says otherwise. "
+            f"A selector is a layer name or an Element ID prefix."
+        )
+    everything = [e for e in everything if e not in terrain_parts] if terrain_parts else everything
+
     unmatched: Counter[str] = Counter()
     if config.shadow_sources:
         claimed: dict[str, list[IfcElement]] = {rule.key: [] for rule in config.shadow_sources}
@@ -2006,6 +2033,7 @@ def build_shadow_scene(model: IfcModel, config: MassingConfig) -> ShadowScene:
 
     return ShadowScene(
         sources=sources,
+        terrain=terrain,
         bounds=(lower, upper),
         orientation=orientation,
         unmatched=tuple(unmatched.most_common()),
@@ -2016,6 +2044,7 @@ def build_shadow_scene(model: IfcModel, config: MassingConfig) -> ShadowScene:
             "true_north_bearing_deg": orientation.normalised_bearing_deg,
             "elements_above_cut": reduced.elements_above_cut,
             "unmatched_elements": sum(unmatched.values()),
+            "terrain_triangles": terrain.triangle_count,
             "sources": {
                 source.key: {
                     "label": source.label,
