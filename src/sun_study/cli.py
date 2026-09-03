@@ -10,6 +10,7 @@ from __future__ import annotations
 import _thread
 import collections
 import contextlib
+import dataclasses
 import datetime as dt
 import os
 import re
@@ -179,6 +180,7 @@ from sun_study.ingest.scene import (
     SceneConfigError,
     ShadowSourceRule,
     build_shadow_scene,
+    build_shadow_scene_from_files,
     massing_subject,
     open_ground_grid,
 )
@@ -5428,7 +5430,13 @@ def _shadow_source_rules(
     for role, given in ((BASELINE, baselines), (SCENARIO, scenarios)):
         for text in given:
             label, separator, prefixes = text.partition("=")
-            if not separator or not label.strip() or not prefixes.strip():
+            if not separator:
+                # A bare name is the legend row *and* what finds it. With
+                # --shadow-from-views that is the ordinary case -- the view is
+                # already called "EXISTING NEIGHBOURING BUILDINGS", and making
+                # somebody type it twice invites the two to drift apart.
+                label, prefixes = text, text
+            if not label.strip() or not prefixes.strip():
                 raise typer.BadParameter(
                     f"{text!r} is not LABEL=SELECTOR. Write it as "
                     f'"Future Context=03 | Site Context.Future buildings" -- the '
@@ -5454,6 +5462,50 @@ def _shadow_source_rules(
     return tuple(rules)
 
 
+def _published(folder: Path, wanted: str) -> Path:
+    """The file a Publisher Set wrote for one view.
+
+    Matched loosely on the stem, because Publisher decorates a name with
+    whatever the set's naming rule says -- an index, the project ID, the
+    view's own prefix -- and a run that failed because the office numbers its
+    output would be this tool having an opinion about somebody else's naming.
+    An ambiguous match is refused rather than guessed: picking the wrong file
+    puts the wrong massing on a legend row, and the sheet still looks right.
+    """
+
+    def tidy(text: str) -> str:
+        return " ".join(text.split()).casefold()
+
+    if not folder.is_dir():
+        raise typer.BadParameter(
+            f"{folder} is not a folder. --shadow-from-views wants the directory a "
+            f"Publisher Set wrote its IFCs into."
+        )
+    files = sorted(folder.glob("*.ifc"))
+    if not files:
+        raise typer.BadParameter(
+            f"No .ifc in {folder}. Check the Publisher Set actually published, and "
+            f"that its format is IFC rather than PDF."
+        )
+    target = tidy(wanted)
+    found = [f for f in files if tidy(f.stem) == target] or [
+        f for f in files if target in tidy(f.stem)
+    ]
+    if not found:
+        raise typer.BadParameter(
+            f"No published file matches the view {wanted!r} in {folder}. Found: "
+            + ", ".join(f.stem for f in files[:12])
+        )
+    if len(found) > 1:
+        raise typer.BadParameter(
+            f"{len(found)} published files match the view {wanted!r}: "
+            + ", ".join(f.stem for f in found[:6])
+            + ". Name it exactly -- the wrong file here is the wrong massing on a "
+            "legend row, and the sheet would still look right."
+        )
+    return found[0]
+
+
 @app.command("shadows")
 def shadows(
     port: Annotated[int, typer.Option("--port", help="Which Archicad to talk to.")] = DEFAULT_PORT,
@@ -5473,6 +5525,18 @@ def shadows(
     ] = None,
     context_layer: Annotated[
         list[str] | None, typer.Option("--context-layer", help="Layers that already stand.")
+    ] = None,
+    shadow_from_views: Annotated[
+        Path | None,
+        typer.Option(
+            "--shadow-from-views",
+            help=(
+                "Folder of per-view IFCs written by a Publisher Set. Sources then name "
+                "views rather than layers, and Archicad decides what is in each -- "
+                "layers, renovation filter and all. The only route that can reproduce "
+                "views which differ by renovation filter."
+            ),
+        ),
     ] = None,
     shadow_terrain: Annotated[
         list[str] | None,
@@ -5576,6 +5640,35 @@ def shadows(
         shadow_terrain=tuple(shadow_terrain or ()),
     )
 
+    if shadow_from_views is not None:
+        # Publisher already wrote every source out. Exporting again here would
+        # produce a file nothing reads, which on this project is ten minutes
+        # and a quarter of a gigabyte.
+        typer.secho(
+            f"  reading the views published into {shadow_from_views} -- Archicad is "
+            f"not exported again, and each legend row is exactly what its view shows",
+            fg=typer.colors.YELLOW,
+        )
+        _shadow_report(
+            connection,
+            shadow_from_views,
+            config=config,
+            moments=moments,
+            labels=labels,
+            shadow_datum=shadow_datum,
+            shadow_grid=shadow_grid,
+            shadow_margin=shadow_margin,
+            draw=draw,
+            sheet=sheet,
+            shadow_storey=shadow_storey,
+            drawing_scale=drawing_scale,
+            master_layout=master_layout,
+            shadow_subset=shadow_subset,
+            check_georeferencing=False,
+            from_views=shadow_from_views,
+        )
+        return
+
     if ifc_in is not None:
         if not ifc_in.is_file():
             typer.secho(f"No IFC at {ifc_in}", fg=typer.colors.RED, err=True)
@@ -5601,6 +5694,7 @@ def shadows(
             master_layout=master_layout,
             shadow_subset=shadow_subset,
             check_georeferencing=False,
+            from_views=shadow_from_views,
         )
         return
 
@@ -5672,6 +5766,7 @@ def shadows(
             master_layout=master_layout,
             shadow_subset=shadow_subset,
             check_georeferencing=True,
+            from_views=shadow_from_views,
         )
 
 
@@ -5692,6 +5787,7 @@ def _shadow_report(
     master_layout: str | None,
     shadow_subset: str | None,
     check_georeferencing: bool,
+    from_views: Path | None = None,
 ) -> None:
     """Measure one exported model and say what it shows. Draws only if asked.
 
@@ -5701,14 +5797,31 @@ def _shadow_report(
     which is a question only worth asking of a file this run just produced.
     """
     try:
-        model = read_ifc(exported)
-        # Before any number reaches the screen. A mismatch means the live
-        # project and its export place the site differently, and every
-        # figure below would be plausible and wrong. Archicad rotating the
-        # geometry north-aligned and writing TrueNorth as (0,1) is normal
-        # and passes; a lost or rounded-away georeference does not.
-        cross_check_georeferencing(read_geo_location(connection), model)
-        scene = build_shadow_scene(model, config)
+        if from_views is not None:
+            # Archicad already decided what belongs in each of these, so
+            # nothing here filters them again. No georeferencing cross-check
+            # either: that compares the live project against a file this run
+            # just wrote, and these were written by Publisher earlier.
+            scene = build_shadow_scene_from_files(
+                [
+                    dataclasses.replace(
+                        rule,
+                        selectors=tuple(str(_published(from_views, v)) for v in rule.selectors),
+                    )
+                    for rule in config.shadow_sources
+                ],
+                [_published(from_views, view) for view in config.shadow_terrain],
+                config,
+            )
+        else:
+            model = read_ifc(exported)
+            # Before any number reaches the screen. A mismatch means the live
+            # project and its export place the site differently, and every
+            # figure below would be plausible and wrong. Archicad rotating the
+            # geometry north-aligned and writing TrueNorth as (0,1) is normal
+            # and passes; a lost or rounded-away georeference does not.
+            cross_check_georeferencing(read_geo_location(connection), model)
+            scene = build_shadow_scene(model, config)
     except GeoreferencingError as error:
         typer.secho(f"Georeferencing error: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
@@ -5738,7 +5851,7 @@ def _shadow_report(
             f"{datum:g} m"
         )
     sun = sun_vectors_in_model_frame(
-        solar_position(moments, model.latitude_deg, model.longitude_deg),
+        solar_position(moments, scene.orientation.latitude_deg, scene.orientation.longitude_deg),
         scene.orientation.normalised_bearing_deg,
     )
     series = cast_shadows(

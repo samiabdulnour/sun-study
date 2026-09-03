@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -38,7 +39,7 @@ from sun_study.core.sampling import (
     triangle_samples,
 )
 from sun_study.core.shadow import BASELINE, ShadowSource, default_sources
-from sun_study.ingest.ifc import IfcElement, IfcModel
+from sun_study.ingest.ifc import IfcElement, IfcModel, read_ifc
 
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
@@ -56,6 +57,7 @@ __all__ = [
     "build_massing_scene",
     "build_scene",
     "build_shadow_scene",
+    "build_shadow_scene_from_files",
     "planar_face_grid",
 ]
 
@@ -1949,6 +1951,113 @@ def _claims(element: IfcElement, selectors: Sequence[str]) -> bool:
         return True
     actual = " ".join(element.name.split()).casefold()
     return any(actual.startswith(" ".join(s.split()).casefold()) for s in wanted)
+
+
+def build_shadow_scene_from_files(
+    rules: Sequence[ShadowSourceRule],
+    terrain_files: Sequence[Path],
+    config: MassingConfig,
+) -> ShadowScene:
+    """One IFC per legend row, each exported from the view that defines it.
+
+    The route that exists because the other one cannot be made honest. A
+    source can be found by layer or by Element ID, and on a project whose
+    views differ by *renovation filter* neither is enough: two scenarios may
+    sit on identical layers and be told apart only by renovation status, so a
+    layer-derived rule merges them silently and the sheet compares a massing
+    with itself.
+
+    Archicad already knows the answer, because a saved view carries the whole
+    of it -- layers, renovation filter, structural display, everything. It
+    cannot be asked directly on Archicad 26: ``ChangeWindow`` accepts a
+    navigator item only from 27. But Publisher can, and it applies each view's
+    complete state when it writes that view out. So the legend is defined
+    where it should be, in the project, and this reads what Publisher made of
+    it. Nothing is transcribed and nothing is approximated.
+
+    Every file is its own model. Orientation is taken from the first, and
+    cross-checked against the rest: they are exports of one project, so a
+    disagreement means a file from some other run has been picked up out of
+    the folder, which would put one legend row at a different north from its
+    neighbours and be invisible on the sheet.
+    """
+    if not rules:
+        raise SceneConfigError("No shadow sources given, so there is nothing to draw.")
+
+    loaded: dict[Path, IfcModel] = {}
+
+    def model_for(path: Path) -> IfcModel:
+        if path not in loaded:
+            if not path.is_file():
+                raise SceneConfigError(
+                    f"No IFC at {path}. Publisher writes one file per view; check the "
+                    f"set published, and that the file names match what was asked for."
+                )
+            loaded[path] = read_ifc(path)
+        return loaded[path]
+
+    def mesh_of(paths: Sequence[Path]) -> tuple[TriangleMesh, list[IfcElement]]:
+        elements: list[IfcElement] = []
+        for path in paths:
+            model, _ = _cut_above(model_for(path), config.exclude_above_m)
+            elements.extend(e for e in model.occluders() if e.mesh.triangle_count)
+        return TriangleMesh.concatenate([e.mesh for e in elements]), elements
+
+    sources: list[ShadowSource] = []
+    everything: list[IfcElement] = []
+    for rule in rules:
+        mesh, elements = mesh_of([Path(s) for s in rule.selectors])
+        if not mesh.triangle_count:
+            raise SceneConfigError(
+                f"The file(s) for {rule.key!r} carry no solid geometry, so that legend "
+                f"row would be drawn blank. A view that publishes empty is usually one "
+                f"whose layers are all off, or whose renovation filter excludes "
+                f"everything on them."
+            )
+        sources.append(ShadowSource(key=rule.key, label=rule.label, mesh=mesh, role=rule.role))
+        everything.extend(elements)
+
+    terrain, terrain_elements = mesh_of(list(terrain_files))
+    if terrain_files and not terrain.triangle_count:
+        raise SceneConfigError(
+            f"The terrain file(s) {[str(p) for p in terrain_files]} carry no geometry, "
+            f"so the shadows would land on a flat datum while the run says otherwise."
+        )
+
+    first = next(iter(loaded.values()))
+    orientation = first.orientation(config.timezone)
+    for path, model in loaded.items():
+        other = model.orientation(config.timezone)
+        if abs(other.normalised_bearing_deg - orientation.normalised_bearing_deg) > 0.01:
+            raise SceneConfigError(
+                f"{path.name} reports north at {other.normalised_bearing_deg:.2f} deg "
+                f"while the others report {orientation.normalised_bearing_deg:.2f}. These "
+                f"should be one project exported several times; a file from another run "
+                f"has been picked up, and one legend row would be drawn at a different "
+                f"north from the rest."
+            )
+
+    spanning = everything + terrain_elements
+    lower = np.min([e.bounds[0] for e in spanning], axis=0).astype(np.float64)
+    upper = np.max([e.bounds[1] for e in spanning], axis=0).astype(np.float64)
+
+    return ShadowScene(
+        sources=tuple(sources),
+        bounds=(lower, upper),
+        orientation=orientation,
+        terrain=terrain,
+        provenance={
+            "mode": "shadow",
+            "source": "published views",
+            "files": sorted(str(p) for p in loaded),
+            "true_north_bearing_deg": orientation.normalised_bearing_deg,
+            "terrain_triangles": terrain.triangle_count,
+            "sources": {
+                s.key: {"label": s.label, "role": s.role, "triangles": s.mesh.triangle_count}
+                for s in sources
+            },
+        },
+    )
 
 
 def build_shadow_scene(model: IfcModel, config: MassingConfig) -> ShadowScene:
