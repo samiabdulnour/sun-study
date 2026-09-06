@@ -317,6 +317,7 @@ def drape_onto_terrain(
     terrain: TriangleMesh,
     *,
     offset_m: float = DEFAULT_DATUM_OFFSET_M,
+    floor_m: float | None = None,
 ) -> Draped:
     """Move every sample down or up onto the terrain surface beneath it.
 
@@ -345,6 +346,20 @@ def drape_onto_terrain(
     """
     positions = np.array(grid.positions, dtype=np.float64, copy=True)
     none_found = np.zeros(len(positions), dtype=bool)
+    if floor_m is not None and terrain.triangle_count:
+        # Ground below the floor is not this drawing's ground. A survey often
+        # runs on past the neighbourhood into whatever is beyond it -- on
+        # Crows Nest, two context blocks 300 m to the south-west carrying
+        # up-facing faces at about a metre, against a site at 91. A shadow
+        # reaching that band falls another ninety metres and runs on for
+        # hundreds, which is arithmetically right and answers a question the
+        # sheet is not asking. Cut per triangle rather than per sample, so a
+        # face that straddles the floor keeps the part above it.
+        corners = terrain.vertices[terrain.faces]
+        terrain = TriangleMesh(
+            vertices=terrain.vertices,
+            faces=terrain.faces[corners[:, :, 2].max(axis=1) >= floor_m],
+        )
     if not terrain.triangle_count or not len(positions):
         return Draped(grid=grid, on_terrain=none_found)
 
@@ -370,24 +385,32 @@ def drape_onto_terrain(
     height = np.full((nx, ny), -np.inf, dtype=np.float64)
     corners = terrain.vertices[terrain.faces]
 
-    # Near-vertical faces cannot catch a shadow, and they are what a "terrain"
-    # made of solids is full of: site context extruded from datum zero up to
-    # the ground, roads modelled as slabs, each with a skirt joining its base
-    # to its top. Interpolating a skirt puts a sample somewhere down the side
-    # of the block instead of on the ground above it.
+    # Only faces that point *upwards* can catch a shadow. A downward one is
+    # the underside of something and a vertical one is a wall, and a shadow
+    # lands on neither.
     #
-    # Kept on |nz| rather than nz, so both faces of a closed solid survive:
-    # winding is not dependable in an IFC export, and the *highest* surface
-    # wins below anyway, which picks the top of a solid without needing to
-    # know which way its normals were written. Degenerate triangles have no
-    # normal and no plan area, and drop out here rather than dividing by zero
-    # further down.
+    # "Terrain" arrives as solids far more often than as a surface -- site
+    # context extruded from datum zero up to the ground, roads modelled as
+    # slabs -- so it is full of undersides sitting near zero, and where a
+    # solid's top does not cover its own base those undersides become the
+    # highest thing under a sample. Measured on Crows Nest, keeping them put
+    # 9.4% of the receiving ground at about 1 m against a real ground near
+    # 90 m, and every shadow reaching that band ran ninety metres too far.
+    # The giveaway was a dead gap between 20 m and 60 m: a hillside falling to
+    # the harbour passes through those heights, a stack of undersides does not.
+    #
+    # Taking the sign was once thought unsafe on the grounds that IFC winding
+    # is not dependable. On this export it plainly is: at real ground level
+    # up-facing triangles outnumber down-facing ones 8,306 to 329, while below
+    # 60 m the ratio inverts to 920 against 1,414. Where a mesh really were
+    # wound inconsistently the highest surface still wins among what is kept,
+    # so the cost of being wrong here is a hole rather than a cliff.
     normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
     lengths = np.linalg.norm(normals, axis=1)
     # About six degrees off vertical: enough to drop a skirt that is not quite
     # plumb, shallow enough to keep a steep bank that really is ground.
     steep_enough = lengths > 0.0
-    steep_enough &= np.abs(normals[:, 2]) / np.maximum(lengths, 1e-12) > 0.1
+    steep_enough &= normals[:, 2] / np.maximum(lengths, 1e-12) > 0.1
     corners = corners[steep_enough]
     if not len(corners):
         return Draped(grid=grid, on_terrain=none_found)

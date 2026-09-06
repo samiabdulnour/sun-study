@@ -418,7 +418,6 @@ def _fill(
         "coordinates": [{"x": x, "y": y} for x, y in ring],
         "layerIndex": layer_index,
         "fillPenIndex": style.fill_pen,
-        "fillBackgroundPenIndex": style.background_pen,
         # Explicitly off. A Fill inherits the Fill tool's current default, and
         # on a real project that default has "Show Area Text" on -- which
         # prints a square-metre figure across every rectangle of a tiled
@@ -430,12 +429,24 @@ def _fill(
         # contour off, so the nearest reachable thing is to draw it in the
         # fill's own pen and let it disappear against it.
         hatch["contourPenIndex"] = style.outline_pen
+        hatch["fillBackgroundPenIndex"] = style.background_pen
     else:
         # A Favorite's settings are applied first and the explicit fields over
-        # the top, so naming a contour pen here would put back the contour the
-        # Favorite exists to remove. Omitted on purpose. The fill type comes
-        # from the Favorite for the same reason; the pen does not, because the
-        # pen is what separates one legend row from the next.
+        # the top, so anything named here is a setting taken *back* off it.
+        # Two are therefore left alone.
+        #
+        # The contour, because removing it is the whole reason a Favorite is
+        # wanted: ``CreateHatches`` has a contour pen and no switch to turn
+        # the contour off, so hand-made is the only contour-less fill there is.
+        #
+        # And the background pen, which decides whether the fill is opaque.
+        # A shadow diagram is read *through* -- the roads, the boundaries and
+        # every neighbouring building are underneath it -- so a shadow with an
+        # opaque background is a grey rectangle where the drawing should be.
+        # The Favorite is where a project says which it wants.
+        #
+        # The fill pen is still ours, because it is what separates one legend
+        # row from the next, and a Favorite has only one of those.
         hatch["favoriteName"] = favourite
     if storey is not None:
         hatch["floorInd"] = storey

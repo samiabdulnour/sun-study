@@ -505,6 +505,10 @@ def test_a_favourite_replaces_the_contour_rather_than_fighting_it() -> None:
     assert drawn
     assert all(h.get("favoriteName") == "LORIINI" for h in drawn)
     assert all("contourPenIndex" not in h for h in drawn), "the Favorite decides it"
+    # And the background, which decides whether the fill is opaque. A shadow
+    # diagram is read *through*: the roads, the boundaries and the neighbours
+    # are underneath it, and an opaque fill is a grey rectangle over them.
+    assert all("fillBackgroundPenIndex" not in h for h in drawn)
     # The pen still does separate one legend row from the next; that is not
     # the Favorite's business.
     assert len({h["fillPenIndex"] for h in drawn}) > 1
@@ -519,6 +523,7 @@ def test_without_a_favourite_the_contour_is_hidden_in_the_fills_own_pen() -> Non
     assert drawn
     assert all("favoriteName" not in h for h in drawn)
     assert all(h["contourPenIndex"] == h["fillPenIndex"] for h in drawn)
+    assert all("fillBackgroundPenIndex" in h for h in drawn), "no Favorite to ask"
 
 
 def test_a_favourite_the_project_does_not_have_is_refused() -> None:

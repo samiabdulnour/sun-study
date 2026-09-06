@@ -5542,6 +5542,18 @@ def shadows(
             ),
         ),
     ] = None,
+    shadow_terrain_floor: Annotated[
+        float | None,
+        typer.Option(
+            "--shadow-terrain-floor",
+            help=(
+                "Ignore terrain below this level. A survey often runs past the "
+                "neighbourhood into ground tens of metres lower, and a shadow reaching "
+                "it falls that far and runs on for hundreds of metres -- right "
+                "arithmetically, and not what the sheet is asking."
+            ),
+        ),
+    ] = None,
     shadow_from_views: Annotated[
         Path | None,
         typer.Option(
@@ -5678,6 +5690,7 @@ def shadows(
             sheet=sheet,
             shadow_storey=shadow_storey,
             shadow_favourite=shadow_favourite,
+            terrain_floor=shadow_terrain_floor,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5708,6 +5721,7 @@ def shadows(
             sheet=sheet,
             shadow_storey=shadow_storey,
             shadow_favourite=shadow_favourite,
+            terrain_floor=shadow_terrain_floor,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5781,6 +5795,7 @@ def shadows(
             sheet=sheet,
             shadow_storey=shadow_storey,
             shadow_favourite=shadow_favourite,
+            terrain_floor=shadow_terrain_floor,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5803,6 +5818,7 @@ def _shadow_report(
     sheet: bool,
     shadow_storey: int,
     shadow_favourite: str | None,
+    terrain_floor: float | None,
     drawing_scale: float,
     master_layout: str | None,
     shadow_subset: str | None,
@@ -5865,7 +5881,7 @@ def _shadow_report(
     )
     receiving = None
     if scene.terrain.triangle_count:
-        draped = drape_onto_terrain(grid, scene.terrain)
+        draped = drape_onto_terrain(grid, scene.terrain, floor_m=terrain_floor)
         grid, receiving = draped.grid, draped.on_terrain
         typer.echo(
             f"  draped onto {scene.terrain.triangle_count:,} terrain triangles; "
