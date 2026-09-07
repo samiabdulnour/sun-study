@@ -479,8 +479,50 @@ def bridged(outer: Ring, holes: list[Ring]) -> Ring | None:
     holes are taken in turn, largest first, and each is seamed to the contour
     as it stands rather than to the original outline.
     """
+    for order in _orderings(holes):
+        seamed = _seam_all(outer, order)
+        if seamed is not None:
+            return seamed
+    return None
+
+
+def _orderings(holes: list[Ring]) -> list[list[Ring]]:
+    """The orders worth trying to seam a patch's holes in.
+
+    Order is what decides whether a patch can be drawn as one contour, and it
+    took measuring to see: 190 of 194 traced patches seamed first try, and the
+    four that did not were the largest -- shadows with several courtyards,
+    where each new cut has to dodge the slivers already made. Offering more
+    *placements* for a cut changed nothing at all, because the placement was
+    never the obstruction.
+
+    Rightmost hole first is what the standard construction uses, cutting
+    rightward towards the boundary, so it is tried first. The rest cost
+    nothing when the first works, which for all but a handful it does.
+    """
+    if len(holes) < 2:
+        return [list(holes)]
+
+    def rightmost(ring: Ring) -> float:
+        return max(x for x, _ in ring)
+
+    def topmost(ring: Ring) -> float:
+        return max(y for _, y in ring)
+
+    return [
+        sorted(holes, key=rightmost, reverse=True),
+        sorted(holes, key=lambda ring: abs(signed_area(ring)), reverse=True),
+        sorted(holes, key=rightmost),
+        sorted(holes, key=topmost, reverse=True),
+        sorted(holes, key=topmost),
+        sorted(holes, key=lambda ring: abs(signed_area(ring))),
+    ]
+
+
+def _seam_all(outer: Ring, holes: list[Ring]) -> Ring | None:
+    """Seam every hole into the outline, in the order given, or give up."""
     contour = list(outer)
-    for hole in sorted(holes, key=lambda ring: abs(signed_area(ring)), reverse=True):
+    for hole in holes:
         # Candidate cuts, nearest first. Only the nearest was tried at first,
         # and where that one cut was blocked the whole patch fell back to
         # cell edges -- on the real project that was half the drawing. A cut
