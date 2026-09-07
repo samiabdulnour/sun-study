@@ -214,3 +214,73 @@ def test_a_bow_tie_is_reported_as_crossing() -> None:
 
     assert self_intersects(((0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0)))
     assert not self_intersects(((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)))
+
+
+# -- patches that cannot be one contour ------------------------------------
+
+
+def test_slicing_a_holed_patch_keeps_its_area_exactly() -> None:
+    """The other answer to a fill that takes one contour and no holes, and the
+    one that cannot fail. Seaming asks whether a cut exists to every hole
+    without crossing anything; on a shadow with several courtyards sometimes
+    none does. Slicing asks nothing."""
+    from sun_study.core.edges import decomposed
+
+    square = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
+    hole = ((3.0, 3.0), (3.0, 7.0), (7.0, 7.0), (7.0, 3.0))
+
+    pieces = decomposed(square, [hole])
+
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(100.0 - 16.0)
+
+
+def test_every_slice_is_a_polygon_archicad_will_take() -> None:
+    """Each piece has to be a simple polygon in its own right, or slicing has
+    only moved the problem. A slab closing to a point at a vertex is the case
+    that catches this: written as a quad it has a corner twice."""
+    from sun_study.core.edges import decomposed, self_intersects
+
+    turn = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    outer = tuple((float(9 * np.cos(a)), float(9 * np.sin(a))) for a in turn)
+    hole = tuple((float(4 * np.cos(-a)), float(4 * np.sin(-a))) for a in turn)
+
+    pieces = decomposed(outer, [hole])
+
+    assert pieces
+    assert all(len(piece) >= 3 for piece in pieces)
+    assert all(len(piece) == len(set(piece)) for piece in pieces)
+    assert not any(self_intersects(piece) for piece in pieces)
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(
+        signed_area(outer) + signed_area(hole), rel=1e-9
+    )
+
+
+def test_several_holes_are_no_harder_than_one() -> None:
+    """The case seaming fails on: each cut has to dodge the ones before it,
+    and slicing has no cuts to dodge."""
+    from sun_study.core.edges import decomposed
+
+    turn = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    outer = tuple((float(9 * np.cos(a)), float(9 * np.sin(a))) for a in turn)
+    holes = [
+        tuple((float(1.5 * np.cos(-a) + shift), float(1.5 * np.sin(-a))) for a in turn)
+        for shift in (5.0, -5.0)
+    ]
+
+    pieces = decomposed(outer, holes)
+
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(
+        signed_area(outer) + sum(signed_area(hole) for hole in holes), rel=1e-9
+    )
+
+
+def test_a_patch_with_no_holes_slices_to_itself() -> None:
+    """Nothing to cut, so nothing should be cut."""
+    from sun_study.core.edges import decomposed
+
+    square = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
+
+    pieces = decomposed(square, [])
+
+    assert len(pieces) == 1
+    assert abs(signed_area(pieces[0])) == pytest.approx(100.0)

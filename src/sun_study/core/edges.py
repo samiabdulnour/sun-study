@@ -41,6 +41,7 @@ within.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 
 import numpy as np
@@ -54,6 +55,7 @@ __all__ = [
     "DEFAULT_TOLERANCE_M",
     "SEAM_WIDTH_M",
     "bridged",
+    "decomposed",
     "enclosed",
     "group_regions",
     "refined_rings",
@@ -572,3 +574,124 @@ def _seam_all(outer: Ring, holes: list[Ring]) -> Ring | None:
             return None
         contour = joined
     return tuple(contour)
+
+
+def _piece(corners: list[tuple[float, float]]) -> Ring | None:
+    """A slab's four corners as a ring, or ``None`` if it is not one.
+
+    A slab closes to a point wherever the outline turns, so the quad becomes
+    a triangle with one corner written twice. Left as it is that is a
+    zero-length edge, which is a degenerate polygon and reads as
+    self-intersecting to anything that checks -- so the repeat is dropped and
+    a triangle is returned as a triangle.
+    """
+    kept: list[tuple[float, float]] = []
+    for corner in corners:
+        if not kept or (abs(corner[0] - kept[-1][0]) > 1e-9 or abs(corner[1] - kept[-1][1]) > 1e-9):
+            kept.append(corner)
+    while len(kept) > 1 and (
+        abs(kept[0][0] - kept[-1][0]) <= 1e-9 and abs(kept[0][1] - kept[-1][1]) <= 1e-9
+    ):
+        kept.pop()
+    return tuple(kept) if len(kept) >= 3 else None
+
+
+def _crossing_x(edge: tuple[tuple[float, float], tuple[float, float]], y: float) -> float:
+    """Where an edge sits at height ``y``. The edge is known to span it."""
+    (x1, y1), (x2, y2) = edge
+    if y2 == y1:
+        return x1
+    return x1 + (y - y1) / (y2 - y1) * (x2 - x1)
+
+
+def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
+    """Cut a patch with holes into pieces that have none.
+
+    The other answer to a fill that takes one contour and no holes, and the
+    one that cannot fail. Seaming asks whether a cut exists from the outline
+    to every hole without crossing anything, and on a shadow with several
+    courtyards sometimes none does. Slicing asks nothing: sweep a horizontal
+    line down the patch, stop at every height where a vertex sits, and between
+    two consecutive stops the shape is a row of trapezoids with straight
+    sides. Each is a simple polygon. Together they tile the patch exactly.
+
+    They also tile it along the *traced* edges, which is the point. The
+    fallback this replaces went all the way back to cell squares, so a patch
+    that could not be seamed lost not just its single contour but its accuracy
+    -- and because the patches that cannot be seamed are the big ones, that
+    was most of the drawing: two patches of 194 accounted for 1,200 of 1,393
+    fills.
+
+    Spans are carried down from one slab to the next while they keep the same
+    pair of edges, so a straight-sided run of twenty slabs is one trapezoid
+    rather than twenty. Without that the count is dominated by how many
+    vertices the outline happens to have.
+    """
+    rings = [outer, *holes]
+    edges = [
+        (ring[index], ring[(index + 1) % len(ring)])
+        for ring in rings
+        for index in range(len(ring))
+        if ring[index][1] != ring[(index + 1) % len(ring)][1]
+    ]
+    if not edges:
+        return []
+    heights = sorted({y for ring in rings for _, y in ring})
+
+    pieces: list[Ring] = []
+    #: Spans still open, keyed by the pair of edges bounding them, each
+    #: carrying the height it started at and the two x it started from.
+    running: dict[tuple[int, int], tuple[float, float, float]] = {}
+    for lower, upper in itertools.pairwise(heights):
+        if upper <= lower:
+            continue
+        middle = (lower + upper) / 2.0
+        crossing = sorted(
+            (
+                (_crossing_x(edge, middle), index)
+                for index, edge in enumerate(edges)
+                if min(edge[0][1], edge[1][1]) <= middle <= max(edge[0][1], edge[1][1])
+            ),
+            key=lambda found: found[0],
+        )
+        # Inside on every other span, which holds whichever way round the
+        # rings are wound -- and holes are wound the other way from outlines.
+        spans = {(crossing[at][1], crossing[at + 1][1]) for at in range(0, len(crossing) - 1, 2)}
+        for key in list(running):
+            if key not in spans:
+                started, left_at, right_at = running.pop(key)
+                left, right = edges[key[0]], edges[key[1]]
+                shape = _piece(
+                    [
+                        (left_at, started),
+                        (right_at, started),
+                        (_crossing_x(right, lower), lower),
+                        (_crossing_x(left, lower), lower),
+                    ]
+                )
+                if shape is not None:
+                    pieces.append(shape)
+        for key in spans:
+            if key not in running:
+                running[key] = (
+                    lower,
+                    _crossing_x(edges[key[0]], lower),
+                    _crossing_x(edges[key[1]], lower),
+                )
+
+    top = heights[-1]
+    for key, (started, left_at, right_at) in running.items():
+        left, right = edges[key[0]], edges[key[1]]
+        shape = _piece(
+            [
+                (left_at, started),
+                (right_at, started),
+                (_crossing_x(right, top), top),
+                (_crossing_x(left, top), top),
+            ]
+        )
+        if shape is not None:
+            pieces.append(shape)
+    # A slab can close to a point at a vertex, which is a polygon of no area
+    # and nothing to draw.
+    return [piece for piece in pieces if abs(signed_area(piece)) > 1e-9]

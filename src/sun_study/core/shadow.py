@@ -74,14 +74,14 @@ import numpy.typing as npt
 from sun_study.core.analysis import sunlit_matrix
 from sun_study.core.edges import (
     bridged,
-    enclosed,
+    decomposed,
     group_regions,
     refined_rings,
     self_intersects,
 )
 from sun_study.core.geometry import TriangleMesh
 from sun_study.core.occlusion import Occluder
-from sun_study.core.patches import Ring, drawable_contours, merge_lit_cells
+from sun_study.core.patches import Ring, drawable_contours
 from sun_study.core.sampling import SamplePoints, horizontal_grid
 
 FloatArray = npt.NDArray[np.float64]
@@ -550,15 +550,12 @@ def _traced_regions(
         if seamed is not None and not self_intersects(seamed):
             drawn.append(seamed)
             continue
-        # This one patch cannot be one contour -- a seam that would have to
-        # cross another hole, most often. Only this patch falls back, on its
-        # own cells: refusing the whole source instead meant one awkward
-        # courtyard in one shadow dropped an entire hour to cell edges, which
-        # is how the first attempt drew 3,410 fills where tracing needed 194.
-        mine = enclosed(grid.positions, outer) & mask
-        drawn.extend(
-            rectangle.corners for rectangle in merge_lit_cells(grid.positions, mine, spacing_m)
-        )
+        # No cut reaches every hole without crossing something, which happens
+        # on a shadow with several courtyards. Sliced into trapezoids rather
+        # than tiled: the pieces follow the traced edges instead of falling
+        # back to cell squares, and slicing cannot fail. Two patches of 194
+        # took this route and were costing 1,200 fills of the 1,393.
+        drawn.extend(decomposed(outer, holes))
     return tuple(drawn)
 
 
