@@ -87,6 +87,11 @@ SEAM_ATTEMPTS = 24
 #: millimetre on a 1:500 sheet, and an area no drawing depends on.
 MINIMUM_THICKNESS_M = 1e-5
 
+#: How far a sliced piece's outline may be moved to be rid of micro-edges.
+#: Well below the tolerance the boundary was traced to, so tidying here cannot
+#: move a vertex further than the tracing already left it.
+PIECE_TOLERANCE_M = 1e-4
+
 #: Marching squares, as segments between edge crossings. The key is the four
 #: corners read anticlockwise from the lower left; the value is the pairs of
 #: *edges* a segment runs between, edges numbered 0 south, 1 east, 2 north,
@@ -748,6 +753,14 @@ def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
             if len(mine) == 1 and len(children[mine[0]]) == 1 and not pinched:
                 span = running[mine[0]][0]
                 carried.add(mine[0])
+                # Where the run arrived, before where it continues from. A
+                # horizontal edge is not in the sweep -- it has no crossing --
+                # but the boundary steps sideways along it, so the two x at
+                # this height differ and both belong on the chain. Recording
+                # only the second cuts the corner off the step, which loses or
+                # gains its little rectangle: measured, 7.15 m2 across one
+                # patch, in pieces of exactly 0.5 and 1.0.
+                span.extend(was_left, was_right, upper)
             else:
                 span = _Span([], [])
             span.extend(left_x, right_x, upper)
@@ -779,8 +792,18 @@ def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
     # hundredth of a millimetre wide, and refuses three collinear points -- so
     # what has to be measured is how far the shape departs from a line, which
     # is twice its area over its perimeter.
+    # Straightened first. A slab can be a fraction of a millimetre deep where
+    # two heights nearly coincide, and the chains then collect clusters of
+    # millimetre-long edges doubling back on themselves -- spikes, which are
+    # self-touching in all but name and which Archicad refuses. The traced
+    # rings have always been simplified; these were not, and that is what
+    # reached the add-on as 21 fills of 500 that would not draw.
+    #
+    # A tenth of a millimetre, far below the millimetre the boundary was
+    # traced to, so nothing moves further than it was ever located.
+    tidied = [_straighten(piece, PIECE_TOLERANCE_M) for piece in pieces]
     return [
-        piece for piece in pieces if len(piece) >= 3 and _thickness(piece) > MINIMUM_THICKNESS_M
+        piece for piece in tidied if len(piece) >= 3 and _thickness(piece) > MINIMUM_THICKNESS_M
     ]
 
 

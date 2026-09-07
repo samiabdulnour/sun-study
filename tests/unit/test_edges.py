@@ -327,8 +327,11 @@ def test_a_piece_ends_where_the_shape_divides_not_where_a_vertex_falls() -> None
     pieces = decomposed(outer, [hole])
 
     assert len(pieces) < 150, f"{len(pieces)} pieces for one courtyard"
+    # Not to the last bit: the pieces are simplified at a tenth of a
+    # millimetre to be rid of micro-edges, and on a four-hundred-sided ring
+    # that moves the total by three millionths of a square metre.
     assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(
-        signed_area(outer) + signed_area(hole), rel=1e-9
+        signed_area(outer) + signed_area(hole), rel=1e-6
     )
 
 
@@ -385,3 +388,43 @@ def test_a_run_that_pinches_to_a_point_is_two_pieces() -> None:
     assert len(pieces) == 2, "one lobe each side of the waist"
     assert not any(self_intersects(piece) for piece in pieces)
     assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(50.0)
+
+
+def test_a_horizontal_step_keeps_its_area() -> None:
+    """A horizontal edge has no crossing and so is not in the sweep, but the
+    boundary steps sideways along it. A piece carried through that height has
+    to record where it arrived as well as where it continues from, or it cuts
+    the corner off the step and loses its little rectangle. Measured on the
+    real project: 7.15 m2 across one patch, in pieces of exactly 0.5 and 1.0.
+    """
+    from sun_study.core.edges import decomposed
+
+    # A staircase: every tread is a horizontal edge the sweep cannot see.
+    staircase = (
+        (0.0, 0.0),
+        (6.0, 0.0),
+        (6.0, 2.0),
+        (4.0, 2.0),
+        (4.0, 4.0),
+        (2.0, 4.0),
+        (2.0, 6.0),
+        (0.0, 6.0),
+    )
+    exact = signed_area(staircase)
+
+    pieces = decomposed(staircase, [])
+
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(exact, rel=1e-9)
+
+
+def test_a_stepped_hole_keeps_its_area_too() -> None:
+    """The same, with the steps on a courtyard rather than the outline."""
+    from sun_study.core.edges import decomposed
+
+    outer = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
+    stepped = ((2.0, 2.0), (2.0, 6.0), (5.0, 6.0), (5.0, 8.0), (8.0, 8.0), (8.0, 2.0))
+    exact = signed_area(outer) + signed_area(stepped)
+
+    pieces = decomposed(outer, [stepped])
+
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(exact, rel=1e-9)
