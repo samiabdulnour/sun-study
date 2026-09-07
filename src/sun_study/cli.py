@@ -5531,6 +5531,18 @@ def shadows(
     context_layer: Annotated[
         list[str] | None, typer.Option("--context-layer", help="Layers that already stand.")
     ] = None,
+    shadow_edge: Annotated[
+        float,
+        typer.Option(
+            "--shadow-edge",
+            help=(
+                "How close a drawn outline is brought to the true shadow edge, in "
+                "metres. The boundary is found by bisecting against the geometry "
+                "rather than followed along cell edges, so it runs at whatever angle "
+                "the sun makes instead of as a staircase. 0 draws on cell edges."
+            ),
+        ),
+    ] = 0.001,
     shadow_favourite: Annotated[
         str | None,
         typer.Option(
@@ -5692,6 +5704,7 @@ def shadows(
             shadow_storey=shadow_storey,
             shadow_favourite=shadow_favourite,
             terrain_floor=shadow_terrain_floor,
+            edge_tolerance=shadow_edge,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5723,6 +5736,7 @@ def shadows(
             shadow_storey=shadow_storey,
             shadow_favourite=shadow_favourite,
             terrain_floor=shadow_terrain_floor,
+            edge_tolerance=shadow_edge,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5797,6 +5811,7 @@ def shadows(
             shadow_storey=shadow_storey,
             shadow_favourite=shadow_favourite,
             terrain_floor=shadow_terrain_floor,
+            edge_tolerance=shadow_edge,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5820,6 +5835,7 @@ def _shadow_report(
     shadow_storey: int,
     shadow_favourite: str | None,
     terrain_floor: float | None,
+    edge_tolerance: float,
     drawing_scale: float,
     master_layout: str | None,
     shadow_subset: str | None,
@@ -5926,6 +5942,7 @@ def _shadow_report(
         labels=labels,
         spacing_m=shadow_grid,
         receiving=receiving,
+        edge_tolerance_m=edge_tolerance if edge_tolerance > 0 else None,
     )
 
     lower, upper = scene.bounds

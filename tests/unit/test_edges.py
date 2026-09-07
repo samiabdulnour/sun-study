@@ -119,3 +119,38 @@ def test_nothing_shaded_is_no_ring_at_all() -> None:
         return np.zeros(len(points), dtype=bool)
 
     assert traced(lit) == []
+
+
+def test_a_straight_run_is_two_vertices_and_not_forty() -> None:
+    """Marching squares puts a vertex on every cell edge it crosses, so a
+    straight boundary arrives as one vertex per cell describing a line that
+    needs two. Archicad is the reason to care: a contour with thousands of
+    points is not a drawing anybody can open."""
+
+    def half(points: np.ndarray) -> np.ndarray:
+        return np.asarray(points)[:, 0] <= 20.4
+
+    rings = traced(half)
+
+    assert len(rings) == 1
+    assert len(rings[0]) <= 8, f"{len(rings[0])} vertices for a rectangle"
+
+
+def test_a_diagonal_edge_is_where_refining_earns_its_keep() -> None:
+    """The case every real shadow is: an edge at whatever angle the sun makes,
+    which a lattice can only approximate as a staircase. Traced, that edge is
+    a straight line and needs two vertices to say so -- fewer than the
+    staircase, not more -- and it encloses the area the line really cuts."""
+
+    def cut(points: np.ndarray) -> np.ndarray:
+        flat = np.asarray(points)
+        return flat[:, 1] <= 0.6 * flat[:, 0] + 3.7
+
+    rings = traced(cut)
+    assert len(rings) == 1
+    assert len(rings[0]) <= 6, f"{len(rings[0])} vertices for a clipped half-plane"
+
+    # Under the line, over the sampled square: the integral of 0.6x + 3.7.
+    span = float(LATTICE - 1)
+    exact = 0.6 * span**2 / 2.0 + 3.7 * span
+    assert signed_area(rings[0]) == pytest.approx(exact, rel=0.002)

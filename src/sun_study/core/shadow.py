@@ -72,6 +72,7 @@ import numpy as np
 import numpy.typing as npt
 
 from sun_study.core.analysis import sunlit_matrix
+from sun_study.core.edges import bridged, group_regions, refined_rings
 from sun_study.core.geometry import TriangleMesh
 from sun_study.core.occlusion import Occluder
 from sun_study.core.patches import Ring, drawable_contours
@@ -470,6 +471,70 @@ def _shaded(grid: SamplePoints, occluder: Occluder, sun_vectors: FloatArray) -> 
     return ~sunlit_matrix(grid, occluder, sun_vectors)
 
 
+def _lattice_shape(grid: SamplePoints) -> tuple[int, int] | None:
+    """The grid's (columns, rows), or ``None`` if it is not a full lattice.
+
+    Marching squares needs to know which samples are neighbours, and a flat
+    list of points does not say. Recovered rather than carried because the
+    grid arrives from several places and only this one route cares.
+    """
+    if not len(grid):
+        return None
+    xs = np.unique(grid.positions[:, 0])
+    ys = np.unique(grid.positions[:, 1])
+    if len(xs) * len(ys) != len(grid) or len(xs) < 2 or len(ys) < 2:
+        return None
+    return len(xs), len(ys)
+
+
+def _traced_regions(
+    grid: SamplePoints,
+    shape: tuple[int, int],
+    mask: BoolArray,
+    ground: BoolArray,
+    darkens: Occluder | None,
+    already: Occluder | None,
+    direction: FloatArray,
+    tolerance_m: float,
+) -> tuple[Ring, ...]:
+    """One source's fill at one instant, traced to the true shadow edge.
+
+    The predicate is the fill's own definition, not merely "is it shaded":
+    darkened by *these* occluders and not already by *those*, which is what
+    makes a source's boundary its own rather than the whole shadow's. Asked
+    at whatever points the bisection wants, which is the entire reason the
+    occluders were kept.
+
+    Ground beyond the survey is answered from the nearest sample rather than
+    re-tested. The survey's own edge is a cell-resolution fact -- it is where
+    the terrain mesh stops -- so refining it would be inventing precision
+    about the extent of somebody's survey.
+    """
+    columns, rows = shape
+    x0 = float(grid.positions[:, 0].min())
+    y0 = float(grid.positions[:, 1].min())
+    step_x = (float(grid.positions[:, 0].max()) - x0) / (columns - 1)
+    step_y = (float(grid.positions[:, 1].max()) - y0) / (rows - 1)
+    surveyed = ground.reshape(columns, rows)
+
+    def shaded_at(points: FloatArray) -> BoolArray:
+        lifted = np.asarray(points, dtype=np.float64)
+        towards = np.broadcast_to(direction, lifted.shape)
+        dark = (
+            darkens.any_hit(lifted, towards)
+            if darkens is not None
+            else np.zeros(len(lifted), dtype=bool)
+        )
+        if already is not None:
+            dark &= ~already.any_hit(lifted, towards)
+        column = np.clip(np.rint((lifted[:, 0] - x0) / step_x).astype(np.int64), 0, columns - 1)
+        row = np.clip(np.rint((lifted[:, 1] - y0) / step_y).astype(np.int64), 0, rows - 1)
+        return dark & surveyed[column, row]
+
+    rings = refined_rings(grid.positions, mask, shape, shaded_at=shaded_at, tolerance_m=tolerance_m)
+    return tuple(bridged(outer, holes) for outer, holes in group_regions(rings))
+
+
 def cast_shadows(
     grid: SamplePoints,
     *,
@@ -479,6 +544,7 @@ def cast_shadows(
     labels: Sequence[str],
     spacing_m: float,
     receiving: BoolArray | None = None,
+    edge_tolerance_m: float | None = None,
 ) -> ShadowSeries:
     """Trace one shadow fill per source at every instant.
 
@@ -535,8 +601,14 @@ def cast_shadows(
     # that will be there; ``before`` is the ground it has already darkened,
     # and it is the datum every scenario is then charged against.
     masks: dict[str, BoolArray] = {}
+    #: Per source, the occluders that darken it and the ones already standing.
+    #: Kept rather than discarded because tracing an edge means asking the
+    #: same question again at points the lattice never sampled, and the
+    #: question is "shaded by these and not by those".
+    against: dict[str, tuple[Occluder | None, Occluder | None]] = {}
     standing: list[TriangleMesh] = []
     before = empty
+    before_occluder: Occluder | None = None
     for source in sources:
         if source.role != BASELINE:
             continue
@@ -545,13 +617,15 @@ def cast_shadows(
         # rather than casting: an empty source is what "the project has no
         # future context" looks like, and it should cost nothing and draw
         # nothing rather than raise.
-        shaded = (
-            _shaded(grid, Occluder(TriangleMesh.concatenate(standing)), directions)
+        occluder = (
+            Occluder(TriangleMesh.concatenate(standing))
             if any(mesh.triangle_count for mesh in standing)
-            else empty
+            else None
         )
+        shaded = _shaded(grid, occluder, directions) if occluder is not None else empty
         masks[source.key] = shaded & ~before
-        before = shaded
+        against[source.key] = (occluder, before_occluder)
+        before, before_occluder = shaded, occluder
 
     baseline = TriangleMesh.concatenate(standing) if standing else TriangleMesh.empty()
 
@@ -560,16 +634,19 @@ def cast_shadows(
     for source in sources:
         if source.role != SCENARIO:
             continue
-        after = (
-            _shaded(grid, Occluder(TriangleMesh.concatenate([baseline, source.mesh])), directions)
+        occluder = (
+            Occluder(TriangleMesh.concatenate([baseline, source.mesh]))
             if source.mesh.triangle_count
-            else before
+            else None
         )
+        after = _shaded(grid, occluder, directions) if occluder is not None else before
         masks[source.key] = after & ~before
+        against[source.key] = (occluder, before_occluder)
 
     instants: list[ShadowInstant] = []
     for index, (moment, label) in enumerate(zip(moments, labels, strict=True)):
         down = not bool(above_horizon[index])
+        shape = _lattice_shape(grid) if edge_tolerance_m is not None else None
         at_this_hour = {
             source.key: (
                 np.zeros(len(grid), dtype=bool) if down else masks[source.key][:, index] & ground
@@ -581,7 +658,19 @@ def cast_shadows(
                 moment=moment,
                 label=label,
                 regions={
-                    key: tuple(drawable_contours(grid.positions, mask, spacing_m))
+                    key: (
+                        _traced_regions(
+                            grid,
+                            shape,
+                            mask,
+                            ground,
+                            *against.get(key, (None, None)),
+                            directions[index],
+                            edge_tolerance_m,
+                        )
+                        if shape is not None and edge_tolerance_m is not None and mask.any()
+                        else tuple(drawable_contours(grid.positions, mask, spacing_m))
+                    )
                     for key, mask in at_this_hour.items()
                 },
                 areas_m2={key: float(mask.sum()) * cell_area for key, mask in at_this_hour.items()},

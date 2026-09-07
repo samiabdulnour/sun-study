@@ -146,11 +146,48 @@ def refined_rings(
     sits on, so the vertices land on the true boundary rather than on the
     lattice. Rings come back closed and oriented, shade on the left.
     """
-    nx, ny = shape
-    if nx < 2 or ny < 2:
+    inner_x, inner_y = shape
+    if inner_x < 2 or inner_y < 2:
         return []
-    dark = np.asarray(shaded, dtype=bool).reshape(nx, ny)
-    points = np.asarray(positions, dtype=np.float64).reshape(nx, ny, 3)
+    inner_dark = np.asarray(shaded, dtype=bool).reshape(inner_x, inner_y)
+    inner_points = np.asarray(positions, dtype=np.float64).reshape(inner_x, inner_y, 3)
+
+    # A lit border one cell wide, so a region reaching the edge of the grid
+    # still closes. Without it the boundary runs off the lattice, the walk
+    # never returns to where it started, and the ring is dropped -- the whole
+    # shadow silently missing rather than drawn short.
+    #
+    # The border is not a claim that the ground beyond is sunlit. It is where
+    # the sampling stops, and the cell tracer says the same thing by extending
+    # half a cell past its last shaded sample. Points on it are answered as
+    # lit below, so a boundary bisecting towards it settles on the edge of
+    # what was measured.
+    nx, ny = inner_x + 2, inner_y + 2
+    dark = np.zeros((nx, ny), dtype=bool)
+    dark[1:-1, 1:-1] = inner_dark
+    points = np.zeros((nx, ny, 3), dtype=np.float64)
+    points[1:-1, 1:-1] = inner_points
+    step_x = inner_points[1, 0, 0] - inner_points[0, 0, 0]
+    step_y = inner_points[0, 1, 1] - inner_points[0, 0, 1]
+    points[0, 1:-1], points[-1, 1:-1] = inner_points[0], inner_points[-1]
+    points[0, 1:-1, 0] -= step_x
+    points[-1, 1:-1, 0] += step_x
+    points[:, 0], points[:, -1] = points[:, 1], points[:, -2]
+    points[:, 0, 1] -= step_y
+    points[:, -1, 1] += step_y
+
+    low = inner_points.reshape(-1, 3).min(axis=0)[:2]
+    high = inner_points.reshape(-1, 3).max(axis=0)[:2]
+    measured = shaded_at
+
+    def within_grid(query: FloatArray) -> BoolArray:
+        """The caller's answer, and lit wherever nothing was measured."""
+        flat = np.asarray(query, dtype=np.float64)
+        within = np.all((flat[:, :2] >= low) & (flat[:, :2] <= high), axis=1)
+        answer = np.zeros(len(flat), dtype=bool)
+        if within.any():
+            answer[within] = measured(flat[within])
+        return answer
 
     corners = (dark[:-1, :-1], dark[1:, :-1], dark[1:, 1:], dark[:-1, 1:])
     code = (
@@ -199,8 +236,8 @@ def refined_rings(
             # outline from a hole.
             segments.append((ends[-1], ends[-2]))
 
-    placed = _crossings(np.array(lower), np.array(upper), shaded_at, tolerance_m)
-    return _chain(segments, placed[:, :2])
+    placed = _crossings(np.array(lower), np.array(upper), within_grid, tolerance_m)
+    return [_straighten(ring, tolerance_m) for ring in _chain(segments, placed[:, :2])]
 
 
 def _chain(segments: list[tuple[int, int]], vertices: FloatArray) -> list[Ring]:
@@ -251,3 +288,138 @@ def signed_area(ring: Ring) -> float:
     for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1], strict=True):
         total += x1 * y2 - x2 * y1
     return total / 2.0
+
+
+def _furthest(chain: list[tuple[float, float]]) -> tuple[int, float]:
+    """The vertex furthest from the chord between the chain's two ends."""
+    first, last = chain[0], chain[-1]
+    run_x, run_y = last[0] - first[0], last[1] - first[1]
+    length = float(np.hypot(run_x, run_y))
+    worst, at = 0.0, 0
+    for index in range(1, len(chain) - 1):
+        x, y = chain[index]
+        away = (
+            abs((x - first[0]) * run_y - (y - first[1]) * run_x) / length
+            if length > 0.0
+            else float(np.hypot(x - first[0], y - first[1]))
+        )
+        if away > worst:
+            worst, at = away, index
+    return at, worst
+
+
+def _simplify(chain: list[tuple[float, float]], tolerance_m: float) -> list[tuple[float, float]]:
+    """Douglas-Peucker: keep the ends, and whatever is too far from the chord.
+
+    Recursive by the book. The greedy version this replaces walked the ring
+    keeping any vertex far enough from the last one it had kept, which makes
+    the answer depend on where the walk began: on a half-plane it found two
+    corners where there were four, decided a polygon could not have two, and
+    gave up -- leaving a hundred and thirty-eight vertices describing four.
+    """
+    if len(chain) < 3:
+        return chain
+    at, worst = _furthest(chain)
+    if worst <= tolerance_m:
+        return [chain[0], chain[-1]]
+    left = _simplify(chain[: at + 1], tolerance_m)
+    right = _simplify(chain[at:], tolerance_m)
+    return left[:-1] + right
+
+
+def _straighten(ring: Ring, tolerance_m: float) -> Ring:
+    """Drop vertices that describe a line their neighbours already describe.
+
+    Marching squares puts a vertex on every cell edge the boundary crosses, so
+    a straight run of forty cells arrives as forty vertices. Archicad is the
+    reason to care -- a contour with thousands of points in it is not a
+    drawing anybody can open -- and so is the file.
+
+    Nothing moves further than the tolerance it was traced to, so the outline
+    stays on the edge it was found on. A curve keeps whatever it needs: a
+    circle stays a circle, because every vertex on it really is off the chord
+    through its neighbours.
+
+    Split at the vertex furthest from the start before simplifying, because a
+    closed ring has no ends and Douglas-Peucker needs two.
+    """
+    if len(ring) < 4:
+        return ring
+    points = list(ring)
+    opposite, _ = _furthest([*points, points[0]])
+    if opposite == 0:
+        return ring
+    first = _simplify(points[: opposite + 1], tolerance_m)
+    second = _simplify([*points[opposite:], points[0]], tolerance_m)
+    joined = first[:-1] + second[:-1]
+    return tuple(joined) if len(joined) >= 3 else ring
+
+
+def _inside(point: tuple[float, float], ring: Ring) -> bool:
+    """Whether a point lies within a ring, by crossing number."""
+    x, y = point
+    within = False
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1], strict=True):
+        if (y1 > y) != (y2 > y):
+            crossing = x1 + (y - y1) / (y2 - y1) * (x2 - x1)
+            if crossing > x:
+                within = not within
+    return within
+
+
+def group_regions(rings: list[Ring]) -> list[tuple[Ring, list[Ring]]]:
+    """Pair each outline with the holes that fall inside it.
+
+    Winding says which is which -- anticlockwise is an outline and clockwise a
+    hole -- so this only has to decide *whose* hole each one is. The smallest
+    containing outline wins, which is what makes a hole inside an island
+    inside a patch belong to the island rather than the patch.
+    """
+    outers = [ring for ring in rings if signed_area(ring) > 0]
+    holes = [ring for ring in rings if signed_area(ring) < 0]
+    grouped: list[tuple[Ring, list[Ring]]] = [(outer, []) for outer in outers]
+    for hole in holes:
+        probe = hole[0]
+        owners = [index for index, (outer, _) in enumerate(grouped) if _inside(probe, outer)]
+        if not owners:
+            continue
+        smallest = min(owners, key=lambda index: abs(signed_area(grouped[index][0])))
+        grouped[smallest][1].append(hole)
+    return grouped
+
+
+def bridged(outer: Ring, holes: list[Ring]) -> Ring:
+    """One contour for an outline and its holes, seamed together.
+
+    ``CreateHatches`` takes a single contour and no holes, and the two ways
+    round that are both bad: fill the hole and claim shade over a sunlit
+    courtyard, or tile the whole patch into rectangles and hand somebody a
+    drawing they cannot edit. This takes the third -- run a seam from the
+    outline to the hole, round the hole, and back along the same seam. The
+    contour is single, closed, and encloses exactly the right area, because
+    the seam is walked twice in opposite directions and contributes nothing.
+
+    The seam joins the nearest pair of vertices, which for a shadow's own
+    courtyards is a short hop across sunlit ground. It is not proof against a
+    pathological shape -- a seam could in principle cross another hole -- so
+    holes are taken in turn, largest first, and each is seamed to the contour
+    as it stands rather than to the original outline.
+    """
+    contour = list(outer)
+    for hole in sorted(holes, key=lambda ring: abs(signed_area(ring)), reverse=True):
+        best = min(
+            (
+                (
+                    (contour[i][0] - hole[j][0]) ** 2 + (contour[i][1] - hole[j][1]) ** 2,
+                    i,
+                    j,
+                )
+                for i in range(len(contour))
+                for j in range(len(hole))
+            ),
+            key=lambda found: found[0],
+        )
+        _, at, from_ = best
+        walk = list(hole[from_:]) + list(hole[:from_])
+        contour = contour[: at + 1] + walk + [walk[0]] + contour[at:]
+    return tuple(contour)
