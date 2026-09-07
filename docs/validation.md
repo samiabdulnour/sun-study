@@ -547,3 +547,42 @@ explained.
 only check that tests the whole chain against something the office already trusts.
 Everything above can pass while the tool still samples the wrong surfaces: the fixture
 proves the code does what it was told, not that it was told the right thing.
+
+
+## Shadow diagrams — the accepted run
+
+The Crows Nest set Sami accepted on 7 September 2026, kept so a later run can
+be compared against it rather than eyeballed. The pipeline is [D78](decisions.md)
+and the command is in [workflow.md](workflow.md#shadow-diagrams).
+
+Project `1960_CROWS NEST2`, 21 June, 1 m grid, datum 91 m, drawn on GROUND
+(storey 6). Seven sources published per view; terrain and the three baselines
+receiving; frame rotated -31.60 deg, checked against 402 elements at 0.15 m.
+3,562 terrain and 702,872 building triangles received; 62% of the grid lies
+past the survey and is drawn nowhere. 29,616 fills, 49 groups, 2 sheets.
+
+| | Exist. neigh. | Future neigh. | Within site | TOD-2 | TOD+20% | SEARS | Proposed |
+|---|---|---|---|---|---|---|---|
+| 9AM | 74,782 | 28,324 | 118 | 1,537 | 1,816 | 1,834 | 1,664 |
+| 10AM | 50,615 | 27,743 | 224 | 2,140 | 2,453 | 2,385 | 2,337 |
+| 11AM | 41,362 | 27,921 | 208 | 2,120 | 2,553 | 2,516 | 2,563 |
+| 12PM | 39,555 | 27,858 | 90 | 2,121 | 2,495 | 2,409 | 2,587 |
+| 1PM | 41,466 | 25,456 | 57 | 2,192 | 2,475 | 2,397 | 2,526 |
+| 2PM | 42,942 | 22,377 | 331 | 2,153 | 2,694 | 2,479 | 2,639 |
+| 3PM | 60,262 | 35,786 | 363 | 1,708 | 2,500 | 1,940 | 2,249 |
+
+Areas in m2, in plan. Baselines add up; scenarios overlap by design.
+
+**Two things these figures still carry**, both in the model rather than the
+tool, and both making the TOD rows read low: `Site context.TOD Buildings` sits
+inside the FUTURE NEIGHBOURING view while also being a scenario, so it is
+tested against itself; and `15 Falcon Street Approved`, 2,767 of the 3,437
+elements in EXISTING NEIGHBOURING, is an approved-but-unbuilt tower counted
+among the existing neighbours, where it dominates the baseline and absorbs the
+site's own shadow. Neither is a defect in the run. Both would move every
+number here.
+
+**What a rerun should reproduce.** Cleaning a duplicate surface out of the
+terrain view moved every figure by 1 to 3 per cent and nothing structurally,
+which is the size of change to expect from tidying geometry. A change of that
+order is the model; an order of magnitude is not.
