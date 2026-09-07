@@ -735,7 +735,17 @@ def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
             # One run above, feeding only into this one: the same piece,
             # bending. Anything else is the shape dividing or joining, and a
             # piece cannot be both sides of that.
-            if len(mine) == 1 and len(children[mine[0]]) == 1:
+            was_left, was_right = (
+                (running[mine[0]][1], running[mine[0]][2]) if len(mine) == 1 else (0.0, 1.0)
+            )
+            # A run can also pinch to nothing at a vertex and open again --
+            # two lobes of shadow touching at a point. It never divides, so
+            # the overlap test sees one run throughout and carries the piece
+            # straight through the pinch, after which the left chain is on the
+            # right and the piece is a bow tie. Two of 615 pieces on the real
+            # project were exactly that. Closed at the pinch instead.
+            pinched = was_right - was_left <= 1e-9 or right_x - left_x <= 1e-9
+            if len(mine) == 1 and len(children[mine[0]]) == 1 and not pinched:
                 span = running[mine[0]][0]
                 carried.add(mine[0])
             else:

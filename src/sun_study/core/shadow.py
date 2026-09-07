@@ -555,7 +555,15 @@ def _traced_regions(
         # than tiled: the pieces follow the traced edges instead of falling
         # back to cell squares, and slicing cannot fail. Two patches of 194
         # took this route and were costing 1,200 fills of the 1,393.
-        drawn.extend(decomposed(outer, holes))
+        pieces = decomposed(outer, holes)
+        # Checked, not assumed. Slicing is meant to produce simple polygons
+        # and a bug in it would otherwise surface as fills that silently never
+        # appeared -- which is how the last three faults in this path were
+        # found. If one is wrong the whole instant goes back to cell edges,
+        # which is always drawable.
+        if any(self_intersects(piece) for piece in pieces):
+            return None
+        drawn.extend(pieces)
     return tuple(drawn)
 
 

@@ -368,3 +368,20 @@ def test_a_piece_that_closes_to_a_point_is_a_triangle() -> None:
 
     for piece in pieces:
         assert len(piece) == len({(round(x, 9), round(y, 9)) for x, y in piece})
+
+
+def test_a_run_that_pinches_to_a_point_is_two_pieces() -> None:
+    """Two lobes of shadow touching at a point. The run never divides, so
+    matching by overlap sees one run throughout and carries the piece straight
+    through the pinch -- after which the left chain is on the right and the
+    piece is a bow tie. Two of 615 pieces on the real project were exactly
+    that, and Archicad refuses a bow tie."""
+    from sun_study.core.edges import decomposed, self_intersects
+
+    hourglass = ((0.0, 0.0), (10.0, 0.0), (5.0, 5.0), (10.0, 10.0), (0.0, 10.0), (5.0, 5.0))
+
+    pieces = decomposed(hourglass, [])
+
+    assert len(pieces) == 2, "one lobe each side of the waist"
+    assert not any(self_intersects(piece) for piece in pieces)
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(50.0)
