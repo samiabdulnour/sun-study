@@ -81,6 +81,11 @@ SEAM_WIDTH_M = 0.001
 #: crosses and a longer one does not.
 SEAM_ATTEMPTS = 24
 
+#: Thinner than this and a polygon is a line as far as Archicad is concerned,
+#: whatever its area works out to. Ten microns: two thousandths of a
+#: millimetre on a 1:500 sheet, and an area no drawing depends on.
+MINIMUM_THICKNESS_M = 1e-5
+
 #: Marching squares, as segments between edge crossings. The key is the four
 #: corners read anticlockwise from the lower left; the value is the pairs of
 #: *edges* a segment runs between, edges numbered 0 south, 1 east, 2 north,
@@ -692,6 +697,23 @@ def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
         )
         if shape is not None:
             pieces.append(shape)
-    # A slab can close to a point at a vertex, which is a polygon of no area
-    # and nothing to draw.
-    return [piece for piece in pieces if abs(signed_area(piece)) > 1e-9]
+    # Thickness, not area. A slab can close to a point at a vertex, and a
+    # trapezoid can come out fifty metres long and a ten-millionth wide, whose
+    # area is comfortably above any sensible floor while its vertices all sit
+    # on one line to within a ten-millionth. Archicad refuses that -- asked
+    # directly, it takes a triangle of a millionth of a square metre and a
+    # fifty-metre sliver a hundredth of a millimetre wide, and refuses three
+    # collinear points -- so what has to be measured is how far the shape
+    # departs from a line, which is twice its area over its perimeter.
+    return [piece for piece in pieces if _thickness(piece) > MINIMUM_THICKNESS_M]
+
+
+def _thickness(ring: Ring) -> float:
+    """How far a ring departs from being a line: twice its area over its edge."""
+    perimeter = sum(
+        float(np.hypot(b[0] - a[0], b[1] - a[1]))
+        for a, b in zip(ring, [*ring[1:], ring[0]], strict=True)
+    )
+    if perimeter <= 0.0:
+        return 0.0
+    return 2.0 * abs(signed_area(ring)) / perimeter

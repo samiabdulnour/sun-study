@@ -284,3 +284,29 @@ def test_a_patch_with_no_holes_slices_to_itself() -> None:
 
     assert len(pieces) == 1
     assert abs(signed_area(pieces[0])) == pytest.approx(100.0)
+
+
+def test_a_slice_that_is_really_a_line_is_dropped() -> None:
+    """Archicad refuses a collinear polygon and takes a very small one, so the
+    thing to measure is not area but how far the shape departs from a line.
+    Fifty metres by a ten-millionth has an area well above any sensible floor
+    and is a line."""
+    from sun_study.core.edges import decomposed
+
+    # A square with a hole whose edge grazes the outline, so a slab comes out
+    # as good as flat.
+    square = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
+    hole = ((1.0, 1.0), (1.0, 9.0), (9.0, 9.0), (9.0, 1.0 + 1e-9))
+
+    pieces = decomposed(square, [hole])
+
+    assert all(
+        2.0
+        * abs(signed_area(piece))
+        / sum(
+            float(np.hypot(b[0] - a[0], b[1] - a[1]))
+            for a, b in zip(piece, [*piece[1:], piece[0]], strict=True)
+        )
+        > 1e-5
+        for piece in pieces
+    )
