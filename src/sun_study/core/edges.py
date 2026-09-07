@@ -50,13 +50,26 @@ FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
 Ring = tuple[tuple[float, float], ...]
 
-__all__ = ["DEFAULT_TOLERANCE_M", "refined_rings"]
+__all__ = [
+    "DEFAULT_TOLERANCE_M",
+    "SEAM_WIDTH_M",
+    "bridged",
+    "group_regions",
+    "refined_rings",
+    "signed_area",
+]
 
 #: How close a traced vertex is brought to the true edge. A millimetre is far
 #: below what any sheet resolves -- 1:500 makes it two thousandths of a
 #: millimetre on paper -- and each halving is one more ray, so ten of them take
 #: a one metre cell to under a millimetre. Cheap enough not to economise.
 DEFAULT_TOLERANCE_M = 0.001
+
+#: How wide the seam joining a hole to its outline is opened. Zero is the
+#: exact answer and the one Archicad refuses: a contour that touches itself is
+#: not a simple polygon, whatever its area comes to. A millimetre is below
+#: what any sheet resolves and costs the seam's length times a millimetre.
+SEAM_WIDTH_M = 0.001
 
 #: Marching squares, as segments between edge crossings. The key is the four
 #: corners read anticlockwise from the lower left; the value is the pairs of
@@ -420,6 +433,24 @@ def bridged(outer: Ring, holes: list[Ring]) -> Ring:
             key=lambda found: found[0],
         )
         _, at, from_ = best
-        walk = list(hole[from_:]) + list(hole[:from_])
-        contour = contour[: at + 1] + walk + [walk[0]] + contour[at:]
+        walk = [*hole[from_:], *hole[:from_]]
+        # The return leg is offset by a hair, so the seam is a sliver rather
+        # than a line walked twice. Archicad refuses the zero-width version --
+        # measured on Crows Nest, 26 of 194 fills rejected with "Failed to
+        # create new Hatch" -- because a contour that touches itself is not a
+        # simple polygon, whatever its area comes to. A millimetre makes it
+        # simple, and costs the seam's length times a millimetre, which on a
+        # shadow is square centimetres.
+        seam = (walk[0][0] - contour[at][0], walk[0][1] - contour[at][1])
+        length = float(np.hypot(*seam))
+        if length <= 0.0:
+            continue
+        aside = (-seam[1] / length * SEAM_WIDTH_M, seam[0] / length * SEAM_WIDTH_M)
+        contour = [
+            *contour[: at + 1],
+            *walk,
+            (walk[0][0] + aside[0], walk[0][1] + aside[1]),
+            (contour[at][0] + aside[0], contour[at][1] + aside[1]),
+            *contour[at + 1 :],
+        ]
     return tuple(contour)

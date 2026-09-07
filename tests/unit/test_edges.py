@@ -154,3 +154,37 @@ def test_a_diagonal_edge_is_where_refining_earns_its_keep() -> None:
     span = float(LATTICE - 1)
     exact = 0.6 * span**2 / 2.0 + 3.7 * span
     assert signed_area(rings[0]) == pytest.approx(exact, rel=0.002)
+
+
+def test_a_seamed_hole_is_a_simple_polygon() -> None:
+    """CreateHatches takes one contour and no holes, so a hole is seamed out
+    to the outline and back. Walking the same line twice gives exactly the
+    right area and a contour that touches itself, which Archicad refuses --
+    measured, 26 of 194 fills rejected. The return leg is offset by a
+    millimetre so the seam is a sliver, which is simple, and costs the seam's
+    length times a millimetre."""
+    from sun_study.core.edges import bridged, group_regions
+
+    middle = np.array([20.0, 20.0])
+
+    def annulus(points: np.ndarray) -> np.ndarray:
+        radius = np.linalg.norm(np.asarray(points)[:, :2] - middle, axis=1)
+        return (radius <= 14.0) & (radius >= 6.0)
+
+    outer, holes = group_regions(traced(annulus))[0]
+    assert holes, "an annulus has one"
+
+    seamed = bridged(outer, holes)
+
+    assert len(seamed) == len(set(seamed)), "no vertex is visited twice"
+    assert signed_area(seamed) == pytest.approx(float(np.pi * (14.0**2 - 6.0**2)), rel=0.002)
+
+
+def test_a_patch_with_no_holes_is_left_exactly_as_traced() -> None:
+    """Seaming is for holes. A solid patch must not acquire a sliver."""
+    from sun_study.core.edges import bridged, group_regions
+
+    outer, holes = group_regions(traced(disc((20.0, 20.0), 12.3)))[0]
+
+    assert holes == []
+    assert bridged(outer, holes) == outer
