@@ -2299,3 +2299,72 @@ so a run reproduces the sheet the office already draws rather than approximating
 it. A seventh source in either role cycles back to the lightest step, which is
 visibly wrong on the sheet on purpose: the answer there is to pass a colour, not
 to have the tool invent one.
+
+
+### D78 — A shadow lands on what is standing, and a saved view says what stands
+
+Settled on Crows Nest against a real SSDA set, after four wrong answers that
+each looked plausible on the sheet. The pipeline below is the one that
+reproduces the drawing; every step of it exists because the step before it
+was not enough.
+
+**The legend comes from saved views, not from layers.** The eight SHADOW
+ANALYSIS views carry four renovation filters between them, so two scenarios
+can sit on identical layers and differ only by renovation status — a
+layer-derived rule merges them silently and the sheet then compares a massing
+with itself. Archicad knows the answer and cannot be asked directly:
+`ChangeWindow` takes a navigator item only from Archicad 27, and this is 26.
+Publisher can, and applies each view's whole state when it writes it out. So
+a Publisher Set of per-view IFCs is the input, one file to a legend row.
+
+**The receiving surface is the terrain and everything standing on it.** This
+was the last thing wrong and the one that mattered most. Received on terrain
+alone, a shadow reaching a thirty-metre neighbour was drawn as though it
+carried on to the ground *underneath* that neighbour — tens of metres too far
+in plan, on a site ringed by buildings, in one direction only. Measured: the
+existing-neighbour row fell 32% at 9am and 54% at 11am once roofs caught what
+they actually catch.
+
+It also cured a symptom misdiagnosed twice. All four scenarios had returned
+identical areas at 9am through every run, blamed first on duplicate published
+files and then on stray elements shared between the views. Neither was it: with
+shadows carrying under buildings the baseline swallowed whatever each massing
+did and left the same residual for all of them. On the real receiving surface
+they separate at every hour.
+
+One surface for the whole run, built from the terrain and every baseline,
+rather than one per source. Per source is truer — a scenario's own roof
+catches its own shadow — but each source is differenced against the ones
+before it, and two masks measured on surfaces at different heights cannot be
+subtracted from one another: the fills would stop tiling and the areas would
+stop adding. The baselines stand in every scenario anyway.
+
+**Terrain is a receiver and never an occluder**, claimed before any legend row
+sees it. Handed in among the sources it puts every sample below the hill in
+permanent shade and prints a solid grey sheet — measured at 81% of the plane.
+
+**Ground the survey does not reach is drawn nowhere.** Off-survey samples sit
+on a fallback datum abutting real terrain tens of metres away in height, and a
+shadow crossing that step is an artefact of the seam.
+
+**The frame is derived from the two norths, and geometry only checks it.**
+Both frames state where north is — Archicad through its georeferencing, the
+export through `IfcSite` — and the angle between those answers is the angle
+between the frames, exactly. Fitting it from matched geometry instead gave
+-33.12, then +0.00, then -32.37 degrees across three attempts while the true
+answer, -31.60, never moved: the pairs are an element's plan centre against
+its *bounding box* centre, and a box is axis-aligned in whichever frame it is
+measured. They are good enough to check on, not to fit on.
+
+**What the drawing looks like is the project's to say.** `CreateHatches` has a
+contour pen and no switch to turn one off, and its background pen decides
+whether a fill is opaque — and a shadow diagram is read *through*. Both are
+left off the request when a Fill Favorite is named, so the Favorite's own
+answer survives along with its fill type. The fill pen stays the tool's, since
+it is what separates one legend row from the next.
+
+**What was checked rather than assumed.** A 50 m cube on flat ground casts
+12,700 m2 at 9am against 12,787 predicted, 6,300 at noon against 6,386, and
+13,200 at 3pm against 13,282. Solar noon elevation comes out 32.75 degrees
+where Sydney's winter solstice is 32.73. The shadows are long because at 9am
+on 21 June the sun is 19 degrees up and a shadow runs 2.9 times the height.

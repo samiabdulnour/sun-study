@@ -268,6 +268,57 @@ stale, and a stale number looks exactly like a current one.
 
 ---
 
+## Shadow diagrams
+
+A different study from the one above, sharing the export machinery and almost
+nothing else. Settled against a real SSDA set on Crows Nest; see
+[D78](decisions.md) for why each step is there.
+
+**Once per project.** Make a view per legend row under one folder — the legend
+is whatever the argument needs, six rows on one job and two on another — plus
+one for the terrain. Put them in a Publisher Set publishing **IFC** to a
+folder. Views rather than layers because a view carries its renovation filter,
+and two scenarios can share layers and differ only by that.
+
+Make a Fill Favorite with the contour off and the fill type you want. A
+contour-less fill cannot be reached any other way.
+
+**Every run.**
+
+```
+sun-study shadows --port 19723   --shadow-from-views <folder the Publisher Set wrote>   --shadow-date 06-21 --shadow-hour 9,10,11,12,13,14,15   --shadow-grid 1 --shadow-datum 91 --shadow-storey 6   --shadow-favourite "<your Fill Favorite>"   --shadow-terrain  "TERAIN"   --shadow-source   "EXISTING NEIGHBOURING BUILDINGS"   --shadow-source   "FUTURE NEIGHBOURING BUILDINGS"   --shadow-source   "EXISTING STRUCTURES WITHIN THE SITE"   --shadow-scenario "TOD - scenario 2"   --shadow-scenario "TOD + 20% - scenario 3"   --shadow-scenario "SEARS - scenario 5"   --shadow-scenario "Proposed"   --draw --sheet
+```
+
+Publish the set first; the run reads what Publisher wrote and does not export.
+About twenty minutes to publish, seven to run.
+
+`--shadow-source` is something that will be there and accumulates.
+`--shadow-scenario` is something that might be, cast against every source and
+against no other scenario, so two of them overlap — which is the comparison.
+`--shadow-datum` is where ground is taken to be beyond the survey, and
+`--shadow-storey` is the storey the fills are drawn on, which is the site plan
+rather than a datum storey: on this project storey 0 is `AHD` and GROUND is 6.
+
+**Three lines of the output are worth reading every time.**
+
+*`draped onto N terrain and M building triangles; X% ... left undrawn`* — the
+share of the grid with no survey under it, which is drawn nowhere. A large
+share is not an error, but it is how much of the sheet is missing.
+
+*`drawing frame: rotated ... checked against N elements (typical miss ...)`* —
+under a metre is bounding-box noise. A warning here means the fills are not on
+the model, and nothing about the sheet will show it.
+
+*`N solid(s) match no --shadow-source ... and cast nothing`* — listed by layer.
+Interior fabric belongs in that list; a *context* layer in it is a legend row
+that will be missing from the sheet.
+
+**What will still be wrong, and only the model can fix it.** A massing that is
+both future context and a scenario is tested against itself and reads as
+nothing. An approved-but-unbuilt tower counted among the existing neighbours
+dominates the baseline and absorbs the site's own shadow. Both are a view
+showing more than its name says.
+
 ## What this still needs
 
 Honest status, so nobody plans around something that does not exist.
