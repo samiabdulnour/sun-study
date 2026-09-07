@@ -11,7 +11,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from sun_study.core.patches import CellRegion, Rectangle, merge_lit_cells, trace_lit_regions
+from sun_study.core.patches import (
+    CellRegion,
+    Rectangle,
+    drawable_contours,
+    merge_lit_cells,
+    trace_lit_regions,
+)
 
 SPACING = 0.25
 
@@ -451,3 +457,51 @@ def test_a_nonsense_spacing_is_refused_by_the_trace() -> None:
 def test_mismatched_lengths_are_refused_by_the_trace() -> None:
     with pytest.raises(ValueError, match="positions but"):
         trace_lit_regions(grid(2, 2), np.ones(3, dtype=bool), SPACING)
+
+
+def test_a_solid_patch_inside_a_holed_ones_box_is_drawn_once() -> None:
+    """The overlap bug, in the smallest shape that shows it.
+
+    A ring doughnut with a hole must fall back to tiled rectangles, because
+    CreateHatches takes one contour and no holes. A separate solid patch that
+    happens to sit inside the doughnut's *bounding box* -- in its hole, here --
+    is its own region and belongs as one outline. Selecting the holed cells by
+    bounding box swept that patch up too, so it was drawn twice: once as an
+    outline and again as rectangles. Two fills, one Element ID, and a schedule
+    totalling by ID counted the ground twice.
+    """
+    spacing = 1.0
+    xs, ys = np.meshgrid(np.arange(9.0), np.arange(9.0), indexing="ij")
+    positions = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)])
+
+    ring = (
+        (positions[:, 0] >= 1)
+        & (positions[:, 0] <= 7)
+        & (positions[:, 1] >= 1)
+        & (positions[:, 1] <= 7)
+    )
+    hole = (
+        (positions[:, 0] >= 2)
+        & (positions[:, 0] <= 6)
+        & (positions[:, 1] >= 2)
+        & (positions[:, 1] <= 6)
+    )
+    island = (positions[:, 0] == 4) & (positions[:, 1] == 4)
+    lit = (ring & ~hole) | island
+
+    regions = trace_lit_regions(positions, lit, spacing)
+    assert len(regions) == 2, "the ring and the island"
+    assert any(r.holes for r in regions) and any(not r.holes for r in regions)
+
+    shapes = drawable_contours(positions, lit, spacing)
+
+    # Every lit cell covered exactly once: the drawn area equals the lit area.
+    drawn = sum(abs(_shoelace(shape)) for shape in shapes)
+    assert drawn == pytest.approx(int(lit.sum()) * spacing * spacing)
+
+
+def _shoelace(ring: tuple[tuple[float, float], ...]) -> float:
+    total = 0.0
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1], strict=True):
+        total += x1 * y2 - x2 * y1
+    return total / 2.0

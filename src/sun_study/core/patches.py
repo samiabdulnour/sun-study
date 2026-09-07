@@ -56,7 +56,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import numpy.typing as npt
@@ -232,6 +232,17 @@ class CellRegion:
     outer: tuple[tuple[float, float], ...]
     holes: tuple[tuple[tuple[float, float], ...], ...]
 
+    cells: tuple[int, ...] = field(default=(), compare=False, repr=False)
+    """Indices into the caller's ``positions`` of the cells this region owns.
+
+    Carried because the alternative is guessing. A caller that needs to know
+    which samples belong to a region can otherwise only test them against the
+    outline, and the cheap version of that test -- the ring's bounding box --
+    quietly claims every cell of every *other* region that happens to sit
+    inside it. That is what produced overlapping fills sharing one Element ID,
+    and a schedule totalling by ID counted the overlap twice.
+    """
+
 
 def trace_lit_regions(
     positions: FloatArray, lit: BoolArray, spacing_m: float
@@ -284,6 +295,13 @@ def trace_lit_regions(
     columns = np.rint((chosen[:, 0] - origin[0]) / spacing_m).astype(np.int64)
     rows = np.rint((chosen[:, 1] - origin[1]) / spacing_m).astype(np.int64)
     cells: set[_Cell] = {(int(column), int(row)) for column, row in zip(columns, rows, strict=True)}
+    # Which of the caller's samples sits in each cell, so a region can say
+    # which ones are its own rather than leaving a caller to infer it.
+    owners: dict[_Cell, list[int]] = {}
+    for index, column, row in zip(
+        np.flatnonzero(np.asarray(lit, dtype=bool)), columns, rows, strict=True
+    ):
+        owners.setdefault((int(column), int(row)), []).append(int(index))
 
     def place(ring: list[_Vertex]) -> tuple[tuple[float, float], ...]:
         """Lattice vertices to metres, half a cell out from the lattice of centres."""
@@ -302,7 +320,13 @@ def trace_lit_regions(
         # outside -- and every other ring it produces encloses dark cells.
         outer = next(ring for ring in rings if _twice_signed_area(ring) > 0)
         holes = [ring for ring in rings if _twice_signed_area(ring) < 0]
-        regions.append(CellRegion(place(outer), tuple(sorted(place(hole) for hole in holes))))
+        regions.append(
+            CellRegion(
+                place(outer),
+                tuple(sorted(place(hole) for hole in holes)),
+                tuple(sorted(index for cell in component for index in owners.get(cell, ()))),
+            )
+        )
 
     return tuple(sorted(regions, key=lambda region: region.outer))
 
@@ -339,20 +363,16 @@ def drawable_contours(positions: FloatArray, lit: BoolArray, spacing_m: float) -
         return [rectangle.corners for rectangle in merge_lit_cells(positions, lit, spacing_m)]
 
     # Mixed: the solid patches as outlines, the holed ones as rectangles.
+    #
+    # By membership, not by bounding box. A ring's box covers everything
+    # around a patch as well as the patch, so a hole-free region sitting
+    # inside a holed one's box was tiled *as well as* outlined -- the same
+    # ground drawn twice, as two fills carrying one Element ID, and counted
+    # twice by any schedule that totals on it.
     holed = np.zeros(len(positions), dtype=bool)
-    flat = np.asarray(positions, dtype=np.float64)[:, :2]
     for region in regions:
-        if not region.holes:
-            continue
-        xs = [x for x, _ in region.outer]
-        ys = [y for _, y in region.outer]
-        inside = (
-            (flat[:, 0] >= min(xs))
-            & (flat[:, 0] <= max(xs))
-            & (flat[:, 1] >= min(ys))
-            & (flat[:, 1] <= max(ys))
-        )
-        holed |= inside & np.asarray(lit, dtype=bool)
+        if region.holes and region.cells:
+            holed[list(region.cells)] = True
     if holed.any():
         shapes.extend(
             rectangle.corners for rectangle in merge_lit_cells(positions, holed, spacing_m)
