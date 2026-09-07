@@ -73,6 +73,12 @@ DEFAULT_TOLERANCE_M = 0.001
 #: what any sheet resolves and costs the seam's length times a millimetre.
 SEAM_WIDTH_M = 0.001
 
+#: How many cuts are tried before a patch is given up as undrawable in one
+#: contour. Nearest first, so the first is almost always taken; the rest are
+#: for a hole tucked behind a finger of the outline, where the short cut
+#: crosses and a longer one does not.
+SEAM_ATTEMPTS = 24
+
 #: Marching squares, as segments between edge crossings. The key is the four
 #: corners read anticlockwise from the lower left; the value is the pairs of
 #: *edges* a segment runs between, edges numbered 0 south, 1 east, 2 north,
@@ -475,56 +481,52 @@ def bridged(outer: Ring, holes: list[Ring]) -> Ring | None:
     """
     contour = list(outer)
     for hole in sorted(holes, key=lambda ring: abs(signed_area(ring)), reverse=True):
-        best = min(
+        # Candidate cuts, nearest first. Only the nearest was tried at first,
+        # and where that one cut was blocked the whole patch fell back to
+        # cell edges -- on the real project that was half the drawing. A cut
+        # that has to reach past an obstacle is a longer cut, not an
+        # impossible one, so a handful of alternatives is offered before
+        # giving up.
+        pairs = sorted(
             (
-                (
-                    (contour[i][0] - hole[j][0]) ** 2 + (contour[i][1] - hole[j][1]) ** 2,
-                    i,
-                    j,
-                )
-                for i in range(len(contour))
-                for j in range(len(hole))
-            ),
-            key=lambda found: found[0],
-        )
-        _, at, from_ = best
-        walk = [*hole[from_:], *hole[:from_]]
-        # The return leg is offset by a hair, so the seam is a sliver rather
-        # than a line walked twice. Archicad refuses the zero-width version --
-        # measured on Crows Nest, 26 of 194 fills rejected with "Failed to
-        # create new Hatch" -- because a contour that touches itself is not a
-        # simple polygon, whatever its area comes to. A millimetre makes it
-        # simple, and costs the seam's length times a millimetre, which on a
-        # shadow is square centimetres.
-        seam = (walk[0][0] - contour[at][0], walk[0][1] - contour[at][1])
-        length = float(np.hypot(*seam))
-        if length <= 0.0:
-            continue
-        # Which side the sliver opens on is not free: the wrong one sends the
-        # return leg back across the outgoing one, and Archicad refuses a
-        # contour that crosses itself. Rather than reason about the winding at
-        # the junction, both are built and the one that does not cross is
-        # kept -- the test is cheap at these sizes and it cannot be wrong.
-        candidates = []
-        for sign in (1.0, -1.0):
-            aside = (
-                -seam[1] / length * SEAM_WIDTH_M * sign,
-                seam[0] / length * SEAM_WIDTH_M * sign,
+                (contour[i][0] - hole[j][0]) ** 2 + (contour[i][1] - hole[j][1]) ** 2,
+                i,
+                j,
             )
-            candidates.append(
-                [
+            for i in range(len(contour))
+            for j in range(len(hole))
+        )
+        joined: list[tuple[float, float]] | None = None
+        for _, at, from_ in pairs[:SEAM_ATTEMPTS]:
+            walk = [*hole[from_:], *hole[:from_]]
+            seam = (walk[0][0] - contour[at][0], walk[0][1] - contour[at][1])
+            length = float(np.hypot(*seam))
+            if length <= 0.0:
+                continue
+            # Which side the sliver opens on is not free: the wrong one sends
+            # the return leg back across the outgoing one, and Archicad
+            # refuses a contour that crosses itself. Both are built and the
+            # one that does not cross is kept.
+            for sign in (1.0, -1.0):
+                aside = (
+                    -seam[1] / length * SEAM_WIDTH_M * sign,
+                    seam[0] / length * SEAM_WIDTH_M * sign,
+                )
+                option = [
                     *contour[: at + 1],
                     *walk,
                     (walk[0][0] + aside[0], walk[0][1] + aside[1]),
                     (contour[at][0] + aside[0], contour[at][1] + aside[1]),
                     *contour[at + 1 :],
                 ]
-            )
-        clean = [option for option in candidates if not self_intersects(tuple(option))]
-        if not clean:
-            # Neither side works, which means the seam crosses something else
-            # -- another hole, or a finger of the outline. Refused rather than
-            # drawn, so the caller can fall back to a shape that is valid.
+                if not self_intersects(tuple(option)):
+                    joined = option
+                    break
+            if joined is not None:
+                break
+        if joined is None:
+            # No cut reaches this hole without crossing something. Refused
+            # rather than drawn, so the caller can tile this patch instead.
             return None
-        contour = clean[0]
+        contour = joined
     return tuple(contour)
