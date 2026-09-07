@@ -310,3 +310,61 @@ def test_a_slice_that_is_really_a_line_is_dropped() -> None:
         > 1e-5
         for piece in pieces
     )
+
+
+def test_a_piece_ends_where_the_shape_divides_not_where_a_vertex_falls() -> None:
+    """What makes the count small. Closing a piece at every vertex height is
+    the easier thing to write and makes the count follow how many vertices the
+    outline happens to have: a ring of 400 points came to 624 pieces. A piece
+    should end only where the shape genuinely divides or joins, which for a
+    ring is twice."""
+    from sun_study.core.edges import decomposed
+
+    turn = np.linspace(0, 2 * np.pi, 400, endpoint=False)
+    outer = tuple((float(30 * np.cos(a)), float(30 * np.sin(a))) for a in turn)
+    hole = tuple((float(6 * np.cos(-a)), float(6 * np.sin(-a))) for a in turn)
+
+    pieces = decomposed(outer, [hole])
+
+    assert len(pieces) < 150, f"{len(pieces)} pieces for one courtyard"
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(
+        signed_area(outer) + signed_area(hole), rel=1e-9
+    )
+
+
+def test_stacked_courtyards_divide_and_rejoin_without_losing_area() -> None:
+    """Three holes one above another, so the sweep splits and rejoins six
+    times. The case where carrying a piece across a division would quietly
+    lose or double a slab."""
+    from sun_study.core.edges import decomposed, self_intersects
+
+    turn = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    outer = tuple((float(9 * np.cos(a)), float(9 * np.sin(a))) for a in turn)
+    holes = [
+        tuple((float(1.2 * np.cos(-a)), float(1.2 * np.sin(-a) + shift)) for a in turn)
+        for shift in (-5.0, 0.0, 5.0)
+    ]
+
+    pieces = decomposed(outer, holes)
+
+    assert not any(self_intersects(piece) for piece in pieces)
+    assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(
+        signed_area(outer) + sum(signed_area(hole) for hole in holes), rel=1e-9
+    )
+
+
+def test_a_piece_that_closes_to_a_point_is_a_triangle() -> None:
+    """Where a piece narrows to nothing the two chains meet at one vertex,
+    each arriving along a different edge, so their answers agree to about a
+    part in 10^16 and not to the bit. Kept as two points that is a ring with a
+    zero-length side, which is degenerate and refused."""
+    from sun_study.core.edges import decomposed
+
+    turn = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    outer = tuple((float(9 * np.cos(a)), float(9 * np.sin(a))) for a in turn)
+    hole = tuple((float(4 * np.cos(-a)), float(4 * np.sin(-a))) for a in turn)
+
+    pieces = decomposed(outer, [hole])
+
+    for piece in pieces:
+        assert len(piece) == len({(round(x, 9), round(y, 9)) for x, y in piece})

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
@@ -609,28 +610,87 @@ def _crossing_x(edge: tuple[tuple[float, float], tuple[float, float]], y: float)
     return x1 + (y - y1) / (y2 - y1) * (x2 - x1)
 
 
+@dataclass
+class _Span:
+    """One run of interior between two edges, growing as the sweep descends.
+
+    A span keeps the two chains of points that bound it rather than a single
+    trapezoid, so a vertex that merely bends one side is a point appended to
+    that side and not a reason to close the piece off. That is the whole
+    difference between this and slicing at every vertex: the same patch that
+    came to two thousand trapezoids comes to a handful of pieces, because a
+    piece only ends where the shape genuinely divides or joins.
+    """
+
+    left: list[tuple[float, float]]
+    right: list[tuple[float, float]]
+
+    def extend(self, left_x: float, right_x: float, y: float) -> None:
+        """Carry both chains down to ``y``, keeping only points that turn."""
+        for chain, x in ((self.left, left_x), (self.right, right_x)):
+            if not chain or abs(chain[-1][0] - x) > 1e-12 or abs(chain[-1][1] - y) > 1e-12:
+                chain.append((x, y))
+
+    def closed(self) -> Ring:
+        """The piece, as one ring: down the left side and back up the right."""
+
+        def same(a: tuple[float, float], b: tuple[float, float]) -> bool:
+            # To a tolerance, not exactly. Where a piece closes to a point the
+            # two chains arrive at that vertex along different edges, so their
+            # answers agree to about a part in 10^16 and not to the bit.
+            # Compared exactly the point is kept twice, which makes a triangle
+            # into a four-sided ring with a zero-length side -- degenerate,
+            # and the one thing Archicad refuses outright.
+            return abs(a[0] - b[0]) <= 1e-9 and abs(a[1] - b[1]) <= 1e-9
+
+        tidy: list[tuple[float, float]] = []
+        for point in (*self.left, *reversed(self.right)):
+            if not tidy or not same(point, tidy[-1]):
+                tidy.append(point)
+        while len(tidy) > 1 and same(tidy[0], tidy[-1]):
+            tidy.pop()
+        return tuple(tidy)
+
+
+def _spans_at(
+    edges: list[tuple[tuple[float, float], tuple[float, float]]], height: float
+) -> list[tuple[int, int]]:
+    """The pairs of edges bounding interior, left to right, at one height.
+
+    Inside on every other crossing, which holds whichever way round the rings
+    are wound -- and a hole is wound the other way from its outline.
+    """
+    crossing = sorted(
+        (_crossing_x(edge, height), index)
+        for index, edge in enumerate(edges)
+        if min(edge[0][1], edge[1][1]) <= height <= max(edge[0][1], edge[1][1])
+    )
+    return [(crossing[at][1], crossing[at + 1][1]) for at in range(0, len(crossing) - 1, 2)]
+
+
 def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
     """Cut a patch with holes into pieces that have none.
 
     The other answer to a fill that takes one contour and no holes, and the
     one that cannot fail. Seaming asks whether a cut exists from the outline
     to every hole without crossing anything, and on a shadow with several
-    courtyards sometimes none does. Slicing asks nothing: sweep a horizontal
-    line down the patch, stop at every height where a vertex sits, and between
-    two consecutive stops the shape is a row of trapezoids with straight
-    sides. Each is a simple polygon. Together they tile the patch exactly.
+    courtyards sometimes none does. This asks nothing.
 
-    They also tile it along the *traced* edges, which is the point. The
-    fallback this replaces went all the way back to cell squares, so a patch
-    that could not be seamed lost not just its single contour but its accuracy
-    -- and because the patches that cannot be seamed are the big ones, that
-    was most of the drawing: two patches of 194 accounted for 1,200 of 1,393
-    fills.
+    A horizontal line sweeps down the patch. Between two heights the interior
+    is a set of spans, each bounded left and right by one edge. A span is
+    carried down as far as it goes, growing a chain of points on each side, and
+    is closed only where the shape genuinely divides or joins -- where one span
+    becomes two around the top of a courtyard, or two become one below it. A
+    vertex that merely bends one side is a point on that side.
 
-    Spans are carried down from one slab to the next while they keep the same
-    pair of edges, so a straight-sided run of twenty slabs is one trapezoid
-    rather than twenty. Without that the count is dominated by how many
-    vertices the outline happens to have.
+    That is what makes the piece count small. Closing at every vertex height
+    instead, which is the easier thing to write, gave two thousand trapezoids
+    on a patch this gives a dozen pieces for: the count followed how many
+    vertices the outline happened to have rather than how many courtyards it
+    had.
+
+    Pieces come back y-monotone, tiling the patch exactly, each a simple
+    polygon in its own right.
     """
     rings = [outer, *holes]
     edges = [
@@ -641,71 +701,77 @@ def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
     ]
     if not edges:
         return []
-    heights = sorted({y for ring in rings for _, y in ring})
+    heights = sorted({y for ring in rings for _, y in ring}, reverse=True)
 
     pieces: list[Ring] = []
-    #: Spans still open, keyed by the pair of edges bounding them, each
-    #: carrying the height it started at and the two x it started from.
-    running: dict[tuple[int, int], tuple[float, float, float]] = {}
-    for lower, upper in itertools.pairwise(heights):
+    #: Spans still open, each with the x it currently reaches at the height
+    #: the sweep has got to.
+    running: list[tuple[_Span, float, float]] = []
+    for upper, lower in itertools.pairwise(heights):
         if upper <= lower:
             continue
-        middle = (lower + upper) / 2.0
-        crossing = sorted(
-            (
-                (_crossing_x(edge, middle), index)
-                for index, edge in enumerate(edges)
-                if min(edge[0][1], edge[1][1]) <= middle <= max(edge[0][1], edge[1][1])
-            ),
-            key=lambda found: found[0],
-        )
-        # Inside on every other span, which holds whichever way round the
-        # rings are wound -- and holes are wound the other way from outlines.
-        spans = {(crossing[at][1], crossing[at + 1][1]) for at in range(0, len(crossing) - 1, 2)}
-        for key in list(running):
-            if key not in spans:
-                started, left_at, right_at = running.pop(key)
-                left, right = edges[key[0]], edges[key[1]]
-                shape = _piece(
-                    [
-                        (left_at, started),
-                        (right_at, started),
-                        (_crossing_x(right, lower), lower),
-                        (_crossing_x(left, lower), lower),
-                    ]
-                )
-                if shape is not None:
-                    pieces.append(shape)
-        for key in spans:
-            if key not in running:
-                running[key] = (
-                    lower,
+        here = [
+            (key, _crossing_x(edges[key[0]], upper), _crossing_x(edges[key[1]], upper))
+            for key in _spans_at(edges, (upper + lower) / 2.0)
+        ]
+
+        # Match by overlap, not by which edges bound them. An edge ending is a
+        # vertex, and a vertex happens constantly; what matters is whether the
+        # run of interior above continues into the run below. Keying on the
+        # edge pair instead closed a piece at every vertex, which is how a
+        # ring of 400 points came to 624 pieces rather than two.
+        parents: dict[int, list[int]] = {index: [] for index in range(len(here))}
+        children: dict[int, list[int]] = {index: [] for index in range(len(running))}
+        for below, (_, left_x, right_x) in enumerate(here):
+            for above, (_, was_left, was_right) in enumerate(running):
+                if min(right_x, was_right) - max(left_x, was_left) > 1e-9:
+                    parents[below].append(above)
+                    children[above].append(below)
+
+        carried: set[int] = set()
+        opened: list[tuple[_Span, float, float]] = []
+        for below, (key, left_x, right_x) in enumerate(here):
+            mine = parents[below]
+            # One run above, feeding only into this one: the same piece,
+            # bending. Anything else is the shape dividing or joining, and a
+            # piece cannot be both sides of that.
+            if len(mine) == 1 and len(children[mine[0]]) == 1:
+                span = running[mine[0]][0]
+                carried.add(mine[0])
+            else:
+                span = _Span([], [])
+            span.extend(left_x, right_x, upper)
+            opened.append(
+                (
+                    span,
                     _crossing_x(edges[key[0]], lower),
                     _crossing_x(edges[key[1]], lower),
                 )
+            )
+        for above, (span, was_left, was_right) in enumerate(running):
+            if above not in carried:
+                # Carried down to where it ends before it is closed, or the
+                # piece loses its bottom edge and with it the last slab's
+                # worth of area.
+                span.extend(was_left, was_right, upper)
+                pieces.append(span.closed())
+        running = opened
 
-    top = heights[-1]
-    for key, (started, left_at, right_at) in running.items():
-        left, right = edges[key[0]], edges[key[1]]
-        shape = _piece(
-            [
-                (left_at, started),
-                (right_at, started),
-                (_crossing_x(right, top), top),
-                (_crossing_x(left, top), top),
-            ]
-        )
-        if shape is not None:
-            pieces.append(shape)
+    for span, left_x, right_x in running:
+        span.extend(left_x, right_x, heights[-1])
+        pieces.append(span.closed())
+
     # Thickness, not area. A slab can close to a point at a vertex, and a
-    # trapezoid can come out fifty metres long and a ten-millionth wide, whose
+    # piece can come out fifty metres long and a ten-millionth wide, whose
     # area is comfortably above any sensible floor while its vertices all sit
-    # on one line to within a ten-millionth. Archicad refuses that -- asked
-    # directly, it takes a triangle of a millionth of a square metre and a
-    # fifty-metre sliver a hundredth of a millimetre wide, and refuses three
-    # collinear points -- so what has to be measured is how far the shape
-    # departs from a line, which is twice its area over its perimeter.
-    return [piece for piece in pieces if _thickness(piece) > MINIMUM_THICKNESS_M]
+    # on one line. Archicad refuses that -- asked directly, it takes a
+    # triangle of a millionth of a square metre and a fifty-metre sliver a
+    # hundredth of a millimetre wide, and refuses three collinear points -- so
+    # what has to be measured is how far the shape departs from a line, which
+    # is twice its area over its perimeter.
+    return [
+        piece for piece in pieces if len(piece) >= 3 and _thickness(piece) > MINIMUM_THICKNESS_M
+    ]
 
 
 def _thickness(ring: Ring) -> float:
