@@ -56,6 +56,7 @@ __all__ = [
     "bridged",
     "group_regions",
     "refined_rings",
+    "self_intersects",
     "signed_area",
 ]
 
@@ -368,6 +369,39 @@ def _straighten(ring: Ring, tolerance_m: float) -> Ring:
     return tuple(joined) if len(joined) >= 3 else ring
 
 
+def self_intersects(ring: Ring, limit: int = 4000) -> bool:
+    """Whether any two non-adjacent edges of a ring cross.
+
+    Archicad refuses a self-intersecting contour outright -- ``Failed to
+    create new Hatch``, the same answer it gives a bow tie -- so this is what
+    stands between a traced shadow and a fill that never appears. Every pair
+    of edges, which is quadratic and fine at the sizes a traced outline
+    reaches; a ring past ``limit`` is reported as crossing rather than
+    checked, so the caller falls back instead of stalling on a shape that was
+    never going to be drawn as one contour anyway.
+    """
+    count = len(ring)
+    if count < 4:
+        return False
+    if count > limit:
+        return True
+
+    def side(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    for i in range(count):
+        a, b = ring[i], ring[(i + 1) % count]
+        for j in range(i + 2, count):
+            if i == 0 and j == count - 1:
+                continue
+            c, d = ring[j], ring[(j + 1) % count]
+            if (side(c, d, a) > 0) != (side(c, d, b) > 0) and (side(a, b, c) > 0) != (
+                side(a, b, d) > 0
+            ):
+                return True
+    return False
+
+
 def _inside(point: tuple[float, float], ring: Ring) -> bool:
     """Whether a point lies within a ring, by crossing number."""
     x, y = point
@@ -401,7 +435,7 @@ def group_regions(rings: list[Ring]) -> list[tuple[Ring, list[Ring]]]:
     return grouped
 
 
-def bridged(outer: Ring, holes: list[Ring]) -> Ring:
+def bridged(outer: Ring, holes: list[Ring]) -> Ring | None:
     """One contour for an outline and its holes, seamed together.
 
     ``CreateHatches`` takes a single contour and no holes, and the two ways
@@ -445,12 +479,31 @@ def bridged(outer: Ring, holes: list[Ring]) -> Ring:
         length = float(np.hypot(*seam))
         if length <= 0.0:
             continue
-        aside = (-seam[1] / length * SEAM_WIDTH_M, seam[0] / length * SEAM_WIDTH_M)
-        contour = [
-            *contour[: at + 1],
-            *walk,
-            (walk[0][0] + aside[0], walk[0][1] + aside[1]),
-            (contour[at][0] + aside[0], contour[at][1] + aside[1]),
-            *contour[at + 1 :],
-        ]
+        # Which side the sliver opens on is not free: the wrong one sends the
+        # return leg back across the outgoing one, and Archicad refuses a
+        # contour that crosses itself. Rather than reason about the winding at
+        # the junction, both are built and the one that does not cross is
+        # kept -- the test is cheap at these sizes and it cannot be wrong.
+        candidates = []
+        for sign in (1.0, -1.0):
+            aside = (
+                -seam[1] / length * SEAM_WIDTH_M * sign,
+                seam[0] / length * SEAM_WIDTH_M * sign,
+            )
+            candidates.append(
+                [
+                    *contour[: at + 1],
+                    *walk,
+                    (walk[0][0] + aside[0], walk[0][1] + aside[1]),
+                    (contour[at][0] + aside[0], contour[at][1] + aside[1]),
+                    *contour[at + 1 :],
+                ]
+            )
+        clean = [option for option in candidates if not self_intersects(tuple(option))]
+        if not clean:
+            # Neither side works, which means the seam crosses something else
+            # -- another hole, or a finger of the outline. Refused rather than
+            # drawn, so the caller can fall back to a shape that is valid.
+            return None
+        contour = clean[0]
     return tuple(contour)

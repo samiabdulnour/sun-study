@@ -72,7 +72,7 @@ import numpy as np
 import numpy.typing as npt
 
 from sun_study.core.analysis import sunlit_matrix
-from sun_study.core.edges import bridged, group_regions, refined_rings
+from sun_study.core.edges import bridged, group_regions, refined_rings, self_intersects
 from sun_study.core.geometry import TriangleMesh
 from sun_study.core.occlusion import Occluder
 from sun_study.core.patches import Ring, drawable_contours
@@ -496,7 +496,7 @@ def _traced_regions(
     already: Occluder | None,
     direction: FloatArray,
     tolerance_m: float,
-) -> tuple[Ring, ...]:
+) -> tuple[Ring, ...] | None:
     """One source's fill at one instant, traced to the true shadow edge.
 
     The predicate is the fill's own definition, not merely "is it shaded":
@@ -532,7 +532,18 @@ def _traced_regions(
         return dark & surveyed[column, row]
 
     rings = refined_rings(grid.positions, mask, shape, shaded_at=shaded_at, tolerance_m=tolerance_m)
-    return tuple(bridged(outer, holes) for outer, holes in group_regions(rings))
+    drawn: list[Ring] = []
+    for outer, holes in group_regions(rings):
+        seamed = bridged(outer, holes)
+        # A contour that crosses itself is refused outright -- Archicad gives
+        # it the same answer as a bow tie -- so it is caught here rather than
+        # discovered as a fill that never appeared. The whole instant is
+        # refused rather than the one shape: half a traced shadow beside half
+        # a tiled one would look worse than either alone.
+        if seamed is None or self_intersects(seamed):
+            return None
+        drawn.append(seamed)
+    return tuple(drawn)
 
 
 def cast_shadows(
@@ -669,8 +680,12 @@ def cast_shadows(
                             edge_tolerance_m,
                         )
                         if shape is not None and edge_tolerance_m is not None and mask.any()
-                        else tuple(drawable_contours(grid.positions, mask, spacing_m))
+                        else None
                     )
+                    # Tracing can produce a shape Archicad will not take, and a
+                    # drawing is not the place to find that out. The cell path
+                    # is always drawable, so it stands behind this one.
+                    or tuple(drawable_contours(grid.positions, mask, spacing_m))
                     for key, mask in at_this_hour.items()
                 },
                 areas_m2={key: float(mask.sum()) * cell_area for key, mask in at_this_hour.items()},

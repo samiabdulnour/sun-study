@@ -188,3 +188,29 @@ def test_a_patch_with_no_holes_is_left_exactly_as_traced() -> None:
 
     assert holes == []
     assert bridged(outer, holes) == outer
+
+
+def test_a_seam_that_would_cross_itself_is_refused_not_drawn() -> None:
+    """Archicad answers a self-intersecting contour the way it answers a bow
+    tie -- 'Failed to create new Hatch' -- so a seam that crosses has to be
+    caught here. Which side the sliver opens on decides it, and the wrong side
+    sends the return leg back over the outgoing one."""
+    from sun_study.core.edges import bridged, self_intersects
+
+    turn = np.linspace(0, 2 * np.pi, 40, endpoint=False)
+    outer = tuple((float(8 * np.cos(a)), float(8 * np.sin(a))) for a in turn)
+    hole = tuple((float(3 * np.cos(-a)), float(3 * np.sin(-a))) for a in turn)
+
+    seamed = bridged(outer, [hole])
+
+    assert seamed is not None
+    assert not self_intersects(seamed)
+    assert signed_area(seamed) == pytest.approx(signed_area(outer) + signed_area(hole), rel=1e-4)
+
+
+def test_a_bow_tie_is_reported_as_crossing() -> None:
+    """The check itself, on the shape it exists for."""
+    from sun_study.core.edges import self_intersects
+
+    assert self_intersects(((0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0)))
+    assert not self_intersects(((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)))
