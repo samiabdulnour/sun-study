@@ -54,6 +54,7 @@ __all__ = [
     "DEFAULT_TOLERANCE_M",
     "SEAM_WIDTH_M",
     "bridged",
+    "enclosed",
     "group_regions",
     "refined_rings",
     "self_intersects",
@@ -412,6 +413,26 @@ def _inside(point: tuple[float, float], ring: Ring) -> bool:
             if crossing > x:
                 within = not within
     return within
+
+
+def enclosed(points: FloatArray, ring: Ring) -> BoolArray:
+    """Which of ``points`` fall inside ``ring``, by crossing number.
+
+    Vectorised over the points and looped over the ring's edges, which is the
+    right way round: a traced outline has tens of edges and a grid has
+    hundreds of thousands of points.
+    """
+    flat = np.asarray(points, dtype=np.float64)[:, :2]
+    inside = np.zeros(len(flat), dtype=bool)
+    x, y = flat[:, 0], flat[:, 1]
+    for (x1, y1), (x2, y2) in zip(ring, [*ring[1:], ring[0]], strict=True):
+        if y1 == y2:
+            continue
+        straddles = (y1 > y) != (y2 > y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            crossing = x1 + (y - y1) / (y2 - y1) * (x2 - x1)
+        inside ^= straddles & (crossing > x)
+    return inside
 
 
 def group_regions(rings: list[Ring]) -> list[tuple[Ring, list[Ring]]]:

@@ -72,10 +72,16 @@ import numpy as np
 import numpy.typing as npt
 
 from sun_study.core.analysis import sunlit_matrix
-from sun_study.core.edges import bridged, group_regions, refined_rings, self_intersects
+from sun_study.core.edges import (
+    bridged,
+    enclosed,
+    group_regions,
+    refined_rings,
+    self_intersects,
+)
 from sun_study.core.geometry import TriangleMesh
 from sun_study.core.occlusion import Occluder
-from sun_study.core.patches import Ring, drawable_contours
+from sun_study.core.patches import Ring, drawable_contours, merge_lit_cells
 from sun_study.core.sampling import SamplePoints, horizontal_grid
 
 FloatArray = npt.NDArray[np.float64]
@@ -495,6 +501,7 @@ def _traced_regions(
     darkens: Occluder | None,
     already: Occluder | None,
     direction: FloatArray,
+    spacing_m: float,
     tolerance_m: float,
 ) -> tuple[Ring, ...] | None:
     """One source's fill at one instant, traced to the true shadow edge.
@@ -540,9 +547,18 @@ def _traced_regions(
         # discovered as a fill that never appeared. The whole instant is
         # refused rather than the one shape: half a traced shadow beside half
         # a tiled one would look worse than either alone.
-        if seamed is None or self_intersects(seamed):
-            return None
-        drawn.append(seamed)
+        if seamed is not None and not self_intersects(seamed):
+            drawn.append(seamed)
+            continue
+        # This one patch cannot be one contour -- a seam that would have to
+        # cross another hole, most often. Only this patch falls back, on its
+        # own cells: refusing the whole source instead meant one awkward
+        # courtyard in one shadow dropped an entire hour to cell edges, which
+        # is how the first attempt drew 3,410 fills where tracing needed 194.
+        mine = enclosed(grid.positions, outer) & mask
+        drawn.extend(
+            rectangle.corners for rectangle in merge_lit_cells(grid.positions, mine, spacing_m)
+        )
     return tuple(drawn)
 
 
@@ -677,6 +693,7 @@ def cast_shadows(
                             ground,
                             *against.get(key, (None, None)),
                             directions[index],
+                            spacing_m,
                             edge_tolerance_m,
                         )
                         if shape is not None and edge_tolerance_m is not None and mask.any()
