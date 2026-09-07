@@ -160,6 +160,7 @@ from sun_study.core.analysis import (
     sunlit_matrix,
 )
 from sun_study.core.facade import face_panels
+from sun_study.core.geometry import TriangleMesh
 from sun_study.core.occlusion import Occluder
 from sun_study.core.orientation import sun_vectors_in_model_frame
 from sun_study.core.sampling import SamplePoints
@@ -5879,12 +5880,29 @@ def _shadow_report(
     grid = ground_plane_grid(
         scene.bounds, datum_m=datum, spacing_m=shadow_grid, margin_m=shadow_margin
     )
+    # What the shadow lands on is the ground *and* what stands on it. A
+    # shadow reaching a thirty-metre neighbour stops on its roof; carried on
+    # to the ground under it, the fill would run tens of metres too far and
+    # the drawing would overstate every shadow that crosses a building.
+    #
+    # One receiving surface for the whole run rather than one per source,
+    # built from the terrain and every baseline. Per-source would be closer to
+    # the truth -- a scenario's own roof catches its own shadow -- but each
+    # source's fill is differenced against the ones before it, and two masks
+    # measured on surfaces at different heights cannot be subtracted from one
+    # another. A common surface keeps the arithmetic sound, and the baselines
+    # are what will be standing in every scenario anyway.
+    receiver = TriangleMesh.concatenate(
+        [scene.terrain, *(s.mesh for s in scene.sources if s.role == BASELINE)]
+    )
     receiving = None
-    if scene.terrain.triangle_count:
-        draped = drape_onto_terrain(grid, scene.terrain, floor_m=terrain_floor)
+    if receiver.triangle_count:
+        draped = drape_onto_terrain(grid, receiver, floor_m=terrain_floor)
         grid, receiving = draped.grid, draped.on_terrain
         typer.echo(
-            f"  draped onto {scene.terrain.triangle_count:,} terrain triangles; "
+            f"  draped onto {scene.terrain.triangle_count:,} terrain and "
+            f"{receiver.triangle_count - scene.terrain.triangle_count:,} building "
+            f"triangles; "
             f"{draped.off_terrain_share:.0%} of the grid reaches past the survey and "
             f"is left undrawn"
         )

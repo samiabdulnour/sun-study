@@ -571,3 +571,46 @@ def test_a_receiving_mask_of_the_wrong_length_is_refused() -> None:
             spacing_m=1.0,
             receiving=np.ones(3, dtype=bool),
         )
+
+
+def test_a_shadow_lands_on_a_roof_rather_than_the_ground_behind_it() -> None:
+    """What the shadow falls on is the ground *and* what stands on it. Sun due
+    west at 45 degrees, so a 20 m tower throws 20 m of shadow east. Put a 10 m
+    block in the way and the last of that shadow lands on its roof, 10 m up --
+    which in plan is 10 m nearer than the ground under it. Received on terrain
+    alone the fill runs the full distance and overstates every shadow that
+    crosses a building."""
+    from sun_study.core.shadow import drape_onto_terrain
+
+    ground = TriangleMesh(
+        vertices=np.array(
+            [[-200, -200, 0], [200, -200, 0], [200, 200, 0], [-200, 200, 0]], dtype=float
+        ),
+        faces=np.array([[0, 1, 2], [0, 2, 3]]),
+    )
+    tower = box((0.0, -5.0, 0.0), (10.0, 5.0, 20.0))
+    # Directly in the tower's shadow, and tall enough to catch the end of it.
+    catcher = box((20.0, -5.0, 0.0), (30.0, 5.0, 10.0))
+
+    def area_on(receiver: TriangleMesh) -> float:
+        draped = drape_onto_terrain(plane(), receiver)
+        return (
+            cast_shadows(
+                draped.grid,
+                sources=[ShadowSource("tower", "Tower", tower, SCENARIO)],
+                sun_vectors=WEST_45,
+                moments=[NOON],
+                labels=["12PM"],
+                spacing_m=1.0,
+                receiving=draped.on_terrain,
+            )
+            .instants[0]
+            .areas_m2["tower"]
+        )
+
+    on_ground = area_on(ground)
+    on_ground_and_building = area_on(TriangleMesh.concatenate([ground, catcher]))
+
+    assert on_ground_and_building < on_ground, (
+        "the roof catches the shadow short of where the ground would"
+    )
