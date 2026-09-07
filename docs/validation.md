@@ -573,6 +573,12 @@ past the survey and is drawn nowhere. 29,616 fills, 49 groups, 2 sheets.
 
 Areas in m2, in plan. Baselines add up; scenarios overlap by design.
 
+**Unchanged by tracing the edges.** Drawn along cell edges the set is 22,951
+fills; with the boundary traced ([D79](decisions.md)) it is 2,616, and every one
+of the 49 figures above is identical to the square metre. That is the point of
+the split: areas come from the cell mask, and tracing draws a better line around
+the same measurement.
+
 **Two things these figures still carry**, both in the model rather than the
 tool, and both making the TOD rows read low: `Site context.TOD Buildings` sits
 inside the FUTURE NEIGHBOURING view while also being a scenario, so it is

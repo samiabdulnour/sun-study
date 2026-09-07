@@ -2368,3 +2368,71 @@ it is what separates one legend row from the next.
 13,200 at 3pm against 13,282. Solar noon elevation comes out 32.75 degrees
 where Sydney's winter solstice is 32.73. The shadows are long because at 9am
 on 21 June the sun is 19 degrees up and a shadow runs 2.9 times the height.
+
+
+### D79 — A shadow's edge is found, not approximated by the cells it was sampled on
+
+A shadow computed from a grid can only be drawn along cell edges, so at one
+metre on a 1:500 sheet its outline is a two millimetre staircase — above pen
+width and plainly pixellated. A finer grid is the obvious answer and the wrong
+one: cost goes with the *area* while all that is wanted is a better line, and a
+staircase with smaller steps is still a staircase.
+
+Sampling was never the limit. The occlusion test answers anywhere, not only at
+lattice points, so the boundary can be **found**: it is where the answer flips,
+and a flip can be bracketed and bisected. Marching squares gives the topology —
+which cells the boundary crosses and in what order, which is what a mask can be
+trusted for — and each crossing's position comes from bisecting the lattice edge
+it sits on. Measured on a circle of radius 12.3 at one metre: every vertex within
+26 microns of the true curve, and the traced area 0.1% off the analytic answer
+where counting the cells is 1.2% off. It is *more* accurate than the mask, not
+merely prettier.
+
+**Not the silhouette projection this set out to be.** Extruding a massing's
+silhouette and intersecting it with a plane is exact and simple; the receiver
+here is terrain and every building on it (D78), so exactness there means
+three-dimensional boolean geometry and polygon booleans for every difference
+between sources. The flat-plane version would undo the roof-catching that moved
+the areas by a third at nine in the morning. Bisection gets the same edge on the
+receiver that is actually there.
+
+**Holes are the whole difficulty**, because a fill takes one contour and none.
+Two routes, and both are needed. A hole can be seamed to its outline by a cut
+walked up one side and back down the other — but the cut must not cross
+anything, and *which order* the holes are taken in decides whether one exists:
+190 of 194 patches seamed first try, and the four that did not were the largest,
+where each new cut had to dodge the slivers already made. Six orders are tried.
+Where none works the patch is **sliced** instead: sweep a horizontal line, and
+between two heights the interior is a run bounded left and right, carried down
+as chains and closed only where the shape divides or joins. Slicing asks nothing
+and cannot fail.
+
+**What the add-on refuses, established by asking it rather than reasoning.** A
+plain square, an edge one millimetre long, nodes half a millimetre apart: all
+fine. A bow tie: *Failed to create new Hatch*. A contour that touches itself gets
+the same answer. So self-intersection is the whole of it — not size — and every
+contour is checked before it is sent, because each fault in this path first
+appeared as fills that silently never drew after a run that reported success.
+
+**Three faults worth naming**, all found by measurement after guessing produced
+three wrong fixes in a row. The tell each time was a failure count that did not
+move: 26 twice, 1,742 twice, 2 twice.
+
+*The seam's sliver opens on a side*, and the wrong side sends the return leg back
+across the outgoing one.
+
+*A run can pinch to nothing and reopen* — two lobes touching at a point. It never
+divides, so matching by overlap carries the piece through the pinch and the left
+chain comes out on the right.
+
+*A horizontal edge is not in the sweep* — it has no crossing — but the boundary
+steps sideways along it, and a piece carried through that height recorded only
+where it continued from. That cut the corner off every step: 7.15 m² across one
+patch, in errors of exactly 0.5 and exactly 1.0, which at a one metre grid is a
+little triangle and a little rectangle.
+
+**Areas are unchanged and must be.** They are counted from the cell mask, which
+is what tiles and what differences against the other sources; this draws a better
+line around the same measurement. On the Crows Nest set every one of the 49
+figures is identical to the cell-drawn run, while the fills fall from 22,951 to
+2,616.

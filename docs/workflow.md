@@ -295,7 +295,12 @@ About twenty minutes to publish, seven to run.
 `--shadow-source` is something that will be there and accumulates.
 `--shadow-scenario` is something that might be, cast against every source and
 against no other scenario, so two of them overlap — which is the comparison.
-`--shadow-datum` is where ground is taken to be beyond the survey, and
+`--shadow-edge` is how close a drawn outline is brought to the true shadow
+boundary, in metres; the edge is found by bisecting against the geometry rather
+than followed along cell edges, so it runs at whatever angle the sun makes
+instead of as a staircase. `0` draws on cell edges, which is what every version
+before [D79](decisions.md) did. `--shadow-datum` is where ground is taken to be
+beyond the survey, and
 `--shadow-storey` is the storey the fills are drawn on, which is the site plan
 rather than a datum storey: on this project storey 0 is `AHD` and GROUND is 6.
 
