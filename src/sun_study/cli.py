@@ -92,6 +92,7 @@ from sun_study.archicad.read import (
     library_objects,
     oversized_export_note,
     read_geo_location,
+    storey_level,
 )
 from sun_study.archicad.read import zones as read_zones
 from sun_study.archicad.rooms import (
@@ -5027,6 +5028,18 @@ def archicad_run(
             ),
         ),
     ] = None,
+    exclude_above_storey: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude-above-storey",
+            help=(
+                "Ignore everything standing above this storey -- name it, e.g. "
+                "'LIFT OVERRUN'. What a building ends at is a storey, not a number: "
+                "the number has to be looked up per project and a wrong one is "
+                "invisible afterwards. Takes precedence over --exclude-above."
+            ),
+        ),
+    ] = None,
     layers_as_shown: Annotated[
         bool,
         typer.Option(
@@ -5074,6 +5087,21 @@ def archicad_run(
 
     connection = _connect(port, timeout)
     typer.echo(describe_connection(connection))
+    if exclude_above_storey:
+        # A storey, resolved to its level once, here -- so every use below
+        # sees a number and only this line knows the storey existed. Named
+        # rather than measured because "above the lift overrun" is a sentence
+        # about the building that travels between projects, while 49.8 is a
+        # number to look up and get wrong invisibly.
+        try:
+            exclude_above = storey_level(connection, exclude_above_storey)
+        except ArchicadError as error:
+            typer.secho(str(error), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from error
+        typer.echo(
+            f"  ignoring everything above '{exclude_above_storey}', which is at {exclude_above:g} m"
+        )
+
     typer.echo("")
 
     config = scene_config(

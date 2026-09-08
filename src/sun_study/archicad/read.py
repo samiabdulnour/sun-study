@@ -69,6 +69,7 @@ __all__ = [
     "oversized_export_note",
     "project_info",
     "read_geo_location",
+    "storey_level",
     "zones",
 ]
 
@@ -629,6 +630,40 @@ def zones(connection: ArchicadConnection) -> tuple[ArchicadZone, ...]:
             )
         )
     return tuple(sorted(result, key=lambda zone: (zone.number, zone.name, zone.guid)))
+
+
+def storey_level(connection: ArchicadConnection, name: str) -> float:
+    """The level of the storey with this name, in project metres.
+
+    A height cut is the right idea and the wrong unit to type. "Everything
+    above the lift overrun" is a sentence about the building and travels from
+    one project to the next; 49.8 is a number somebody has to look up, and
+    looking it up wrongly is not visible afterwards -- on Kogarah a cut at
+    195 m read as generous and removed almost nothing, because the storey it
+    was meant to describe sits at 49.8 and a quarter of a kilometre of parked
+    unit-type storeys stood above it.
+
+    Matched the way a person copies a name: stripped and case-folded, since
+    "LIFT OVERRUN" typed at a command line will not match "Lift Overrun" byte
+    for byte and failing on that is a trap.
+
+    The whole list is named in the refusal, because the name that matches
+    nothing is usually a name from a different project.
+    """
+
+    def tidy(text: str) -> str:
+        return " ".join(str(text).split()).casefold()
+
+    answer = connection.run_tapir("GetStories", {})
+    storeys = answer.get("stories") if isinstance(answer, dict) else None
+    if not isinstance(storeys, list):
+        raise ArchicadError(f"GetStories returned no storey list: {answer!r}")
+    wanted = tidy(name)
+    for storey in storeys:
+        if tidy(storey.get("name", "")) == wanted:
+            return float(storey.get("level", 0.0))
+    named = [str(s.get("name", "")).strip() for s in storeys if str(s.get("name", "")).strip()]
+    raise ArchicadError(f"No storey called {name!r}. The project has: " + ", ".join(named[:20]))
 
 
 def layer_names(connection: ArchicadConnection) -> dict[int, str]:
