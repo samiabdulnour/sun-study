@@ -1975,7 +1975,17 @@ def report_penetration(
         tidy = asked.strip()
         if tidy in clock:
             index = clock.index(tidy)
-            chosen.append(PlanInstant(label=tidy, lit=series.floor_sunlit[:, index]))
+            # One instant, so the predicate is bound to its own column and
+            # handed over as a question about points alone.
+            ask = _floor_lit_at(series, [index])
+            here: Callable[[np.ndarray], np.ndarray] | None = None
+            if ask is not None:
+                bound = ask
+
+                def here(points: np.ndarray, _ask: Any = bound) -> np.ndarray:
+                    return np.asarray(_ask(points, 0), dtype=bool)
+
+            chosen.append(PlanInstant(label=tidy, lit=series.floor_sunlit[:, index], lit_at=here))
         else:
             missing.append(tidy)
 
@@ -2713,7 +2723,7 @@ def _floor_lit_at(
         return None
     occluder, vectors = series.floor_occluder, series.sun_vectors
 
-    def lit_at(points: np.ndarray, column: int) -> np.ndarray:
+    def lit_at(points: np.ndarray, column: int = 0) -> np.ndarray:
         towards = vectors[chosen[column]]
         if towards[2] <= 0.0:
             # The sun is down. Nothing is lit, and a ray cast at it would say

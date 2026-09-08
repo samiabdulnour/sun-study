@@ -36,7 +36,7 @@ warning.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -64,6 +64,7 @@ from sun_study.archicad.ids import (
     stamp_in_order,
 )
 from sun_study.archicad.read import ArchicadZone
+from sun_study.core.edges import on_lattice, traced_regions
 from sun_study.core.geometry import PlanTransform, fit_plan_transform
 from sun_study.core.patches import Ring, drawable_contours
 
@@ -123,6 +124,17 @@ class PlanInstant:
     """As it appears on the drawing, e.g. ``21 Jun 12:00``."""
     lit: BoolArray
     """Per floor cell, whether the sun reached it at this instant."""
+
+    lit_at: Callable[[FloatArray], BoolArray] | None = None
+    """The same question at a point the grid never sampled, if it can be asked.
+
+    A patch drawn from ``lit`` alone can only run along cell edges, and its
+    real edge is a window reveal projected across the floor -- a straight line
+    at whatever angle the glazing and the sun make between them. Given this,
+    the edge is found by bisecting against the geometry instead of stepping
+    round the grid. ``None`` on a run that cannot answer, and the patch is
+    then drawn on cell edges as it always was.
+    """
 
 
 @dataclass(frozen=True)
@@ -330,7 +342,7 @@ def draw_penetration(
             # with no sun on it.
             if mine.any():
                 here = positions[mine]
-                shapes = _contours(here, instant.lit[mine], spacing_m)
+                shapes = _contours(here, instant.lit[mine], spacing_m, instant.lit_at)
                 for shape in shapes:
                     fills.append(_patch_fill(shape, transform, patch_style, layer, zone))
                     patch_ids.append(fill_id(SOLAR, instant.label, apartment))
@@ -580,7 +592,12 @@ def _band_legend(
     return fills, texts
 
 
-def _contours(positions: FloatArray, lit: BoolArray, spacing_m: float) -> list[Ring]:
+def _contours(
+    positions: FloatArray,
+    lit: BoolArray,
+    spacing_m: float,
+    lit_at: Callable[[FloatArray], BoolArray] | None = None,
+) -> list[Ring]:
     """The shapes to draw for one set of lit cells. See ``patches``.
 
     Kept as a name here because every call site in this module reads better
@@ -588,6 +605,16 @@ def _contours(positions: FloatArray, lit: BoolArray, spacing_m: float) -> list[R
     rectangles where a hole would otherwise be filled in -- is a decision this
     module made first and now shares with the shadow drawings.
     """
+    if lit_at is not None:
+        # A room's grid is cut to the room, so it is a subset of a lattice
+        # rather than a rectangle and has to be put back on one before the
+        # boundary can be walked.
+        placed = on_lattice(positions, lit, spacing_m)
+        if placed is not None:
+            grid, mask, shape = placed
+            traced = traced_regions(grid, mask, shape, inside_at=lit_at)
+            if traced:
+                return traced
     return drawable_contours(positions, lit, spacing_m)
 
 
