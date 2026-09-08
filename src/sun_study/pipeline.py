@@ -111,6 +111,23 @@ class InstantSeries:
     """Which floor cells are balcony rather than room."""
 
     floor_minutes: FloatArray | None = None
+
+    floor_occluder: Occluder | None = None
+    """What stood between the floor and the sun when the patches were computed.
+
+    Carried so a drawing can ask the question again. A patch drawn off the
+    mask alone can only run along cell edges, and at the 0.2 m the floor is
+    sampled at that is a two millimetre staircase on a 1:100 plan; traced, the
+    edge follows the window reveal at whatever angle it really makes. Tracing
+    means bisecting, and bisecting means asking at points the grid never
+    sampled -- so the occluder has to survive as far as the drawing.
+
+    The glazing is out of this set, which is what lets sun reach the floor
+    through a window at all. See where it is built.
+    """
+
+    sun_vectors: FloatArray | None = None
+    """Unit vectors towards the sun in the model frame, one per instant."""
     """Total sunlit minutes on each floor cell across the whole window.
 
     The same weighting the compliance figure uses, over the same instants, so
@@ -344,6 +361,10 @@ def run_assessment(
                 scene.floor_samples.parent_ids if scene.floor_samples is not None else ()
             ),
             floor_sunlit=floor_sunlit,
+            floor_occluder=Occluder(scene.glazed_occluders)
+            if scene.glazed_occluders is not None
+            else None,
+            sun_vectors=sun_vectors,
             floor_is_open_space=scene.floor_is_open_space,
             floor_minutes=floor_minutes,
             floor_areas=(scene.floor_samples.areas if scene.floor_samples is not None else None),

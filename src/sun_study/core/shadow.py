@@ -72,13 +72,7 @@ import numpy as np
 import numpy.typing as npt
 
 from sun_study.core.analysis import sunlit_matrix
-from sun_study.core.edges import (
-    bridged,
-    decomposed,
-    group_regions,
-    refined_rings,
-    self_intersects,
-)
+from sun_study.core.edges import traced_regions
 from sun_study.core.geometry import TriangleMesh
 from sun_study.core.occlusion import Occluder
 from sun_study.core.patches import Ring, drawable_contours
@@ -538,33 +532,10 @@ def _traced_regions(
         row = np.clip(np.rint((lifted[:, 1] - y0) / step_y).astype(np.int64), 0, rows - 1)
         return dark & surveyed[column, row]
 
-    rings = refined_rings(grid.positions, mask, shape, shaded_at=shaded_at, tolerance_m=tolerance_m)
-    drawn: list[Ring] = []
-    for outer, holes in group_regions(rings):
-        seamed = bridged(outer, holes)
-        # A contour that crosses itself is refused outright -- Archicad gives
-        # it the same answer as a bow tie -- so it is caught here rather than
-        # discovered as a fill that never appeared. The whole instant is
-        # refused rather than the one shape: half a traced shadow beside half
-        # a tiled one would look worse than either alone.
-        if seamed is not None and not self_intersects(seamed):
-            drawn.append(seamed)
-            continue
-        # No cut reaches every hole without crossing something, which happens
-        # on a shadow with several courtyards. Sliced into trapezoids rather
-        # than tiled: the pieces follow the traced edges instead of falling
-        # back to cell squares, and slicing cannot fail. Two patches of 194
-        # took this route and were costing 1,200 fills of the 1,393.
-        pieces = decomposed(outer, holes)
-        # Checked, not assumed. Slicing is meant to produce simple polygons
-        # and a bug in it would otherwise surface as fills that silently never
-        # appeared -- which is how the last three faults in this path were
-        # found. If one is wrong the whole instant goes back to cell edges,
-        # which is always drawable.
-        if any(self_intersects(piece) for piece in pieces):
-            return None
-        drawn.extend(pieces)
-    return tuple(drawn)
+    traced = traced_regions(
+        grid.positions, mask, shape, inside_at=shaded_at, tolerance_m=tolerance_m
+    )
+    return None if traced is None else tuple(traced)
 
 
 def cast_shadows(

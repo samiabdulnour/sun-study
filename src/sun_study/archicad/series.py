@@ -37,7 +37,7 @@ every cell lit, so the two can never disagree about where the floor is.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -59,6 +59,7 @@ from sun_study.archicad.ids import (
 )
 from sun_study.archicad.layout import _walk
 from sun_study.archicad.read import layer_names
+from sun_study.core.edges import on_lattice, traced_regions
 from sun_study.core.patches import Ring, drawable_contours
 
 FloatArray = npt.NDArray[np.float64]
@@ -291,6 +292,46 @@ def _unhide_layers_of(connection: ArchicadConnection, elements: Sequence[dict[st
                 ensure_layer(connection, name)
 
 
+def _patch_outline(
+    here: FloatArray,
+    mask: BoolArray,
+    spacing_m: float,
+    lit_at: Callable[[FloatArray, int], BoolArray] | None,
+    column: int,
+    tolerance_m: float,
+) -> list[Ring]:
+    """One patch's shapes: traced to the sunlight's own edge where it can be.
+
+    A patch drawn off the mask alone runs along cell edges, and at the 0.2 m a
+    floor is sampled at that is a two millimetre staircase on a 1:100 plan.
+    The edge of a sun patch is a window reveal projected across the floor -- a
+    straight line at whatever angle the glazing and the sun between them make,
+    and never one aligned to the grid.
+
+    Traced when the caller can answer "is this point lit at this instant" at
+    an arbitrary point; cell edges when it cannot, and cell edges again if
+    what comes back could not be drawn. The mask still measures the area
+    either way (see the caller), so this changes the line and not the number.
+
+    A room's grid is clipped to the room, so it is a subset of a lattice
+    rather than a rectangle, and has to be put back on one first.
+    """
+    if lit_at is not None:
+        placed = on_lattice(here, mask, spacing_m)
+        if placed is not None:
+            positions, lit, shape = placed
+            traced = traced_regions(
+                positions,
+                lit,
+                shape,
+                inside_at=lambda points: lit_at(points, column),
+                tolerance_m=tolerance_m,
+            )
+            if traced:
+                return traced
+    return drawable_contours(here, mask, spacing_m)
+
+
 def draw_patch_series(
     connection: ArchicadConnection,
     *,
@@ -305,6 +346,8 @@ def draw_patch_series(
     sunlit_style: BandStyle = SUNLIT_STYLE,
     gutter_m: float = DEFAULT_GUTTER_M,
     caption_height_mm: float = 3.5,
+    lit_at: Callable[[FloatArray, int], BoolArray] | None = None,
+    edge_tolerance_m: float = 0.001,
 ) -> SeriesReport:
     """Draw one tile per instant into the worksheet, and restore nothing.
 
@@ -377,7 +420,7 @@ def draw_patch_series(
                 element_ids.append(None)
 
             mask = lit_here[:, column]
-            patch = drawable_contours(here, mask, spacing_m)
+            patch = _patch_outline(here, mask, spacing_m, lit_at, column, edge_tolerance_m)
             # From the mask rather than from the shapes. The traced outlines
             # enclose exactly the lit cells, so the two agree -- but counting
             # cells stays right if a patch is ever drawn some other way, and it

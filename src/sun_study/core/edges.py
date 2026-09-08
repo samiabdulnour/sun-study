@@ -59,9 +59,11 @@ __all__ = [
     "decomposed",
     "enclosed",
     "group_regions",
+    "on_lattice",
     "refined_rings",
     "self_intersects",
     "signed_area",
+    "traced_regions",
 ]
 
 #: How close a traced vertex is brought to the true edge. A millimetre is far
@@ -816,3 +818,102 @@ def _thickness(ring: Ring) -> float:
     if perimeter <= 0.0:
         return 0.0
     return 2.0 * abs(signed_area(ring)) / perimeter
+
+
+def traced_regions(
+    positions: FloatArray,
+    mask: BoolArray,
+    shape: tuple[int, int],
+    *,
+    inside_at: Callable[[FloatArray], BoolArray],
+    tolerance_m: float = DEFAULT_TOLERANCE_M,
+) -> list[Ring] | None:
+    """One region's fills, traced to the true edge and made drawable.
+
+    The whole route in one call, because every study that draws a region off a
+    sample mask needs the same four steps and a second copy of them would be a
+    second place to fix. Trace the boundary; group the rings into outlines and
+    the holes inside them; make each patch a single contour by seaming a cut
+    to its holes, or slice it where no cut exists; and check what comes out.
+
+    ``inside_at`` is the caller's own question -- shaded by these and not those
+    for a shadow, lit at this instant for a sun patch -- asked at whatever
+    points the bisection wants. That is the only part that differs between
+    studies, and it is the only part passed in.
+
+    ``None`` where nothing valid could be made, which is the caller's cue to
+    fall back to something that always draws. Returned rather than raised: a
+    patch that cannot be drawn as one contour is an ordinary shape, not an
+    error.
+    """
+    rings = refined_rings(positions, mask, shape, shaded_at=inside_at, tolerance_m=tolerance_m)
+    drawn: list[Ring] = []
+    for outer, holes in group_regions(rings):
+        seamed = bridged(outer, holes)
+        # Checked, not assumed. Archicad refuses a contour that crosses itself
+        # -- the same answer it gives a bow tie -- and every fault in this path
+        # first appeared as fills that silently never drew after a run that
+        # reported success.
+        if seamed is not None and not self_intersects(seamed):
+            drawn.append(seamed)
+            continue
+        pieces = decomposed(outer, holes)
+        if any(self_intersects(piece) for piece in pieces):
+            return None
+        drawn.extend(pieces)
+    return drawn
+
+
+def on_lattice(
+    positions: FloatArray, mask: BoolArray, spacing_m: float
+) -> tuple[FloatArray, BoolArray, tuple[int, int]] | None:
+    """Put scattered samples back on the lattice they were cut from.
+
+    A shadow grid is a full rectangle, but a room's floor grid is clipped to
+    the room -- so it is a *subset* of a lattice, and marching squares needs
+    the lattice. Rebuilt here from the spacing: the samples' own columns and
+    rows are recovered, the rectangle is filled in, and the cells that were
+    cut away are marked unlit.
+
+    Marking them unlit is the honest reading. They are outside the room, no
+    sunlight was measured there, and a patch that reached the wall should stop
+    at it -- which is what the tracer will then find, because it bisects
+    towards where the samples stop rather than through them.
+
+    Heights are carried from the nearest sampled cell in the same column, so a
+    boundary bisected against a filled-in cell still starts from a plausible
+    height. ``None`` if the samples do not sit on a lattice at all.
+    """
+    flat = np.asarray(positions, dtype=np.float64)
+    if len(flat) < 4 or spacing_m <= 0.0:
+        return None
+    origin = flat[:, :2].min(axis=0)
+    column = np.rint((flat[:, 0] - origin[0]) / spacing_m).astype(np.int64)
+    row = np.rint((flat[:, 1] - origin[1]) / spacing_m).astype(np.int64)
+    # Samples that are not on the lattice would be silently misplaced, so the
+    # whole grid is refused instead.
+    if not (
+        np.allclose(flat[:, 0], origin[0] + column * spacing_m, atol=spacing_m * 1e-6)
+        and np.allclose(flat[:, 1], origin[1] + row * spacing_m, atol=spacing_m * 1e-6)
+    ):
+        return None
+    nx, ny = int(column.max()) + 1, int(row.max()) + 1
+    if nx < 2 or ny < 2 or nx * ny > 4_000_000:
+        return None
+
+    filled = np.zeros((nx, ny, 3), dtype=np.float64)
+    filled[:, :, 0] = origin[0] + np.arange(nx)[:, None] * spacing_m
+    filled[:, :, 1] = origin[1] + np.arange(ny)[None, :] * spacing_m
+    here = np.zeros((nx, ny), dtype=bool)
+    lit = np.zeros((nx, ny), dtype=bool)
+    filled[column, row, 2] = flat[:, 2]
+    here[column, row] = True
+    lit[column, row] = np.asarray(mask, dtype=bool)
+
+    # A height for the cells that were cut away, taken down each column from
+    # the last sampled one, so a bisection into them starts somewhere real.
+    for index in range(nx):
+        known = np.flatnonzero(here[index])
+        if len(known):
+            filled[index, :, 2] = np.interp(np.arange(ny), known, filled[index, known, 2])
+    return filled.reshape(-1, 3), lit.reshape(-1), (nx, ny)

@@ -428,3 +428,75 @@ def test_a_stepped_hole_keeps_its_area_too() -> None:
     pieces = decomposed(outer, [stepped])
 
     assert sum(abs(signed_area(piece)) for piece in pieces) == pytest.approx(exact, rel=1e-9)
+
+
+# -- sun patches, which are cut to the room they sit in --------------------
+
+
+def test_a_clipped_room_grid_is_put_back_on_its_lattice() -> None:
+    """A shadow grid is a full rectangle; a room's floor grid is clipped to the
+    room, so it is a subset of a lattice and marching squares cannot index it.
+    Rebuilt from the spacing, with the cells that were cut away marked unlit --
+    which is the honest reading, since no sunlight was measured outside the
+    room and a patch reaching the wall should stop there."""
+    from sun_study.core.edges import on_lattice
+
+    spacing = 0.2
+    xs, ys = np.meshgrid(
+        np.arange(0.0, 6.0001, spacing), np.arange(0.0, 4.0001, spacing), indexing="ij"
+    )
+    every = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)])
+    # An L-shaped room: the top-right quarter is not part of it.
+    room = every[~((every[:, 0] > 4.0) & (every[:, 1] > 2.0))]
+    lit = room[:, 0] < 3.0
+
+    placed = on_lattice(room, lit, spacing)
+
+    assert placed is not None
+    positions, mask, shape = placed
+    assert shape == (31, 21)
+    assert len(positions) == 31 * 21
+    # Everything the room had, and nothing it did not.
+    assert int(mask.sum()) == int(lit.sum())
+
+
+def test_samples_that_are_not_on_a_lattice_are_refused() -> None:
+    """Misplacing them would put a patch somewhere the sun never was."""
+    from sun_study.core.edges import on_lattice
+
+    scattered = np.array([[0.0, 0.0, 0.0], [0.13, 0.4, 0.0], [1.0, 1.0, 0.0], [2.0, 0.5, 0.0]])
+
+    assert on_lattice(scattered, np.ones(4, dtype=bool), 0.2) is None
+
+
+def test_a_patch_edge_follows_the_reveal_and_not_the_grid() -> None:
+    """What this is for. A sun patch's edge is a window reveal projected across
+    the floor -- a straight line at whatever angle the glazing and the sun make
+    between them, and never one the grid is aligned to."""
+    from sun_study.core.edges import on_lattice, traced_regions
+
+    spacing = 0.2
+    xs, ys = np.meshgrid(
+        np.arange(0.0, 6.0001, spacing), np.arange(0.0, 4.0001, spacing), indexing="ij"
+    )
+    floor = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)])
+
+    def lit_at(points: np.ndarray) -> np.ndarray:
+        flat = np.asarray(points)
+        return flat[:, 1] <= 0.55 * flat[:, 0] + 0.9
+
+    placed = on_lattice(floor, lit_at(floor), spacing)
+    assert placed is not None
+    positions, mask, shape = placed
+
+    rings = traced_regions(positions, mask, shape, inside_at=lit_at, tolerance_m=1e-4)
+
+    assert rings is not None and len(rings) == 1
+    # A straight reveal is described by its ends, not by one vertex per cell.
+    assert len(rings[0]) <= 6, f"{len(rings[0])} vertices for a straight reveal"
+
+    # Under the line and inside the room: the integral, with the corner the
+    # line leaves through taken off.
+    crosses_at = (4.0 - 0.9) / 0.55
+    exact = 0.55 * crosses_at**2 / 2.0 + 0.9 * crosses_at + 4.0 * (6.0 - crosses_at)
+    assert abs(signed_area(rings[0])) == pytest.approx(exact, rel=0.001)

@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
@@ -192,6 +192,7 @@ from sun_study.ingest.scene import (
 from sun_study.licence import LicenceExpiredError
 from sun_study.pipeline import (
     WEIGHTING_BY_RULESET,
+    InstantSeries,
     MassingResult,
     PipelineResult,
     run_assessment,
@@ -598,6 +599,13 @@ def report_series(
             worksheet=target,
             positions=series.floor_positions,
             sunlit=series.floor_sunlit[:, chosen],
+            # So the patch edges can be traced rather than followed along the
+            # 0.2 m grid: a sun patch's edge is a window reveal projected
+            # across the floor, which is a straight line at whatever angle the
+            # glazing and the sun make between them and never one the grid is
+            # aligned to. Needs the geometry, which is why the series carries
+            # it.
+            lit_at=_floor_lit_at(series, chosen),
             times=captions,
             spacing_m=series.floor_spacing_m,
             layer_name=layer_name,
@@ -2687,6 +2695,35 @@ def _export_for_massing(
     if note:
         typer.secho(note, fg=typer.colors.YELLOW)
     return written
+
+
+def _floor_lit_at(
+    series: InstantSeries, chosen: Sequence[int]
+) -> Callable[[np.ndarray, int], np.ndarray] | None:
+    """Ask whether a point on the floor is in sun at one of the drawn instants.
+
+    ``None`` when the run cannot answer -- an older result, or one that never
+    kept the occluder -- and the patches are then drawn on cell edges as they
+    always were.
+
+    The column is the position in what was drawn, not in the whole day, so it
+    is mapped back through the instants that were chosen.
+    """
+    if series.floor_occluder is None or series.sun_vectors is None:
+        return None
+    occluder, vectors = series.floor_occluder, series.sun_vectors
+
+    def lit_at(points: np.ndarray, column: int) -> np.ndarray:
+        towards = vectors[chosen[column]]
+        if towards[2] <= 0.0:
+            # The sun is down. Nothing is lit, and a ray cast at it would say
+            # so only by accident.
+            return np.zeros(len(points), dtype=bool)
+        flat = np.ascontiguousarray(points, dtype=np.float64)
+        blocked = occluder.any_hit(flat, np.ascontiguousarray(np.broadcast_to(towards, flat.shape)))
+        return np.asarray(~blocked, dtype=bool)
+
+    return lit_at
 
 
 @app.command()
