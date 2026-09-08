@@ -25,7 +25,7 @@ import urllib.request
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -84,6 +84,7 @@ from sun_study.archicad.read import (
     north_bearing_deg,
     project_info,
     read_geo_location,
+    storey_level,
     zones,
 )
 from sun_study.archicad.write import (
@@ -4742,3 +4743,59 @@ def test_a_band_wall_without_a_favorite_names_none() -> None:
     wall = _wall_for(_one_upright_rectangle(), material, _identity_transform(), 0.04, 0.03)
 
     assert "favoriteName" not in wall
+
+
+class _Storeys:
+    """Answers ``GetStories`` with one project's storey list."""
+
+    def __init__(self, storeys: list[dict[str, Any]]) -> None:
+        self.storeys = storeys
+
+    def run_tapir(self, command: str, parameters: dict[str, Any] | None = None) -> Any:
+        assert command == "GetStories"
+        return {"stories": self.storeys}
+
+
+_KOGARAH_STOREYS = [
+    {"index": 19, "name": "ROOF", "level": 47.4},
+    {"index": 20, "name": "LIFT OVERRUN", "level": 49.8},
+    {"index": 21, "name": "UT1.07", "level": 54.0},
+    {"index": 22, "name": "Unit Types", "level": 338.0},
+]
+
+
+def test_storey_level_reads_the_named_storey() -> None:
+    connection = cast(Any, _Storeys(_KOGARAH_STOREYS))
+
+    assert storey_level(connection, "LIFT OVERRUN") == pytest.approx(49.8)
+
+
+def test_storey_level_matches_the_way_a_name_is_copied() -> None:
+    """Typed at a command line, a storey name arrives cased and spaced freely.
+
+    Kogarah's storey is written LIFT OVERRUN and the flag will be typed a
+    dozen ways; refusing on the case would be a trap, not a check.
+    """
+    connection = cast(Any, _Storeys(_KOGARAH_STOREYS))
+
+    assert storey_level(connection, "  lift  overrun ") == pytest.approx(49.8)
+
+
+def test_storey_level_names_the_project_s_own_storeys_when_it_refuses() -> None:
+    """A name that matches nothing is usually a name from another project."""
+    connection = cast(Any, _Storeys(_KOGARAH_STOREYS))
+
+    with pytest.raises(ArchicadError) as raised:
+        storey_level(connection, "PLANT")
+
+    assert "LIFT OVERRUN" in str(raised.value)
+    assert "ROOF" in str(raised.value)
+
+
+def test_storey_level_refuses_an_answer_without_a_storey_list() -> None:
+    class Empty:
+        def run_tapir(self, command: str, parameters: dict[str, Any] | None = None) -> Any:
+            return {}
+
+    with pytest.raises(ArchicadError):
+        storey_level(cast(Any, Empty()), "ROOF")

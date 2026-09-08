@@ -698,7 +698,9 @@ element GUID, and `disambiguated` tags only the colliding names with a GUID frag
 masters off in the export — assumes they have layers of their own. On the reference project
 they do not: masters and real building share `01 | Wall.External`,
 `01 | Wall.Unit Internal` and the rest, so no layer combination separates them. What does
-separate them is height, and `--exclude-above` is the knob. See [D30](decisions.md).
+separate them is height, and `--exclude-above` is the knob — or better
+`--exclude-above-storey`, which names the storey the building ends at and looks its
+level up. See [D30](decisions.md) and [D80](decisions.md).
 
 **A zone's layer is what says whether it is an apartment.** The same project's zones sat
 on `10 | Calc.GFA` — area take-off, not housing — and were locked because a calculation

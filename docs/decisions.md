@@ -2436,3 +2436,29 @@ is what tiles and what differences against the other sources; this draws a bette
 line around the same measurement. On the Crows Nest set every one of the 49
 figures is identical to the cell-drawn run, while the fills fall from 22,951 to
 2,616.
+
+---
+
+### D80 — A building ends at a storey, so that is what the cut names
+
+`--exclude-above <metres>` (D30) is right about the mechanism and wrong about the
+unit. The metre has to be looked up per project, and looking it up wrongly is
+invisible: the elements simply stay, and the run reports a plausible number
+measured through them.
+
+That is exactly what happened on the Kogarah project. The run's own
+`top of apartments 193.5 m` suggested 195 was a generous cut, and it removed
+almost nothing — because the 193.5 was itself measured from parked Zones. The
+real building ends at storey 20, `LIFT OVERRUN`, level **49.8 m**. Storeys 21 to
+108 hold a quarter of a kilometre of parked test-fit material above it, to 338 m:
+`UT1.07`, `UT2.12`, `Unit Types`, `BLD A - North Walls L4-L5`. That stack was
+shading the tower it belongs to, which is why the lower floors read as sunless.
+
+`--exclude-above-storey "LIFT OVERRUN"` names the storey instead and resolves it
+through `GetStories` at run time. "Above the lift overrun" is a sentence about a
+building and, as Sami put it, usually the same name in every project; 49.8 is a
+number somebody has to find first. The name is matched the way a name is copied —
+stripped and case-folded — and one that matches nothing is refused with the
+project's own storey list, since a name that misses is normally a name from
+another job. It resolves once, next to the connection, so everything downstream
+still sees the metres D30 describes.
