@@ -76,9 +76,9 @@ def connect(responses: dict[str, Any]) -> tuple[ArchicadConnection, FakeTranspor
 def drawing_responses(**overrides: Any) -> dict[str, Any]:
     responses: dict[str, Any] = {
         "GetAttributesByType": {
-            "attributes": [{"attributeId": {"guid": "l"}, "index": 7, "name": "Sun Study"}]
+            "attributes": [{"attributeId": {"guid": "l"}, "index": 7, "name": "Solar Analysis"}]
         },
-        "GetLayers": {"layers": [{"name": "Sun Study", "isHidden": False, "isLocked": False}]},
+        "GetLayers": {"layers": [{"name": "Solar Analysis", "isHidden": False, "isLocked": False}]},
         "GetElementsByType": {"elements": []},
         "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 7}] * 4},
         "DeleteElements": {"success": True},
@@ -114,7 +114,7 @@ def test_a_missing_worksheet_lists_the_ones_that_exist() -> None:
     through the API cannot be activated in the same session."""
     connection, _ = connect({})
     with pytest.raises(ArchicadError, match="Solar Penetration Outlines"):
-        find_worksheet(connection, "Sun Study")
+        find_worksheet(connection, "Solar Analysis")
 
 
 def test_activation_that_does_not_take_is_an_error_not_a_shrug() -> None:
@@ -139,7 +139,7 @@ def test_the_series_is_one_row_per_level_and_one_column_per_instant() -> None:
         sunlit=SUNLIT,
         times=["09:00", "15:00"],
         spacing_m=0.25,
-        layer_name="Sun Study",
+        layer_name="Solar Analysis",
         rows=rows,
     )
 
@@ -177,7 +177,7 @@ def test_the_lit_area_reported_is_summed_across_levels() -> None:
         sunlit=SUNLIT,
         times=["09:00", "15:00"],
         spacing_m=0.25,
-        layer_name="Sun Study",
+        layer_name="Solar Analysis",
         rows=rows,
     )
 
@@ -194,7 +194,7 @@ def test_without_rows_everything_is_drawn_as_one_tile_per_instant() -> None:
         sunlit=SUNLIT,
         times=["09:00", "15:00"],
         spacing_m=0.25,
-        layer_name="Sun Study",
+        layer_name="Solar Analysis",
     )
     assert report.tiles == 2
 
@@ -220,7 +220,7 @@ def test_the_worksheet_is_emptied_first_and_the_run_says_so() -> None:
         sunlit=SUNLIT,
         times=["09:00"],
         spacing_m=0.25,
-        layer_name="Sun Study",
+        layer_name="Solar Analysis",
     )
 
     assert report.cleared == 2
@@ -239,7 +239,7 @@ def test_drawing_no_instants_at_all_is_refused() -> None:
             sunlit=SUNLIT,
             times=[],
             spacing_m=0.25,
-            layer_name="Sun Study",
+            layer_name="Solar Analysis",
         )
 
 
@@ -253,7 +253,7 @@ def test_clearing_a_database_takes_hatches_and_texts_together() -> None:
             ),
             "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 7}] * 3},
             "GetAttributesByType": {
-                "attributes": [{"attributeId": {"guid": "l"}, "index": 7, "name": "Sun Study"}]
+                "attributes": [{"attributeId": {"guid": "l"}, "index": 7, "name": "Solar Analysis"}]
             },
             "GetLayers": {
                 "layers": [{"attributeId": {"guid": "l"}, "isHidden": False, "isLocked": False}]
@@ -375,7 +375,7 @@ def test_elements_left_behind_by_a_refused_delete_are_reported() -> None:
             "GetElementsByType": {"elements": [{"elementId": {"guid": "a"}}]},
             "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 7}]},
             "GetAttributesByType": {
-                "attributes": [{"attributeId": {"guid": "l"}, "index": 7, "name": "Sun Study"}]
+                "attributes": [{"attributeId": {"guid": "l"}, "index": 7, "name": "Solar Analysis"}]
             },
             "GetLayers": {
                 "layers": [{"attributeId": {"guid": "l"}, "isHidden": False, "isLocked": False}]

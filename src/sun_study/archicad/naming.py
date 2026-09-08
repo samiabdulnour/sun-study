@@ -46,7 +46,15 @@ DEFAULT_PREFIX = "14 |"
 
 #: The word between the prefix and the part, in a layer name. Not settable:
 #: it is what the tool *is*, while the prefix is where the office keeps it.
-GROUP_WORD = "Sun Study"
+GROUP_WORD = "Solar Analysis"
+
+#: And what the *shadow* study is, which is a different drawing answering a
+#: different question. A shadow diagram is about the neighbourhood -- what the
+#: proposal darkens that was not dark before -- while the solar analysis is
+#: about the apartments inside it. Filing both under one word made a layer
+#: list where the two could not be told apart, and a reader looking for the
+#: shadow sheets had to know they were kept under something else.
+SHADOW_WORD = "Shadow Diagram"
 
 #: No trailing space: the callers add one, because the search that finds the
 #: tool's own work matches ``f"{prefix()} "`` and a prefix with the space baked
@@ -89,19 +97,24 @@ def prefix() -> str:
     return _prefix
 
 
-def group() -> str:
+def group(word: str = GROUP_WORD) -> str:
     """The group the tool's layers belong to, under the prefix.
 
     Layers are named ``group.part`` on the reference project -- ``01 |
     Wall.External``, ``06 | Zone.Units`` -- so the study's follow:
-    ``14 | Sun Study.Results``.
+    ``14 | Solar Analysis.Results``.
+
+    ``word`` says which study, because the tool makes two that are read by
+    different people for different reasons. It defaults to the solar analysis
+    because most of the tool is that; the shadow drawings pass
+    ``SHADOW_WORD``.
     """
-    return f"{_prefix} {GROUP_WORD}"
+    return f"{_prefix} {word}"
 
 
-def layer(part: str) -> str:
+def layer(part: str, word: str = GROUP_WORD) -> str:
     """One of the tool's layers, named the way the project names layers."""
-    return f"{group()}.{part}"
+    return f"{group(word)}.{part}"
 
 
 def named(what: str) -> str:

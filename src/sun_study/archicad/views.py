@@ -324,7 +324,7 @@ def views_for_storeys(
     # the whole map instead left a run's views scattered through the folders
     # of earlier runs, which is worse than a few stale ones: the current set
     # was no longer in one place.
-    home = folder or f"{prefix} Sun Study"
+    home = folder or f"{prefix} {naming.GROUP_WORD}"
     wanted = [f"{prefix} {item.name} {suffix}" for item in storeys]
     already = _by_name_under(connection, "PublicViewMap", home)
     missing = [

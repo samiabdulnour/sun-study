@@ -93,7 +93,7 @@ def export_combination() -> str:
     as a constant, because the prefix is chosen per run and a name captured at
     import would be the default whatever the run was told.
     """
-    return naming.named("Sun Study Export")
+    return naming.named(f"{naming.GROUP_WORD} Export")
 
 
 @dataclass(frozen=True)
@@ -483,6 +483,7 @@ def export_state(
     connection: ArchicadConnection,
     *,
     combination: str | None = None,
+    as_shown: bool = False,
     only: Sequence[str] = (),
     require: Sequence[str] = (),
     hide: Sequence[str] = (),
@@ -527,6 +528,21 @@ def export_state(
     # run's layer prefix, which a default argument would have frozen at import.
     record_as = record_as or export_combination()
     source = record_as
+
+    if as_shown:
+        # Borrowed, not composed. Everything stays exactly as somebody left
+        # it, which is the point: the state is their answer about what belongs
+        # in an export, and the tool has no better one for a project whose
+        # export set lives in a view it cannot open.
+        yield LayerPlan(
+            combination="as shown in Archicad",
+            shown=(),
+            unlocked=(),
+            hidden=(),
+            total=len(before),
+            changed=0,
+        )
+        return
 
     if combination and only:
         raise ArchicadError(

@@ -496,7 +496,7 @@ class Job:
 class Window:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Sun Study")
+        self.root.title("Solar Analysis")
         # Never taller than the screen. A window opened past the bottom edge
         # cannot be dragged back by its title bar, so everything below the
         # fold -- Run included -- is out of reach, which is the fault this

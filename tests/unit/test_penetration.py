@@ -46,10 +46,12 @@ def connect(**overrides: Any) -> tuple[ArchicadConnection, FakeTransport]:
     responses: dict[str, Any] = {
         "GetAddOnVersion": {"version": "1.5.7"},
         "GetAttributesByType": {
-            "attributes": [{"attributeId": {"guid": "l"}, "index": 7, "name": "Sun Study 12:00"}]
+            "attributes": [
+                {"attributeId": {"guid": "l"}, "index": 7, "name": "Solar Analysis 12:00"}
+            ]
         },
         "GetLayers": {
-            "layers": [{"name": "Sun Study 12:00", "isHidden": False, "isLocked": False}]
+            "layers": [{"name": "Solar Analysis 12:00", "isHidden": False, "isLocked": False}]
         },
         "GetElementsByType": {"elements": []},
         "DeleteElements": {"success": True},
@@ -74,7 +76,7 @@ def draw(connection: ArchicadConnection, **overrides: Any):  # type: ignore[no-u
         "zones": [ZONE, FAR_ZONE],
         "export_extents": EXTENTS,
         "annotations": {"flat-1": ["Sunlit floor 0.50 m2", "P.O.S. 0.00 m2", "Not Achieved"]},
-        "layer_prefix": "Sun Study",
+        "layer_prefix": "Solar Analysis",
     }
     arguments.update(overrides)
     return draw_penetration(connection, **arguments)

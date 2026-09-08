@@ -67,7 +67,7 @@ __all__ = [
     "write_assessment",
 ]
 
-PROPERTY_GROUP_NAME = "Sun Study"
+PROPERTY_GROUP_NAME = "Solar Analysis"
 
 
 @dataclass(frozen=True)
@@ -116,17 +116,17 @@ APARTMENT_PROPERTIES: tuple[PropertySpec, ...] = (
         "denominator. Excluded apartments still carry their measured hours.",
     ),
     PropertySpec(
-        "Sun Study Note",
+        "Solar Analysis Note",
         "string",
         "Why an apartment was excluded or flagged, where the ruleset gave a reason.",
     ),
     PropertySpec(
-        "Sun Study Ruleset",
+        "Solar Analysis Ruleset",
         "string",
         "The ruleset and version the verdict came from, and the area variant.",
     ),
     PropertySpec(
-        "Sun Study Run",
+        "Solar Analysis Run",
         "string",
         "When these values were written. A value older than the last massing "
         "change is stale and must not be quoted.",
@@ -609,12 +609,12 @@ def _values_for(
         "Meets Minimum": _yes_no(apartment.meets_minimum),
         "No Direct Sunlight": _yes_no(apartment.receives_no_sunlight),
         "Counted in Compliance": _yes_no(apartment.counted),
-        "Sun Study Note": apartment.note,
-        "Sun Study Ruleset": (
+        "Solar Analysis Note": apartment.note,
+        "Solar Analysis Ruleset": (
             f"{assessment.ruleset_identifier} / {assessment.area_key} "
             f"({assessment.minimum_minutes / 60:g}h {assessment.continuity})"
         ),
-        "Sun Study Run": run_stamp,
+        "Solar Analysis Run": run_stamp,
     }
 
 

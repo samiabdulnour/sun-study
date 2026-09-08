@@ -106,12 +106,12 @@ def test_the_detail_is_kept_so_one_schedule_breaks_down_by_hour() -> None:
     """Without it a schedule can total the study and nothing else."""
     assert (
         fill_id(SHADOW, "JUNE 21 -9AM", "EXISTING")
-        == "SUN STUDY / SHADOW / JUNE 21 -9AM / EXISTING"
+        == "SOLAR ANALYSIS / SHADOW / JUNE 21 -9AM / EXISTING"
     )
 
 
 def test_an_empty_part_is_dropped_rather_than_left_as_a_gap() -> None:
-    assert fill_id(SOLAR, "", "  ") == "SUN STUDY / SOLAR"
+    assert fill_id(SOLAR, "", "  ") == "SOLAR ANALYSIS / SOLAR"
 
 
 # -- what must not be totalled --------------------------------------------
@@ -131,8 +131,8 @@ def test_a_fill_marked_none_is_created_and_never_tagged() -> None:
 
     assert report.written == 2
     assert [entry["propertyValue"]["value"] for entry in transport.written] == [
-        "SUN STUDY / SHADOW / 9AM",
-        "SUN STUDY / SHADOW / 10AM",
+        "SOLAR ANALYSIS / SHADOW / 9AM",
+        "SOLAR ANALYSIS / SHADOW / 10AM",
     ]
 
 

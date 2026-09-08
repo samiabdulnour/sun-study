@@ -3794,7 +3794,7 @@ def init_properties_command(
         ),
     ] = False,
 ) -> None:
-    """Create the 'Sun Study' property group and its properties in the project.
+    """Create the 'Solar Analysis' property group and its properties in the project.
 
     A separate, explicit step rather than something a results run does behind
     your back: property definitions are part of the project file, so on a
@@ -5027,6 +5027,18 @@ def archicad_run(
             ),
         ),
     ] = None,
+    layers_as_shown: Annotated[
+        bool,
+        typer.Option(
+            "--layers-as-shown",
+            help=(
+                "Export exactly what Archicad is showing and change nothing. For a "
+                "project whose export set lives in a saved view rather than a named "
+                "layer combination: open that view, then run this. The add-on cannot "
+                "open a view itself before Archicad 27."
+            ),
+        ),
+    ] = False,
     ifc_out: Annotated[
         Path | None,
         typer.Option("--ifc-out", help="Keep the exported IFC here instead of discarding it."),
@@ -5058,7 +5070,7 @@ def archicad_run(
         raise typer.BadParameter(str(error), param_hint="--layer-prefix") from error
 
     layer = layer or default_layer_name()
-    sheet_name = sheet_name or naming.named("Sun Study")
+    sheet_name = sheet_name or naming.named(naming.GROUP_WORD)
 
     connection = _connect(port, timeout)
     typer.echo(describe_connection(connection))
@@ -5102,9 +5114,16 @@ def archicad_run(
             # input to every number below. It is set here and put back after,
             # rather than checked and complained about: what somebody left on
             # screen is not a decision about the study.
+            # What is on screen, untouched, when asked for. A project may keep
+            # its export set in a saved view rather than a named layer
+            # combination -- Kogarah keeps it in one called Lumion -- and a
+            # view's layer state cannot be read or applied through the add-on
+            # before Archicad 27. So the run borrows the state a person has
+            # already chosen rather than composing one of its own.
             with export_state(
                 connection,
                 combination=layer_combination,
+                as_shown=layers_as_shown,
                 # What the study needs on regardless of what the base shows:
                 # neither of the reference project's own export combinations
                 # shows its zone layers, and an export with no IfcSpace in it

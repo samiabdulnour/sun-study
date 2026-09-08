@@ -287,12 +287,12 @@ def layer_name(label: str) -> str:
     twenty-one, and because a colleague switching layers by hand in the Layer
     Settings dialog is reading this string and nothing else.
     """
-    return naming.layer(f"Shadow {label}")
+    return naming.layer(label, naming.SHADOW_WORD)
 
 
 def combination_name(label: str) -> str:
     """The Layer Combination that shows exactly that hour."""
-    return naming.named(f"Shadow {label}")
+    return naming.named(f"{naming.SHADOW_WORD} {label}")
 
 
 def shared_layer_name() -> str:
@@ -302,7 +302,7 @@ def shared_layer_name() -> str:
     instant, and twenty-one copies of a legend is twenty-one things to correct
     when somebody changes a pen.
     """
-    return naming.layer("Shadow Legend")
+    return naming.layer("Legend", naming.SHADOW_WORD)
 
 
 @dataclass(frozen=True)
@@ -663,7 +663,7 @@ def sheet_name(date_label: str, part: int, parts: int) -> str:
     21 (1 of 1)* is a sheet number nobody wants and a title block nobody wants
     to read.
     """
-    stem = f"Shadow Diagrams - {date_label}"
+    stem = f"{naming.SHADOW_WORD}s - {date_label}"
     return naming.named(stem if parts == 1 else f"{stem} ({part} of {parts})")
 
 

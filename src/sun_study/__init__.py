@@ -26,7 +26,7 @@ __version__ = "0.0.1"
 #: properties and every sheet the tool draws, from here, so the three cannot
 #: drift apart -- the same reason the disclaimer has a module of its own.
 AUTHOR = "Sami Abdulnour"
-PRODUCT = "Sun Study"
+PRODUCT = "Solar Analysis"
 
 #: The copyright line, kept beside the author for the same reason: the window,
 #: the executable's file properties and every sheet must say the same thing.

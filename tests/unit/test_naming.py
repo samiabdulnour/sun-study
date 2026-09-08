@@ -39,8 +39,8 @@ def test_the_default_is_the_reference_projects_next_free_group() -> None:
     """``14`` because that project's layer groups run 00 to 13. Right there,
     a guess anywhere else, which is the whole reason for the flag."""
     assert naming.prefix() == "14 |"
-    assert naming.layer("Results") == "14 | Sun Study.Results"
-    assert naming.named("Sun Study 09:00") == "14 | Sun Study 09:00"
+    assert naming.layer("Results") == "14 | Solar Analysis.Results"
+    assert naming.named("Solar Analysis 09:00") == "14 | Solar Analysis 09:00"
 
 
 def test_a_chosen_prefix_reaches_every_kind_of_name() -> None:
@@ -49,12 +49,12 @@ def test_a_chosen_prefix_reaches_every_kind_of_name() -> None:
     naming.set_prefix("ZZ |")
 
     assert naming.prefix() == "ZZ |"
-    assert naming.group() == "ZZ | Sun Study"
-    assert naming.layer("Results") == "ZZ | Sun Study.Results"
+    assert naming.group() == "ZZ | Solar Analysis"
+    assert naming.layer("Results") == "ZZ | Solar Analysis.Results"
     assert naming.named("Solar Model") == "ZZ | Solar Model"
     # The names other modules hand out, which used to be constants.
-    assert default_layer_name() == "ZZ | Sun Study.Results"
-    assert export_combination() == "ZZ | Sun Study Export"
+    assert default_layer_name() == "ZZ | Solar Analysis.Results"
+    assert export_combination() == "ZZ | Solar Analysis Export"
 
 
 def test_an_empty_prefix_is_refused_because_it_matches_everything() -> None:
@@ -71,7 +71,7 @@ def test_whitespace_is_collapsed_because_a_copied_name_brings_it_along() -> None
     """``14  |`` would name everything this run makes and match nothing the
     next run searches for."""
     assert naming.set_prefix("  14   |  ") == "14 |"
-    assert naming.layer("Facade") == "14 | Sun Study.Facade"
+    assert naming.layer("Facade") == "14 | Solar Analysis.Facade"
 
 
 def test_an_unset_option_leaves_the_prefix_alone() -> None:

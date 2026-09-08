@@ -69,6 +69,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError, activate
 
 __all__ = [
@@ -546,7 +547,7 @@ def layout_results(
     placed = layout_from_views(
         connection,
         [
-            (view, f"Sun Study -- storey {storey}")
+            (view, f"{naming.GROUP_WORD} -- storey {storey}")
             for storey, view in zip(ordered, views, strict=True)
         ],
         layout_name=layout_name,

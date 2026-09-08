@@ -1118,8 +1118,8 @@ def test_write_sends_display_strings_in_hours() -> None:
     assert by_property[identifiers["Private Open Space Sunlight (h)"]] == "3.33"
     assert by_property[identifiers["Meets Minimum"]] == "Yes"
     assert by_property[identifiers["No Direct Sunlight"]] == "No"
-    assert by_property[identifiers["Sun Study Run"]] == "2026-08-13 00:00 UTC"
-    assert "nsw_adg@1.0.0" in by_property[identifiers["Sun Study Ruleset"]]
+    assert by_property[identifiers["Solar Analysis Run"]] == "2026-08-13 00:00 UTC"
+    assert "nsw_adg@1.0.0" in by_property[identifiers["Solar Analysis Ruleset"]]
 
     assert all(entry["elementId"] == {"guid": "z1"} for entry in values)
     assert report.complete
@@ -2593,7 +2593,7 @@ def _layout_responses(**overrides: Any) -> dict[str, Any]:
         "GetLayoutSettings": {
             "layoutSettings": [
                 {
-                    "layoutName": "Sun Study",
+                    "layoutName": "Solar Analysis",
                     "horizontalSize": 841.0,
                     "verticalSize": 594.0,
                     "leftMargin": 10.0,
@@ -2627,7 +2627,7 @@ def test_a_storey_with_no_project_map_item_is_reported_not_skipped() -> None:
             CloneProjectMapItemToViewMap={"navigatorItems": [{"navigatorItemId": {"guid": "v8"}}]}
         )
     )
-    report = layout_results(connection, [8, 42], layout_name="Sun Study")
+    report = layout_results(connection, [8, 42], layout_name="Solar Analysis")
 
     assert report.drawings_placed == 1, "the storey that exists is still placed"
     assert report.missing_storeys == (42,)
@@ -2660,7 +2660,7 @@ def test_a_storey_plan_is_placed_at_full_magnification_in_metres() -> None:
     why the same run produced one sheet that was right and one that was not.
     """
     connection, transport = connect(_layout_responses())
-    layout_results(connection, [8, 9], layout_name="Sun Study", scale=100.0)
+    layout_results(connection, [8, 9], layout_name="Solar Analysis", scale=100.0)
 
     drawings = transport.parameters_for("CreateDrawings")["drawingsData"]
     assert all(d["scale"] == 1.0 for d in drawings), (
@@ -2674,7 +2674,7 @@ def test_the_storeys_are_pinned_to_the_scale_the_run_reports() -> None:
     """Otherwise the drawing inherits whatever scale the storey was saved at,
     and "placed 2 drawings at 1:200" describes something that did not happen."""
     connection, transport = connect(_layout_responses())
-    layout_results(connection, [8, 9], layout_name="Sun Study", scale=200.0)
+    layout_results(connection, [8, 9], layout_name="Solar Analysis", scale=200.0)
 
     pinned = transport.parameters_for("SetViewSettings")["navigatorItemIdsWithViewSettings"]
     assert [entry["navigatorItemId"]["guid"] for entry in pinned] == ["v8", "v9"]
@@ -2691,12 +2691,12 @@ def test_a_layout_is_built_on_a_master_that_names_the_scale() -> None:
     reports it.
     """
     connection, transport = connect(_layout_responses())
-    report = layout_results(connection, [8, 9], layout_name="Sun Study", scale=200.0)
+    report = layout_results(connection, [8, 9], layout_name="Solar Analysis", scale=200.0)
 
     sent = transport.parameters_for("CreateLayout")["layoutsData"]
-    assert sent == [{"layoutName": "Sun Study", "masterNavigatorItemId": {"guid": "m-a1-200"}}], (
-        "the 1:200 master, not the first in the book"
-    )
+    assert sent == [
+        {"layoutName": "Solar Analysis", "masterNavigatorItemId": {"guid": "m-a1-200"}}
+    ], "the 1:200 master, not the first in the book"
     assert report.master_name == "A1 - VERTICAL 1:200"
     assert "on master 'A1 - VERTICAL 1:200'" in report.describe()
 
@@ -2728,7 +2728,7 @@ def test_finishing_a_sheet_puts_the_floor_plan_back() -> None:
     monkey.setattr(cli, "straighten_and_tile", note("straighten_and_tile"))
     monkey.setattr(cli, "ensure_model_database", note("ensure_model_database"))
     try:
-        cli.report_layout(connection, [8, 9], name="Sun Study")
+        cli.report_layout(connection, [8, 9], name="Solar Analysis")
     finally:
         monkey.undo()
 
@@ -2752,7 +2752,7 @@ def test_a_reused_layout_says_it_kept_its_own_master() -> None:
         {
             "navigatorItem": {
                 "type": "LayoutItem",
-                "name": "Sun Study",
+                "name": "Solar Analysis",
                 "navigatorItemId": {"guid": "old"},
                 "prefix": "",
             }
@@ -2764,7 +2764,7 @@ def test_a_reused_layout_says_it_kept_its_own_master() -> None:
             GetDatabaseIdFromNavigatorItemId={"databases": [{"databaseId": {"guid": "old"}}]},
         )
     )
-    report = layout_from_views(connection, [("v8", "one")], layout_name="Sun Study")
+    report = layout_from_views(connection, [("v8", "one")], layout_name="Solar Analysis")
 
     assert "CreateLayout" not in transport.commands(), "a second sheet of one name is worse"
     assert report.reused
@@ -3004,7 +3004,7 @@ def test_a_named_master_that_does_not_exist_lists_the_ones_that_do() -> None:
     connection, _ = connect(_layout_responses())
     with pytest.raises(ArchicadError, match="A1 - VERTICAL 1:200"):
         layout_results(
-            connection, [8, 9], layout_name="Sun Study", master_layout="A1 VERTICAL 1:250"
+            connection, [8, 9], layout_name="Solar Analysis", master_layout="A1 VERTICAL 1:250"
         )
 
 
@@ -3059,7 +3059,7 @@ def test_only_the_storeys_that_carry_fills_are_cloned() -> None:
             CloneProjectMapItemToViewMap={"navigatorItems": [{"navigatorItemId": {"guid": "v8"}}]}
         )
     )
-    layout_results(connection, [8], layout_name="Sun Study")
+    layout_results(connection, [8], layout_name="Solar Analysis")
 
     cloned = transport.parameters_for("CloneProjectMapItemToViewMap")["viewsData"]
     assert cloned == [{"navigatorItemId": {"guid": "s8"}}]
@@ -3068,7 +3068,7 @@ def test_only_the_storeys_that_carry_fills_are_cloned() -> None:
 def test_no_storeys_makes_no_layout_at_all() -> None:
     """A run that drew nothing must not leave an empty sheet behind."""
     connection, transport = connect(_layout_responses())
-    report = layout_results(connection, [], layout_name="Sun Study")
+    report = layout_results(connection, [], layout_name="Solar Analysis")
 
     assert report.drawings_placed == 0
     assert "CreateLayout" not in transport.commands()
@@ -3087,7 +3087,7 @@ def test_a_per_drawing_failure_is_raised_not_swallowed() -> None:
         )
     )
     with pytest.raises(ArchicadError, match="layout is locked"):
-        layout_results(connection, [8, 9], layout_name="Sun Study")
+        layout_results(connection, [8, 9], layout_name="Solar Analysis")
 
 
 def test_a_clone_that_returns_the_wrong_count_is_refused() -> None:
@@ -3099,7 +3099,7 @@ def test_a_clone_that_returns_the_wrong_count_is_refused() -> None:
         )
     )
     with pytest.raises(ArchicadError, match="parallel"):
-        layout_results(connection, [8, 9], layout_name="Sun Study")
+        layout_results(connection, [8, 9], layout_name="Solar Analysis")
 
 
 def test_the_sheet_needs_an_older_add_on_than_the_drawing_does() -> None:
@@ -3107,7 +3107,7 @@ def test_the_sheet_needs_an_older_add_on_than_the_drawing_does() -> None:
     the binding constraint and is gated on its own."""
     transport = FakeTransport({"GetAddOnVersion": {"version": "1.3.0"}})
     with pytest.raises(TapirUnavailableError, match="CreateLayout"):
-        layout_results(ArchicadConnection(transport), [8], layout_name="Sun Study")
+        layout_results(ArchicadConnection(transport), [8], layout_name="Solar Analysis")
 
 
 def test_the_project_map_is_flattened_through_folders() -> None:
@@ -3464,10 +3464,10 @@ def test_a_sheet_is_moved_into_the_subset_the_practice_already_uses() -> None:
 
     loose = _book(
         _node("SHADOW DIAGRAMS", "SubSetItem"),
-        _node(f"{SS} Sun Study 09:00", "LayoutItem"),
+        _node(f"{SS} Solar Analysis 09:00", "LayoutItem"),
     )
     filed = _book(
-        _node("SHADOW DIAGRAMS", "SubSetItem", _node(f"{SS} Sun Study 09:00", "LayoutItem")),
+        _node("SHADOW DIAGRAMS", "SubSetItem", _node(f"{SS} Solar Analysis 09:00", "LayoutItem")),
     )
     connection, transport = connect(
         {
@@ -3475,13 +3475,13 @@ def test_a_sheet_is_moved_into_the_subset_the_practice_already_uses() -> None:
             "MoveNavigatorItem": {"success": True},
         }
     )
-    report = file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+    report = file_under_subset(connection, [f"{SS} Solar Analysis 09:00"], "SHADOW DIAGRAMS")
 
     assert transport.parameters_for("MoveNavigatorItem") == {
-        "navigatorItemIdToMove": {"guid": f"{SS} Sun Study 09:00"},
+        "navigatorItemIdToMove": {"guid": f"{SS} Solar Analysis 09:00"},
         "parentNavigatorItemId": {"guid": "SHADOW DIAGRAMS"},
     }
-    assert report.moved == (f"{SS} Sun Study 09:00",)
+    assert report.moved == (f"{SS} Solar Analysis 09:00",)
     assert "filed 1 sheet(s) under 'SHADOW DIAGRAMS'" in report.describe()
 
 
@@ -3491,13 +3491,13 @@ def test_a_sheet_already_in_the_subset_is_not_moved_again() -> None:
     from sun_study.archicad.layout import file_under_subset
 
     filed = _book(
-        _node("ADG DIAGRAMS", "SubSetItem", _node(f"{SS} Sun Study Bands", "LayoutItem")),
+        _node("ADG DIAGRAMS", "SubSetItem", _node(f"{SS} Solar Analysis Bands", "LayoutItem")),
     )
     connection, transport = connect({"GetNavigatorItemTree": filed})
-    report = file_under_subset(connection, [f"{SS} Sun Study Bands"], "ADG DIAGRAMS")
+    report = file_under_subset(connection, [f"{SS} Solar Analysis Bands"], "ADG DIAGRAMS")
 
     assert "MoveNavigatorItem" not in transport.commands()
-    assert report.already == (f"{SS} Sun Study Bands",) and report.moved == ()
+    assert report.already == (f"{SS} Solar Analysis Bands",) and report.moved == ()
 
 
 def test_a_subset_that_is_not_there_is_reported_not_created() -> None:
@@ -3506,9 +3506,9 @@ def test_a_subset_that_is_not_there_is_reported_not_created() -> None:
     from sun_study.archicad.layout import file_under_subset
 
     connection, transport = connect(
-        {"GetNavigatorItemTree": _book(_node(f"{SS} Sun Study 09:00", "LayoutItem"))}
+        {"GetNavigatorItemTree": _book(_node(f"{SS} Solar Analysis 09:00", "LayoutItem"))}
     )
-    report = file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+    report = file_under_subset(connection, [f"{SS} Solar Analysis 09:00"], "SHADOW DIAGRAMS")
 
     assert report.no_such_subset is True
     assert "MoveNavigatorItem" not in transport.commands()
@@ -3523,7 +3523,7 @@ def test_a_move_that_reported_success_and_did_nothing_is_caught() -> None:
 
     loose = _book(
         _node("SHADOW DIAGRAMS", "SubSetItem"),
-        _node(f"{SS} Sun Study 09:00", "LayoutItem"),
+        _node(f"{SS} Solar Analysis 09:00", "LayoutItem"),
     )
     connection, _ = connect(
         {
@@ -3532,7 +3532,7 @@ def test_a_move_that_reported_success_and_did_nothing_is_caught() -> None:
         }
     )
     with pytest.raises(ArchicadError, match="would not move into"):
-        file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+        file_under_subset(connection, [f"{SS} Solar Analysis 09:00"], "SHADOW DIAGRAMS")
 
 
 def test_a_sheet_the_book_does_not_hold_is_named_rather_than_counted() -> None:
@@ -3540,9 +3540,9 @@ def test_a_sheet_the_book_does_not_hold_is_named_rather_than_counted() -> None:
 
     book = _book(_node("SHADOW DIAGRAMS", "SubSetItem"))
     connection, _ = connect({"GetNavigatorItemTree": book})
-    report = file_under_subset(connection, [f"{SS} Sun Study 09:00"], "SHADOW DIAGRAMS")
+    report = file_under_subset(connection, [f"{SS} Solar Analysis 09:00"], "SHADOW DIAGRAMS")
 
-    assert report.missing == (f"{SS} Sun Study 09:00",)
+    assert report.missing == (f"{SS} Solar Analysis 09:00",)
     assert report.moved == ()
 
 
@@ -3552,7 +3552,7 @@ def test_a_sheet_the_book_does_not_hold_is_named_rather_than_counted() -> None:
 def _view_world(**overrides: Any) -> dict[str, Any]:
     responses: dict[str, Any] = {
         "GetNavigatorItemTree": _navigator(
-            "PublicViewMap", ("FolderItem", f"{SS} Sun Study fix 01")
+            "PublicViewMap", ("FolderItem", f"{SS} Solar Analysis fix 01")
         ),
         "CreateViewMapFolder": {"navigatorItemId": {"guid": "F1"}},
         "CreateViewsInViewMap": {"navigatorItems": [{"navigatorItemId": {"guid": "V1"}}]},
@@ -3579,10 +3579,10 @@ def test_a_view_carries_the_scale_and_is_pinned_square_to_the_page() -> None:
     made = views_for_storeys(
         connection,
         [_storey()],
-        combination=f"{SS} Sun Study 09:00",
+        combination=f"{SS} Solar Analysis 09:00",
         suffix="09:00",
         drawing_scale=200,
-        folder=f"{SS} Sun Study fix 01",
+        folder=f"{SS} Solar Analysis fix 01",
     )
 
     assert [view.name for view in made] == [f"{SS} LEVEL 01 09:00"]
@@ -3590,7 +3590,7 @@ def test_a_view_carries_the_scale_and_is_pinned_square_to_the_page() -> None:
     settings = sent[0]["viewSettings"]
     assert settings["drawingScale"] == 200
     assert settings["rotation"] == 0
-    assert settings["layerCombination"] == f"{SS} Sun Study 09:00"
+    assert settings["layerCombination"] == f"{SS} Solar Analysis 09:00"
 
 
 def test_a_view_that_refuses_its_settings_is_raised_not_drawn_anyway() -> None:
@@ -3613,7 +3613,7 @@ def test_a_view_that_refuses_its_settings_is_raised_not_drawn_anyway() -> None:
             combination=f"{SS} X",
             suffix="09:00",
             drawing_scale=200,
-            folder=f"{SS} Sun Study fix 01",
+            folder=f"{SS} Solar Analysis fix 01",
         )
 
 
@@ -3701,7 +3701,7 @@ def test_the_drawings_that_go_with_a_layout_are_not_counted_as_removed() -> None
             "GetNavigatorItemTree": Sequential(
                 _navigator(
                     "LayoutBook",
-                    ("LayoutItem", f"{SS} Sun Study 09:00"),
+                    ("LayoutItem", f"{SS} Solar Analysis 09:00"),
                     ("DrawingItem", f"{SS} LEVEL 01 09:00"),
                     ("DrawingItem", f"{SS} LEVEL 02 09:00"),
                 ),
@@ -3716,7 +3716,7 @@ def test_the_drawings_that_go_with_a_layout_are_not_counted_as_removed() -> None
     gone, left = remove_previous(connection)
 
     asked = transport.parameters_for("DeleteNavigatorItems")["navigatorItemIds"]
-    assert [entry["navigatorItemId"]["guid"] for entry in asked] == [f"{SS} Sun Study 09:00"]
+    assert [entry["navigatorItemId"]["guid"] for entry in asked] == [f"{SS} Solar Analysis 09:00"]
     assert (gone, left) == (1, 0)
 
 
@@ -3732,12 +3732,12 @@ def test_the_tools_own_run_folder_is_not_a_view_it_failed_to_delete() -> None:
                 _navigator("LayoutBook"),
                 _navigator(
                     "PublicViewMap",
-                    ("FolderItem", f"{SS} Sun Study fix 01"),
+                    ("FolderItem", f"{SS} Solar Analysis fix 01"),
                     ("StoryItem", f"{SS} LEVEL 01 09:00"),
                 ),
-                _navigator("PublicViewMap", ("FolderItem", f"{SS} Sun Study fix 01")),
+                _navigator("PublicViewMap", ("FolderItem", f"{SS} Solar Analysis fix 01")),
                 _navigator("LayoutBook"),
-                _navigator("PublicViewMap", ("FolderItem", f"{SS} Sun Study fix 01")),
+                _navigator("PublicViewMap", ("FolderItem", f"{SS} Solar Analysis fix 01")),
             ),
             "DeleteNavigatorItems": {},
         }
@@ -3791,14 +3791,16 @@ def test_something_the_tool_did_not_make_is_never_touched() -> None:
 
 def _one_layer(*, hidden: bool, locked: bool = False, **rest: Any) -> dict[str, Any]:
     attribute = {
-        "name": "Sun Study.Results",
+        "name": "Solar Analysis.Results",
         "isHidden": hidden,
         "isLocked": locked,
         **rest,
     }
     return {
         "GetAttributesByType": {
-            "attributes": [{"attributeId": {"guid": "g"}, "index": 12, "name": "Sun Study.Results"}]
+            "attributes": [
+                {"attributeId": {"guid": "g"}, "index": 12, "name": "Solar Analysis.Results"}
+            ]
         },
         "GetLayers": {"layers": [{"layerAttribute": attribute}]},
         "CreateLayers": {},
@@ -3809,7 +3811,7 @@ def test_a_results_layer_that_is_already_visible_is_left_entirely_alone() -> Non
     from sun_study.archicad.draw import ensure_layer
 
     connection, transport = connect(_one_layer(hidden=False))
-    layer = ensure_layer(connection, "Sun Study.Results")
+    layer = ensure_layer(connection, "Solar Analysis.Results")
 
     assert (layer.index, layer.hidden, layer.invisible) == (12, False, False)
     assert "CreateLayers" not in transport.commands(), "nothing to do, so nothing written"
@@ -3824,12 +3826,20 @@ def test_a_hidden_results_layer_is_switched_on_because_nobody_would_see_the_run(
         {
             **_one_layer(hidden=True),
             "GetLayers": Sequential(
-                {"layers": [{"layerAttribute": {"name": "Sun Study.Results", "isHidden": True}}]},
-                {"layers": [{"layerAttribute": {"name": "Sun Study.Results", "isHidden": False}}]},
+                {
+                    "layers": [
+                        {"layerAttribute": {"name": "Solar Analysis.Results", "isHidden": True}}
+                    ]
+                },
+                {
+                    "layers": [
+                        {"layerAttribute": {"name": "Solar Analysis.Results", "isHidden": False}}
+                    ]
+                },
             ),
         }
     )
-    layer = ensure_layer(connection, "Sun Study.Results")
+    layer = ensure_layer(connection, "Solar Analysis.Results")
 
     assert layer.hidden is False
     written_layer = transport.parameters_for("CreateLayers")
@@ -3847,7 +3857,7 @@ def test_switching_the_layer_on_does_not_flatten_the_rest_of_it() -> None:
     connection, transport = connect(
         _one_layer(hidden=True, isWireframe=True, intersectionGroupNr=5)
     )
-    ensure_layer(connection, "Sun Study.Results")
+    ensure_layer(connection, "Solar Analysis.Results")
 
     sent = transport.parameters_for("CreateLayers")["layerDataArray"][0]
     assert sent["isWireframe"] is True
@@ -3863,15 +3873,19 @@ def test_a_layer_that_is_not_there_is_created_rather_than_demanded() -> None:
                 {"attributes": []},
                 {
                     "attributes": [
-                        {"attributeId": {"guid": "g"}, "index": 12, "name": "Sun Study.Results"}
+                        {
+                            "attributeId": {"guid": "g"},
+                            "index": 12,
+                            "name": "Solar Analysis.Results",
+                        }
                     ]
                 },
             ),
-            "GetLayers": {"layers": [{"layerAttribute": {"name": "Sun Study.Results"}}]},
+            "GetLayers": {"layers": [{"layerAttribute": {"name": "Solar Analysis.Results"}}]},
             "CreateLayers": {},
         }
     )
-    assert ensure_layer(connection, "Sun Study.Results").index == 12
+    assert ensure_layer(connection, "Solar Analysis.Results").index == 12
     assert transport.parameters_for("CreateLayers")["overwriteExisting"] is False
 
 
@@ -3888,7 +3902,7 @@ def test_a_layer_created_but_not_listed_stops_the_run_with_the_reason() -> None:
         }
     )
     with pytest.raises(ArchicadError, match="does not list it"):
-        ensure_layer(connection, "Sun Study.Results")
+        ensure_layer(connection, "Solar Analysis.Results")
 
 
 # -- the combination every sheet is drawn through -------------------------
@@ -3903,7 +3917,7 @@ def _combination_world(**overrides: Any) -> dict[str, Any]:
             "attributes": [
                 {"attributeId": {"guid": "a"}, "index": 1, "name": "Walls"},
                 {"attributeId": {"guid": "b"}, "index": 2, "name": "05 | Grids.Main Floor Plan"},
-                {"attributeId": {"guid": "c"}, "index": 3, "name": "Sun Study 09:00"},
+                {"attributeId": {"guid": "c"}, "index": 3, "name": "Solar Analysis 09:00"},
             ]
         },
         "GetLayers": {
@@ -3926,7 +3940,7 @@ def _combination_world(**overrides: Any) -> dict[str, Any]:
                 },
                 {
                     "layerAttribute": {
-                        "name": "Sun Study 09:00",
+                        "name": "Solar Analysis 09:00",
                         "isHidden": True,
                         "isLocked": False,
                     }
@@ -3956,12 +3970,12 @@ def test_the_study_layer_is_shown_and_the_named_clutter_is_hidden() -> None:
 
     name = ensure_layer_combination(
         connection,
-        f"{SS} Sun Study 09:00",
-        show=["Sun Study 09:00"],
+        f"{SS} Solar Analysis 09:00",
+        show=["Solar Analysis 09:00"],
         hide=["05 | Grids.Main Floor Plan"],
     )
 
-    assert name == f"{SS} Sun Study 09:00"
+    assert name == f"{SS} Solar Analysis 09:00"
     written_layers = _combination_written(transport)
     assert written_layers["c"]["isHidden"] is False, "the study's own layer is the point"
     assert written_layers["b"]["isHidden"] is True, "named clutter is forced off"
@@ -4475,12 +4489,12 @@ def _sheet_collaborators(monkey: pytest.MonkeyPatch) -> None:
     from sun_study.archicad.sheets import SheetReport
 
     placed = types.SimpleNamespace(
-        describe=lambda: "placed 1 drawings at 1:300 on layout 'Sun Study Communal'",
+        describe=lambda: "placed 1 drawings at 1:300 on layout 'Solar Analysis Communal'",
         database_id="lay",
     )
     monkey.setattr(cli, "project_map", lambda *_: [types.SimpleNamespace(storey_index=8)])
     monkey.setattr(cli, "tool_layers", lambda *_: [])
-    monkey.setattr(cli, "ensure_layer_combination", lambda *a, **k: "Sun Study Communal")
+    monkey.setattr(cli, "ensure_layer_combination", lambda *a, **k: "Solar Analysis Communal")
     monkey.setattr(
         cli,
         "views_for_storeys",
@@ -4709,10 +4723,10 @@ def test_a_band_wall_carries_the_favorite_and_still_wins_on_material() -> None:
         _identity_transform(),
         0.04,
         0.03,
-        favorite="Sun Study Band",
+        favorite="Solar Analysis Band",
     )
 
-    assert wall["favoriteName"] == "Sun Study Band"
+    assert wall["favoriteName"] == "Solar Analysis Band"
     assert wall["buildingMaterialId"] == {"guid": "M"}, "the band's colour, not the Favorite's"
 
 
