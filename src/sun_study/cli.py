@@ -12,6 +12,7 @@ import collections
 import contextlib
 import dataclasses
 import datetime as dt
+import math
 import os
 import re
 import signal
@@ -2018,6 +2019,13 @@ def report_penetration(
             },
             annotations=annotation_for(result, clock.index(chosen[0].label)),
             layer_prefix=layer_prefix,
+            # Stated by both sides rather than fitted from the pairs: the
+            # export says where north is through IfcSite and the project
+            # through its georeferencing, and the angle between those two
+            # answers is the angle between the frames. Fitting it from the
+            # apartments would be fitting to points that carry the very error
+            # it exists to remove.
+            turn_deg=_frame_turn(connection, result),
         )
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
@@ -2705,6 +2713,22 @@ def _export_for_massing(
     if note:
         typer.secho(note, fg=typer.colors.YELLOW)
     return written
+
+
+def _frame_turn(connection: ArchicadConnection, result: PipelineResult) -> float:
+    """The angle from the export's frame to the project's, in degrees.
+
+    Both sides say where north is. Archicad reports it as a bearing for its
+    own +Y; the export reports its own, which is zero whenever the model was
+    written north-aligned. The difference is the turn, exactly, with no
+    regression in the middle -- see D46 and the shadow drawings, where fitting
+    this from geometry gave three different answers while the stated one never
+    moved.
+    """
+    north = read_geo_location(connection).north_radians
+    project_bearing = (270.0 + math.degrees(north)) % 360.0
+    export_bearing = float(result.scene.orientation.normalised_bearing_deg)
+    return float(((project_bearing - export_bearing + 180.0) % 360.0) - 180.0)
 
 
 def _floor_lit_at(

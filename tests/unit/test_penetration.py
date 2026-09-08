@@ -157,6 +157,52 @@ def test_fitting_pairs_box_centres_not_means() -> None:
         # centre, the box centre does not.
         outline=((0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)),
     )
-    fitted = fit_to_plan(EXTENTS, {"flat-1": lopsided, "flat-2": FAR_ZONE})
+    fitted = fit_to_plan(EXTENTS, {"flat-1": lopsided, "flat-2": FAR_ZONE}, turn_deg=0.0)
 
     assert fitted.rmse_m < 0.01
+
+
+def test_the_export_is_turned_before_either_box_is_taken() -> None:
+    """A bounding box is axis-aligned in whichever frame it is measured, so
+    the same flat boxed in a north-aligned export and again in a project
+    rotated away from it has two different centres -- further apart the longer
+    the flat is. Measured on Kogarah, boxing each in its own frame left 0.805 m
+    of residual and the drawing was refused, correctly and for a reason that
+    had nothing to do with the model.
+    """
+    import numpy as np
+
+    from sun_study.core.geometry import rotation_about_z
+
+    turn = 41.0
+    spin = rotation_about_z(-turn)[:2, :2]
+    # A long thin flat, which is where boxing in the wrong frame hurts most.
+    flat = np.array([[0.0, 0.0], [12.0, 0.0], [12.0, 2.0], [0.0, 2.0]])
+    # The project has it turned; the export has it north-aligned.
+    in_project = flat @ rotation_about_z(turn)[:2, :2].T
+    zone = ArchicadZone(
+        guid="zone-9",
+        name="long",
+        number="9",
+        outline=tuple((float(x), float(y)) for x, y in in_project),
+    )
+    other = ArchicadZone(
+        guid="zone-8",
+        name="other",
+        number="8",
+        outline=tuple(
+            (float(x), float(y))
+            for x, y in (flat + np.array([40.0, 5.0])) @ rotation_about_z(turn)[:2, :2].T
+        ),
+    )
+    extents = {
+        "a": np.column_stack([flat, np.zeros(len(flat))]),
+        "b": np.column_stack([flat + np.array([40.0, 5.0]), np.zeros(len(flat))]),
+    }
+
+    turned = fit_to_plan(extents, {"a": zone, "b": other}, turn_deg=turn)
+    assert turned.rmse_m < 0.001, "boxed in one frame, the pairs agree"
+
+    astray = fit_to_plan(extents, {"a": zone, "b": other}, turn_deg=0.0)
+    assert astray.rmse_m > 0.5, "boxed in different frames, they do not"
+    _ = spin

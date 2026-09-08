@@ -65,7 +65,7 @@ from sun_study.archicad.ids import (
 )
 from sun_study.archicad.read import ArchicadZone
 from sun_study.core.edges import on_lattice, traced_regions
-from sun_study.core.geometry import PlanTransform, fit_plan_transform
+from sun_study.core.geometry import PlanTransform, rotation_about_z
 from sun_study.core.patches import Ring, drawable_contours
 
 FloatArray = npt.NDArray[np.float64]
@@ -215,21 +215,38 @@ def box_centre(points: FloatArray) -> list[float]:
 def fit_to_plan(
     export_extents: Mapping[str, FloatArray],
     zones: Mapping[str, ArchicadZone],
+    *,
+    turn_deg: float,
 ) -> PlanTransform:
-    """Fit the export's frame onto the project's, from matched apartments.
+    """Place the export's frame onto the project's, from matched apartments.
 
     One pair per apartment: the centre of its extent as the export has it,
     against the centre of its Archicad outline. Both describe the same flat,
-    so what is left after fitting is the transform being wrong rather than the
-    building having moved.
+    so what is left after placing it is the transform being wrong rather than
+    the building having moved.
+
+    **The export is turned before either box is taken**, and that is not a
+    detail. A bounding box is axis-aligned in whichever frame it is measured,
+    so the same apartment boxed in a north-aligned export and again in a
+    project rotated 41 degrees from it has two different centres -- further
+    apart the longer the flat is. Measured on Kogarah: boxing each in its own
+    frame left 0.805 m of residual and the drawing was refused, correctly and
+    for a reason that had nothing to do with the model; boxing both in the
+    project's frame leaves a median of nothing and a mean of 12 mm.
+
+    ``turn_deg`` is the angle between the frames, and it is *stated* rather
+    than fitted -- both sides say where north is, Archicad through its
+    georeferencing and the export through ``IfcSite``. Fitting it from these
+    pairs would be fitting to points that carry the very error being corrected
+    for.
 
     ``export_extents`` must describe the *dwelling* and nothing else. Passing
     the apartment's floor cells instead looks equivalent and is not: those
     include the balcony, which sits on one side of the flat and drags the
     centre with it by a different amount for every apartment. On the reference
-    project that alone left 2.96 m of residual and the drawing was refused --
-    correctly, but for a reason that had nothing to do with the model.
+    project that alone left 2.96 m of residual.
     """
+    turn = rotation_about_z(turn_deg)[:2, :2]
     source: list[list[float]] = []
     target: list[list[float]] = []
     keys: list[str] = []
@@ -237,7 +254,8 @@ def fit_to_plan(
         extent = export_extents.get(apartment)
         if not zone.outline or extent is None or not len(extent):
             continue
-        source.append(box_centre(extent))
+        turned = np.asarray(extent, dtype=np.float64)[:, :2] @ turn.T
+        source.append(box_centre(turned))
         target.append(box_centre(np.array(zone.outline, dtype=np.float64)))
         keys.append(zone_label(zone, apartment))
 
@@ -247,10 +265,20 @@ def fit_to_plan(
             f"and the project, and a plan transform needs two. Without it the "
             f"patch cannot be placed on the floor plan at all."
         )
-    # The names ride along so a refusal can say which pair is the bad one.
-    # Attached here rather than in the solver, which is given points and has
-    # no business knowing what a zone is.
-    return replace(fit_plan_transform(np.array(source), np.array(target)), keys=tuple(keys))
+
+    # The shift is the median of what is left, not the mean: one apartment
+    # matched to the wrong Zone moves a median by one place in the ordering
+    # and a mean by its whole error.
+    gaps = np.array(target) - np.array(source)
+    offset = np.median(gaps, axis=0)
+    per_pair = np.linalg.norm(gaps - offset, axis=1)
+    return PlanTransform(
+        rotation=turn,
+        offset=offset,
+        rmse_m=float(np.median(per_pair)),
+        per_pair_m=tuple(float(x) for x in per_pair),
+        keys=tuple(keys),
+    )
 
 
 def zone_label(zone: ArchicadZone, fallback: str) -> str:
@@ -279,6 +307,7 @@ def draw_penetration(
     patch_style: BandStyle = PATCH_STYLE,
     outline_style: BandStyle = OUTLINE_STYLE,
     caption_height_mm: float = 2.5,
+    turn_deg: float = 0.0,
 ) -> PenetrationReport:
     """Draw the patch, the outline and the label for each instant.
 
@@ -298,7 +327,7 @@ def draw_penetration(
         apartment: by_guid[guid] for apartment, guid in zone_by_apartment.items() if guid in by_guid
     }
     unmatched = tuple(sorted(set(zone_by_apartment) - set(matched)))
-    transform = fit_to_plan(export_extents, matched)
+    transform = fit_to_plan(export_extents, matched, turn_deg=turn_deg)
     if transform.rmse_m > MAX_FIT_RESIDUAL_M:
         raise ArchicadError(
             f"The export and the project disagree about where the apartments "
@@ -399,6 +428,7 @@ def draw_cell_groups(
     caption_height_mm: float = 2.5,
     on_storey: int | None = None,
     max_residual_m: float = MAX_FIT_RESIDUAL_M,
+    turn_deg: float = 0.0,
 ) -> PenetrationReport:
     """Draw floor cells grouped by band, one colour each, plus a legend.
 
@@ -432,7 +462,7 @@ def draw_cell_groups(
         apartment: by_guid[guid] for apartment, guid in zone_by_apartment.items() if guid in by_guid
     }
     unmatched = tuple(sorted(set(zone_by_apartment) - set(matched)))
-    transform = fit_to_plan(export_extents, matched)
+    transform = fit_to_plan(export_extents, matched, turn_deg=turn_deg)
     if transform.rmse_m > max_residual_m:
         # "Zones", not "apartments". This path fits on whatever Zones the two
         # sides share -- for a communal study that is mostly flats borrowed to
