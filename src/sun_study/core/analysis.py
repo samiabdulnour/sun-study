@@ -55,6 +55,7 @@ __all__ = [
     "instant_weights",
     "lit_share_per_instant",
     "longest_continuous_minutes",
+    "reached_by_sun",
     "sunlit_matrix",
 ]
 
@@ -133,6 +134,39 @@ def sunlit_matrix(
     blocked = occluder.any_hit(points.positions[pairs[:, 0]], directions[pairs[:, 1]])
     sunlit[pairs[:, 0], pairs[:, 1]] = ~blocked
     return sunlit
+
+
+def reached_by_sun(points: SamplePoints, sun_vectors: FloatArray) -> dict[str, bool]:
+    """Per parent: does the sun ever stand in front of this surface at all?
+
+    The ray-free half of ``sunlit_matrix`` -- the same two tests, above the
+    horizon and facing, with nothing cast. Zero minutes has two causes that
+    look identical in a report and are opposite in what they mean. A window
+    the sun never comes round to is the building's aspect, settled at sketch
+    stage and unfixable by moving anything; a window the sun reaches and
+    something blocks is an obstruction, and worth finding. On Kogarah 4 of the
+    22 sunless flats were the first kind and 18 the second, and the single
+    figure said neither.
+
+    False for a parent with no samples facing any sun position, True as soon
+    as one does. It is an upper bound on sunlight, so True never means the
+    apartment gets sun -- only that the question of what blocks it is worth
+    asking.
+    """
+    directions = np.ascontiguousarray(sun_vectors, dtype=np.float64)
+    if directions.ndim != 2 or directions.shape[1] != 3:
+        raise ValueError(f"sun_vectors must have shape (n, 3), got {directions.shape}")
+
+    reached: dict[str, bool] = {}
+    if len(points) == 0 or len(directions) == 0:
+        return dict.fromkeys(points.unique_parents, False)
+
+    above_horizon = directions[:, 2] > 0.0
+    facing = (points.normals @ directions.T) > 0.0
+    candidate = facing & above_horizon[None, :]
+    for parent in points.unique_parents:
+        reached[parent] = bool(candidate[points.mask_for(parent)].any())
+    return reached
 
 
 def cumulative_minutes(sunlit: BoolArray, weights: FloatArray) -> FloatArray:

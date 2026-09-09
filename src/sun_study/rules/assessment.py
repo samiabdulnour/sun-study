@@ -56,6 +56,15 @@ class ApartmentMeasurement:
     open_space_minutes: float | None = None
     open_space_continuous_minutes: float | None = None
 
+    sun_reaches_living_room: bool | None = None
+    """Whether the sun ever stands in front of this apartment's glazing.
+
+    ``None`` where the analysis did not say. Only meaningful when the
+    apartment received nothing: it separates a flat the sun never comes round
+    to from one it reaches and something blocks, which is the difference
+    between an aspect fixed at sketch stage and an obstruction worth finding.
+    """
+
     def governing(self, continuity: Continuity) -> float:
         return (
             self.living_room_minutes
@@ -88,6 +97,15 @@ class ApartmentResult:
     """False when the ruleset excludes this apartment from the denominator."""
     note: str = ""
 
+    sun_never_reaches: bool = False
+    """The apartment got nothing and the sun never came round to its glazing.
+
+    Reported apart from the other sunless flats because no obstruction is
+    responsible and none can be removed: the aspect is the answer. Always
+    False for an apartment that received sun, and False where the analysis
+    did not say which kind it was.
+    """
+
 
 @dataclass(frozen=True)
 class BuildingAssessment:
@@ -108,6 +126,14 @@ class BuildingAssessment:
     no_sunlight_share: float
     required_share: float
     maximum_no_sunlight_share: float
+
+    sun_never_reaches: int = 0
+    """How many of ``with_no_sunlight`` the sun never comes round to.
+
+    A subset, not a separate count. The two have different remedies -- one is
+    the building's aspect and has none -- and a single figure for sunless
+    apartments invites a search for an obstruction that is not there.
+    """
 
     @property
     def meets_minimum_share(self) -> bool:
@@ -137,6 +163,15 @@ class BuildingAssessment:
             f"({self.no_sunlight_share:.1%}) receive no direct sunlight, "
             f"cap {self.maximum_no_sunlight_share:.0%}"
             f" [{'pass' if self.within_no_sunlight_cap else 'FAIL'}]"
+            # Said only when it applies, and said as a share of the sunless
+            # rather than of the building: these are not a third criterion,
+            # they are the ones no obstruction explains.
+            + (
+                f"\n    of those, {self.sun_never_reaches} face away from the sun all "
+                f"day -- aspect, not obstruction"
+                if self.sun_never_reaches
+                else ""
+            )
         )
 
 
@@ -194,6 +229,13 @@ def assess_building(
                 else min(living, open_space) <= 0.0
             )
 
+        # Only asked of an apartment that received nothing: for one that got
+        # sun the question is already answered, and the flag would then say
+        # something true and useless.
+        never = no_sunlight and measurement.sun_reaches_living_room is False
+        if never:
+            note = "; ".join(part for part in (note, "the sun never reaches this aspect") if part)
+
         results.append(
             ApartmentResult(
                 apartment_id=measurement.apartment_id,
@@ -205,6 +247,7 @@ def assess_building(
                 receives_no_sunlight=no_sunlight,
                 counted=counted,
                 note=note,
+                sun_never_reaches=never,
             )
         )
 
@@ -212,6 +255,7 @@ def assess_building(
     total = len(counted_results)
     meeting = sum(1 for r in counted_results if r.meets_minimum)
     dark = sum(1 for r in counted_results if r.receives_no_sunlight)
+    unreached = sum(1 for r in counted_results if r.sun_never_reaches)
 
     return BuildingAssessment(
         ruleset_name=ruleset.name,
@@ -224,6 +268,7 @@ def assess_building(
         counted_total=total,
         meeting_minimum=meeting,
         with_no_sunlight=dark,
+        sun_never_reaches=unreached,
         # An empty building is reported as 0%, not as vacuously compliant.
         compliant_share=(meeting / total) if total else 0.0,
         no_sunlight_share=(dark / total) if total else 0.0,

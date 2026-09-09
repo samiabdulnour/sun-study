@@ -26,6 +26,7 @@ from sun_study.core.analysis import (
     instant_weights,
     lit_share_per_instant,
     longest_continuous_minutes,
+    reached_by_sun,
     sunlit_matrix,
 )
 from sun_study.core.occlusion import Occluder
@@ -307,6 +308,10 @@ def run_assessment(
     weighting = WEIGHTING_BY_RULESET[rules.assessment.weighting]
 
     living = _durations(scene.window_samples, occluder, sun_vectors, timestep, weighting)
+    # Costs no rays: the same facing test the duration already ran, kept
+    # rather than recomputed from a report where zero minutes has stopped
+    # saying which kind of zero it was.
+    reaches = reached_by_sun(scene.window_samples, sun_vectors)
     open_space = _durations(scene.open_space_samples, occluder, sun_vectors, timestep, weighting)
 
     # A second pass, over a second surface, against a different occluder set:
@@ -337,6 +342,7 @@ def run_assessment(
             # decides what to do with each.
             open_space_minutes=open_cumulative.get(apartment_id),
             open_space_continuous_minutes=open_continuous.get(apartment_id),
+            sun_reaches_living_room=reaches.get(apartment_id),
         )
         for apartment_id in sorted(living_cumulative, key=lambda gid: names.get(gid, gid))
     ]

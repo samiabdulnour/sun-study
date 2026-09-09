@@ -2462,3 +2462,32 @@ stripped and case-folded — and one that matches nothing is refused with the
 project's own storey list, since a name that misses is normally a name from
 another job. It resolves once, next to the connection, so everything downstream
 still sees the metres D30 describes.
+
+---
+
+### D81 — Zero minutes is two findings, and only one of them has a remedy
+
+An apartment that receives no direct sunlight is reported as one number. On
+Kogarah that number was 22 of 91, and it turned out to be two unrelated
+groups.
+
+Four flats face 139 degrees. Between 09:00 and 15:00 on 21 June the sun runs
+from bearing 54 through north to 306, so it is never in front of that glazing
+at all — not once, before anything is asked about what stands nearby. Nothing
+is shading them and nothing can stop shading them: the aspect is the answer,
+and it was settled at sketch stage.
+
+The other eighteen face 81 to 197 degrees. The sun does come round to them,
+for a few of the thirteen half-hourly instants, and **every one of those is
+blocked** — by the building's own fabric within 3.5 m, an `SD2.x` sliding door
+across a recess, the wall opposite, the slab overhead. That is an obstruction,
+and an obstruction is a design question with options.
+
+Told as one figure the two mislead in opposite directions: the first four send
+someone hunting for a shadow that is not there, and the eighteen disappear into
+what looks like an unavoidable orientation problem. So `reached_by_sun` runs
+the facing half of `sunlit_matrix` with no rays cast, and the sunless count
+now names how many of itself the sun never reaches. Asked only of an apartment
+that received nothing, because for one that got sun the answer is already
+known; `None` from a caller that never ran the test stays silent rather than
+becoming a finding.

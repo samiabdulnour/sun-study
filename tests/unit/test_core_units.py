@@ -17,6 +17,7 @@ from sun_study.core.analysis import (
     instant_weights,
     lit_share_per_instant,
     longest_continuous_minutes,
+    reached_by_sun,
     summarise_by_parent,
     sunlit_matrix,
 )
@@ -422,3 +423,38 @@ def test_lit_share_per_instant_survives_a_parent_with_no_area() -> None:
     shares = lit_share_per_instant(points, np.array([[True, True]]))
     assert shares.shape == (1, 2)
     assert not shares.any()
+
+
+def test_reached_by_sun_separates_aspect_from_obstruction() -> None:
+    """The facing half of the sunlit test, asked without casting a ray.
+
+    A south wall in the southern hemisphere is never in front of a winter sun;
+    a north wall always is. Nothing about what stands between them enters into
+    it, which is the point -- the answer has to survive being asked before any
+    occluder is known.
+    """
+    points = SamplePoints(
+        positions=np.array([[0.0, 0.0, 2.0], [0.0, 10.0, 2.0]]),
+        normals=np.array([[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]]),
+        parent_ids=("north-facing", "south-facing"),
+    )
+    # Morning through afternoon on a winter's day: the sun stays north.
+    sun = np.array([[0.6, 0.5, 0.3], [0.0, 0.8, 0.6], [-0.6, 0.5, 0.3]])
+    sun = sun / np.linalg.norm(sun, axis=1)[:, None]
+
+    reached = reached_by_sun(points, sun)
+
+    assert reached == {"north-facing": True, "south-facing": False}
+
+
+def test_reached_by_sun_ignores_a_sun_below_the_horizon() -> None:
+    """Night is not an aspect problem, and must not read as one."""
+    points = SamplePoints(
+        positions=np.array([[0.0, 0.0, 2.0]]),
+        normals=np.array([[0.0, 1.0, 0.0]]),
+        parent_ids=("north-facing",),
+    )
+    below = np.array([[0.0, 1.0, -0.2]])
+    below = below / np.linalg.norm(below, axis=1)[:, None]
+
+    assert reached_by_sun(points, below) == {"north-facing": False}

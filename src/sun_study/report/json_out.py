@@ -28,6 +28,7 @@ def results_document(assessment: BuildingAssessment, header: Mapping[str, Any]) 
             "required_share": assessment.required_share,
             "meets_minimum_share": assessment.meets_minimum_share,
             "with_no_sunlight": assessment.with_no_sunlight,
+            "sun_never_reaches": assessment.sun_never_reaches,
             "no_sunlight_share": round(assessment.no_sunlight_share, 6),
             "maximum_no_sunlight_share": assessment.maximum_no_sunlight_share,
             "within_no_sunlight_cap": assessment.within_no_sunlight_cap,
@@ -47,6 +48,7 @@ def results_document(assessment: BuildingAssessment, header: Mapping[str, Any]) 
                 "governing_minutes": round(apartment.governing_minutes, 3),
                 "meets_minimum": apartment.meets_minimum,
                 "receives_no_sunlight": apartment.receives_no_sunlight,
+                "sun_never_reaches": apartment.sun_never_reaches,
                 "counted": apartment.counted,
                 "note": apartment.note,
             }

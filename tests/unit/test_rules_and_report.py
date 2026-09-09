@@ -424,3 +424,81 @@ def test_header_is_deterministic(reported: tuple[Any, dict[str, Any]]) -> None:
     assessment, header = reported
     assert header["generated_at"] == "2024-01-01T00:00:00+00:00"
     assert render_json(assessment, header) == render_json(assessment, header)
+
+
+def test_a_sunless_flat_the_sun_never_reaches_is_marked_apart(adg: Ruleset) -> None:
+    """Zero minutes has two causes and only one of them has a remedy.
+
+    On Kogarah 22 flats received nothing: four faced 139 degrees, where the
+    winter sun never comes round between 09:00 and 15:00, and eighteen faced
+    east or south, where it does and the building's own recess stopped it.
+    Reported as one figure, the first four send someone looking for an
+    obstruction that does not exist.
+    """
+    aspect = ApartmentMeasurement(
+        apartment_id="id-a",
+        apartment_name="A",
+        living_room_minutes=0.0,
+        living_room_continuous_minutes=0.0,
+        sun_reaches_living_room=False,
+    )
+    blocked = ApartmentMeasurement(
+        apartment_id="id-b",
+        apartment_name="B",
+        living_room_minutes=0.0,
+        living_room_continuous_minutes=0.0,
+        sun_reaches_living_room=True,
+    )
+
+    assessment = assess_building([aspect, blocked], adg, "sydney_metro")
+    by_name = {a.apartment_name: a for a in assessment.apartments}
+
+    assert by_name["A"].receives_no_sunlight and by_name["A"].sun_never_reaches
+    assert by_name["B"].receives_no_sunlight and not by_name["B"].sun_never_reaches
+    assert "the sun never reaches this aspect" in by_name["A"].note
+    assert "aspect" not in by_name["B"].note
+    assert assessment.with_no_sunlight == 2
+    assert assessment.sun_never_reaches == 1
+    assert "of those, 1 face away from the sun all day" in assessment.summary()
+
+
+def test_a_flat_with_sunlight_is_never_marked_as_unreached(adg: Ruleset) -> None:
+    """The flag answers a question only a sunless apartment raises.
+
+    An apartment that received sun was obviously reached, and saying so on
+    every row would put a column of noise next to the one that matters.
+    """
+    sunny = ApartmentMeasurement(
+        apartment_id="id-c",
+        apartment_name="C",
+        living_room_minutes=180.0,
+        living_room_continuous_minutes=180.0,
+        sun_reaches_living_room=True,
+    )
+
+    assessment = assess_building([sunny], adg, "sydney_metro")
+
+    assert not assessment.apartments[0].sun_never_reaches
+    assert assessment.sun_never_reaches == 0
+    assert "aspect, not obstruction" not in assessment.summary()
+
+
+def test_an_analysis_that_did_not_say_marks_nothing(adg: Ruleset) -> None:
+    """``None`` is not ``False``.
+
+    A measurement built by an older caller, or by one that never ran the
+    facing test, knows nothing about aspect. Treating that silence as "the sun
+    never reaches it" would invent a finding out of a missing field.
+    """
+    silent = ApartmentMeasurement(
+        apartment_id="id-d",
+        apartment_name="D",
+        living_room_minutes=0.0,
+        living_room_continuous_minutes=0.0,
+    )
+
+    assessment = assess_building([silent], adg, "sydney_metro")
+
+    assert assessment.apartments[0].receives_no_sunlight
+    assert not assessment.apartments[0].sun_never_reaches
+    assert assessment.sun_never_reaches == 0
