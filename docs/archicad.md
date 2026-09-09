@@ -783,3 +783,11 @@ the translator you export with, under `File ▸ Interoperability ▸ IFC ▸ IFC
 | Project Location set to the real site | **Yes** | Archicad ships a city preset; exact arcminute coordinates such as `(-33,-52,0,0)` are the tell that nobody set it. |
 | IFC Model position | either | Both Survey Point and Project Origin work — see the north section above. |
 | Properties to export | **`Element Parameters only`** | The tool reads none of them, and this is the single largest cost in an export. Measured twice on two projects: `All properties` gave 283 MB / 1.7 million `IfcPropertySingleValue`, and on 1960_CROWS NEST2_SA a *layer-trimmed* export of 12,595 products still came to 268 MB — 1,549,134 `IfcPropertySingleValue` and 848,200 `IfcQuantityLength` against 38,052 `IfcFace` of actual geometry. Roughly 90% of the file is property values nothing reads. It has stalled a shadow run past ten minutes more than once. The add-on cannot choose a translator — `IFCFileOperation` rejects a `translatorName` outright — so this is a one-time change a person makes in Archicad. |
+
+**One question at a time.** The JSON API answers serially, so a second command issued
+while a long one is running does not overlap with it -- it queues, and then reports a
+timeout that reads exactly like a hung Archicad. A `GetAttributesByType` for layers,
+which normally returns instantly, died at 900 s here because a `GetDetailsOfElements`
+over every door and window in the project was still going. If a trivial call times out,
+look first for another call still in flight, and only then for a dialog waiting to be
+clicked.
