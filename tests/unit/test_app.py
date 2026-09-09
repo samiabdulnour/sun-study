@@ -1363,3 +1363,91 @@ def test_storeys_that_describe_parked_masters_are_refused(hidden_window: Any) ->
     hidden_window._offer_height_cut()
 
     assert hidden_window.exclude.get() == window.DEFAULT_EXCLUDE_ABOVE_M, "left alone"
+
+
+def test_the_shadow_study_names_views_and_never_layers(hidden_window: Any, tmp_path: Path) -> None:
+    """The whole reason this study reads a folder instead of a combination.
+
+    The office pins geometry in renovation filters, so two views can show the
+    same layers and different buildings, and AC26 cannot even switch to a view
+    through the API to look. Publishing the views hands that to Archicad. A
+    layer flag reaching this command line would mean the window had found a
+    second route to the same answer -- the one that is quietly wrong on
+    exactly these models.
+    """
+    folder = tmp_path / "published"
+    folder.mkdir()
+    for name in ("EXISTING NEIGHBOURING", "TOD MASSING", "TERRAIN"):
+        (folder / f"{name}.ifc").write_text("", encoding="utf-8")
+
+    hidden_window.do_facade.set(False)
+    hidden_window.do_shadows.set(True)
+    hidden_window.view_folder.insert(0, str(folder))
+    hidden_window.baseline_views.insert(0, "EXISTING NEIGHBOURING")
+    hidden_window.scenario_views.insert(0, "TOD MASSING")
+    hidden_window.terrain_views.insert(0, "TERRAIN")
+
+    (job,) = hidden_window.jobs()
+
+    assert job.args[0] == "shadows"
+    assert "--shadow-from-views" in job.args
+    assert job.args[job.args.index("--shadow-source") + 1] == "EXISTING NEIGHBOURING"
+    assert job.args[job.args.index("--shadow-scenario") + 1] == "TOD MASSING"
+    assert job.args[job.args.index("--shadow-terrain") + 1] == "TERRAIN"
+    assert "--layer-combination" not in job.args
+    assert "--subject-layer" not in job.args
+
+
+def test_the_views_offered_are_the_ones_actually_published(
+    hidden_window: Any, tmp_path: Path
+) -> None:
+    """Read off the folder, not out of the navigator.
+
+    A view listed in Archicad but missing from the set is the mistake worth
+    catching before a run rather than after, and only the folder knows.
+    """
+    folder = tmp_path / "published"
+    folder.mkdir()
+    (folder / "FUTURE CONTEXT.ifc").write_text("", encoding="utf-8")
+    (folder / "SEARS ENVELOPE.ifc").write_text("", encoding="utf-8")
+    (folder / "notes.txt").write_text("", encoding="utf-8")
+    hidden_window.view_folder.insert(0, str(folder))
+
+    assert hidden_window._published_views() == ["FUTURE CONTEXT", "SEARS ENVELOPE"]
+
+
+def test_no_folder_offers_nothing_and_says_so(hidden_window: Any) -> None:
+    """Rather than an empty chooser, which reads as "this project has none"."""
+    assert hidden_window._published_views() == []
+
+
+def test_the_shadow_study_sends_only_what_was_filled_in(hidden_window: Any) -> None:
+    """Blank fields are left off so the command's own defaults stand.
+
+    A favourite passed as an empty string is not "no favourite" to Archicad,
+    it is a Favorite with no name, and the run fails on it several minutes in.
+    """
+    hidden_window.do_facade.set(False)
+    hidden_window.do_shadows.set(True)
+
+    (job,) = hidden_window.jobs()
+
+    assert "--shadow-favourite" not in job.args
+    assert "--shadow-terrain-floor" not in job.args
+    assert "--shadow-terrain" not in job.args
+    # The dates and hours have defaults on the page, so they do travel.
+    assert "--shadow-date" in job.args
+    assert "--shadow-hour" in job.args
+
+
+def test_the_shadow_study_runs_after_the_others(hidden_window: Any) -> None:
+    hidden_window.do_plans.set(True)
+    hidden_window.do_communal.set(True)
+    hidden_window.do_shadows.set(True)
+
+    assert [job.args[0] for job in hidden_window.jobs()] == [
+        "massing",
+        "archicad-run",
+        "massing",
+        "shadows",
+    ]

@@ -292,6 +292,13 @@ sun-study shadows --port 19723   --shadow-from-views <folder the Publisher Set w
 Publish the set first; the run reads what Publisher wrote and does not export.
 About twenty minutes to publish, seven to run.
 
+The same study is on the **Shadow diagram** tab of `Loriini.exe`. Point
+*Published views* at the folder and the three lists below it are ticked from
+the IFCs actually in it, rather than typed. There is deliberately no layer
+route on that page: a layer combination cannot reproduce a view that differs
+by renovation filter, which is the ordinary case here, and offering both would
+offer a way to be quietly wrong.
+
 `--shadow-source` is something that will be there and accumulates.
 `--shadow-scenario` is something that might be, cast against every source and
 against no other scenario, so two of them overlap — which is the comparison.
