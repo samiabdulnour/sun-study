@@ -50,7 +50,7 @@ void CopyName (const GS::UniString& from, GS::uchar_t* into)
 
 void CopyAttributeName (const GS::UniString& from, API_Attr_Head& into, GS::UniString& held)
 {
-	const GS::UniString::CStrPtr narrow = from.ToCStr ();
+	const GS::UniString::CStr narrow = from.ToCStr ();
 	std::strncpy (into.name, narrow.Get (), API_AttrNameLen - 1);
 	into.name[API_AttrNameLen - 1] = 0;
 
