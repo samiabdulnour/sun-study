@@ -236,6 +236,25 @@ and refuses a mismatch with `AC_VERSION`. Building the 26 add-on against the 28
 kit produces a file Archicad loads and then behaves strangely with, which is
 much worse than a refusal.
 
+## What the first build taught
+
+Six failed compiles before one passed, and the fixes are worth recording
+because none of them are guessable from the reference documentation.
+
+| What broke | What it actually is |
+|---|---|
+| `APIEnvir.h` not found | not part of the kit. Every add-on carries its own copy in `Src`, and it is what defines `WINDOWS` |
+| All nine command classes abstract | `API_AddOnCommand` has nine pure virtuals. `GetSchemaDefinitions` and `OnResponseValidationFailed` are easy to miss |
+| `APIGuidToString` not found | it is in `API_Guid.hpp`, which `ACAPinc.h` does not include |
+| `RSGetIndString` not found | it is in the `RS` module, reached in the examples through their own `APICommon.h` |
+| `CopyName` refused an attribute | a database's name is `GS::uchar_t[256]`; an attribute's is `char[256]` |
+| `vectSunShadow` not a member | it belongs to `API_3DStyle`, not to the 3D Document |
+| `GS::UniString::CStr` inaccessible | the type `ToCStr` returns is private, so it can be held in `auto` and not named |
+
+The compile errors are surfaced as **annotations** rather than left in the run
+log, because a run's log needs admin rights on the repository and the person
+fixing a compile error does not necessarily have them.
+
 ## Installing it
 
 No administrator rights needed, which is the point.

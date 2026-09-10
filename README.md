@@ -45,7 +45,7 @@ pure astronomy from latitude, longitude and time.
 | M4 | Archicad read adapter | **Written, untested against Archicad** — every command verified against the Tapir sources; needs the [checklist](docs/archicad.md#manual-test-checklist) run at a workstation |
 | M5 | Archicad write-back | **Written, untested against Archicad** — same |
 | M6 | Validation against Ladybug | **Within tolerance** — 0.19 pt on the headline metric, 98.4% per-face; conditional on confirming north |
-| M7 | Loriini add-on: sun eye views | **Written, unverified** — three commands and a menu; the projection matrix convention still needs calibrating against a live Archicad. See [`docs/addon.md`](docs/addon.md) |
+| M7 | Loriini add-on | **Builds, not yet loaded** — nine commands and a menu, compiling in CI against the Archicad 26 kit. Nothing in it has run inside Archicad yet, and the projection matrix convention still needs calibrating. See [`docs/addon.md`](docs/addon.md) |
 
 ## Architecture
 
