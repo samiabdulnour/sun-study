@@ -295,10 +295,22 @@ should keep failing.
 
 ## Known gaps
 
-**The MDID is borrowed.** `RFIX/LoriiniAddOnFix.grc` uses Graphisoft's example
-developer ID with a local ID of 9271, which does not collide with any add-on
-shipped in the kit but is not ours. A real developer ID should be requested
-from Graphisoft before this is installed anywhere outside the practice.
+**The Local ID has to come from Graphisoft.** `RFIX/LoriiniAddOnFix.grc` holds
+an `'MDID'` resource of two numbers, the practice's Developer ID and a Local ID
+generated per add-on on the Developer Portal's Add-ons tab. Archicad validates
+the pair, and an invented Local ID answers:
+
+> This add-on cannot be validated. Please contact the distributor.
+
+That message has no detail behind it and nothing appears in a log, so it is
+worth recognising on sight. The dev kit's own FAQ lists the causes: no `MDID`
+resource, one that was not compiled in, one holding demo IDs, one clashing with
+another add-on, or a mistyped Developer ID. The first build hit the demo-ID case
+by using the kit example's own Developer ID with a made-up Local ID.
+
+The **Authorization Key** on that same portal page is a secret and is not in
+this repository. It is what generates Local IDs. The two MDID numbers are not
+secret: they ship inside every add-on binary that has ever been distributed.
 
 **Windows only.** The menu's app launch is `ShellExecuteW` behind a `WINDOWS`
 guard, and the build is Windows only. The office runs Archicad 26 on Windows.

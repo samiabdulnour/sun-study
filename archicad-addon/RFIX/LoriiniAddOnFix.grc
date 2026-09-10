@@ -1,4 +1,13 @@
-﻿'MDID' 32500 "Add-On Identifier" {
-	1193553710
-	9271
+﻿/* The add-on's identity, and the reason Archicad will or will not load it.
+   Two numbers: the Developer ID issued to this practice by Graphisoft, and a
+   Local ID generated per add-on on the Developer Portal's Add-ons tab.
+   Archicad validates the pair. It is not a formality and it cannot be guessed:
+   an invented Local ID answers "This add-on cannot be validated. Please
+   contact the distributor." with nothing in the log to say why.
+   Neither number is a secret -- both ship inside every add-on binary. The
+   Authorization Key from the same portal page is NOT here and must never be:
+   it is what generates Local IDs, and it belongs in a password manager. */
+'MDID' 32500 "Add-On Identifier" {
+	963603759
+	1
 }
