@@ -1,0 +1,10 @@
+﻿'STR#' 32000 "Add-on Name and Description" {
+/* [  1] */		"Loriini"
+/* [  2] */		"Solar analysis for Archicad: sun eye views, shadow diagrams and ADG solar access."
+}
+
+'STR#' 32500 "Menu Description" {
+/* [   ] */		"Loriini"
+/* [   ] */		"Loriini"
+/* [  1] */			"Solar Analysis..."
+}

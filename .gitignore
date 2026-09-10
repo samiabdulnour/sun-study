@@ -62,3 +62,6 @@ desktop.ini
 dist/
 build/
 *.spec
+
+# The API Development Kit and the add-on build, both fetched or generated.
+archicad-addon/Build/

@@ -4799,3 +4799,73 @@ def test_storey_level_refuses_an_answer_without_a_storey_list() -> None:
 
     with pytest.raises(ArchicadError):
         storey_level(cast(Any, Empty()), "ROOF")
+
+
+# -- the project's own add-on -------------------------------------------------
+#
+# A second namespace beside Tapir's (D82). The transport is shared, so what
+# needs proving is that the two stay apart: the right namespace goes out, and a
+# failure names the add-on that actually failed.
+
+
+def test_loriini_commands_go_out_under_their_own_namespace() -> None:
+    transport = FakeTransport({"GetProjection": {"success": True, "isPerspective": False}})
+    connection = ArchicadConnection(transport)
+
+    connection.run_loriini("GetProjection")
+
+    sent = transport.sent[-1]["parameters"]["addOnCommandId"]
+    assert sent["commandNamespace"] == "Loriini"
+    assert sent["commandName"] == "GetProjection"
+
+
+def test_tapir_keeps_its_own_namespace() -> None:
+    """The refactor that added a second namespace must not have moved the first."""
+    transport = FakeTransport({"GetProjectInfo": {"projectName": "Kogarah"}})
+    connection = ArchicadConnection(transport)
+
+    connection.run_tapir("GetProjectInfo")
+
+    sent = transport.sent[-1]["parameters"]["addOnCommandId"]
+    assert sent["commandNamespace"] == "TapirCommand"
+
+
+def test_a_missing_loriini_add_on_does_not_blame_tapir() -> None:
+    """The two are installed separately, so the message has to name the right one.
+
+    Told only that "an add-on" is missing, the obvious thing to go and check is
+    the Tapir install -- which is working fine, which is why the run got this
+    far at all.
+    """
+
+    class NoAddOn:
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            return {"succeeded": True, "result": {}}
+
+    connection = ArchicadConnection(NoAddOn())
+    with pytest.raises(TapirUnavailableError, match="Loriini add-on is not installed"):
+        connection.run_loriini("GetProjection")
+
+
+def test_a_loriini_failure_names_the_namespace_and_carries_the_code() -> None:
+    """Archicad's own number is the whole diagnostic, so it must survive."""
+
+    class InnerFailure:
+        def send(self, payload: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "succeeded": True,
+                "result": {
+                    "addOnCommandResponse": {
+                        "error": {
+                            "code": -2130313114,
+                            "message": "Failed to create the 3D Document.",
+                        }
+                    }
+                },
+            }
+
+    connection = ArchicadConnection(InnerFailure())
+    with pytest.raises(CommandFailedError, match="Loriini command CreateDocumentFrom3D"):
+        connection.run_loriini("CreateDocumentFrom3D", {"name": "9AM"})
+    with pytest.raises(CommandFailedError, match="-2130313114"):
+        connection.run_loriini("CreateDocumentFrom3D", {"name": "9AM"})

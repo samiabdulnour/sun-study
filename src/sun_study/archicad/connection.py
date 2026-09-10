@@ -61,6 +61,12 @@ DEFAULT_HOST = "http://127.0.0.1"
 DEFAULT_PORT = 19723
 TAPIR_NAMESPACE = "TapirCommand"
 
+#: This project's own add-on, in ``archicad-addon/``. A second namespace
+#: beside Tapir's rather than a fork of it: it carries only the three things
+#: no JSON command exists for at all, and if Tapir ever ships them it can be
+#: dropped without touching anything else here.
+LORIINI_NAMESPACE = "Loriini"
+
 #: How long to let Archicad think about one command before giving up on it.
 #: Sized for the slowest thing anyone asks of it -- the IFC export -- on the
 #: biggest project seen so far, with room over. The old five minutes was sized
@@ -381,11 +387,65 @@ class ArchicadConnection:
         failure, so a client that only looks at ``succeeded`` reads an error
         object as though it were data.
         """
+        inner = self._run_addon(
+            TAPIR_NAMESPACE,
+            command,
+            parameters,
+            missing=(
+                "The Tapir add-on is probably not installed. Install the AC26 build "
+                "from https://github.com/ENZYME-APD/tapir-archicad-automation/releases"
+            ),
+        )
+        if command == "ChangeWindow":
+            self._note_change_window(parameters or {}, inner)
+        return inner
+
+    def run_loriini(self, command: str, parameters: dict[str, Any] | None = None) -> Any:
+        """Run one of this project's own add-on commands.
+
+        A second namespace rather than a fork of Tapir. Three things Archicad
+        can do and its JSON API cannot ask for -- reading the 3D projection,
+        aiming it, and creating a 3D Document -- live in ``archicad-addon/``
+        and answer here. Everything else stays on Tapir, which is why this is
+        the same transport with one word changed.
+
+        The two add-ons are installed separately, so a project can have one
+        and not the other. That is why the "no add-on response" message names
+        this one specifically: told only that an add-on is missing, the
+        obvious thing to go and check is the Tapir install that is already
+        working fine.
+        """
+        return self._run_addon(
+            LORIINI_NAMESPACE,
+            command,
+            parameters,
+            missing=(
+                "The Loriini add-on is not installed. It is built by the "
+                "'Archicad add-on' workflow; copy the .apx next to Tapir's and "
+                "add that folder in Options > Add-On Manager."
+            ),
+        )
+
+    def _run_addon(
+        self,
+        namespace: str,
+        command: str,
+        parameters: dict[str, Any] | None,
+        *,
+        missing: str,
+    ) -> Any:
+        """One add-on command, with both error levels checked.
+
+        Shared by both namespaces because the mechanism is Archicad's, not
+        Tapir's: ``API.ExecuteAddOnCommand`` is the official envelope any
+        add-on's commands arrive in, and the trap it carries -- an outer
+        success wrapped around an inner error -- is the same either way.
+        """
         result = self.run_official(
             "API.ExecuteAddOnCommand",
             {
                 "addOnCommandId": {
-                    "commandNamespace": TAPIR_NAMESPACE,
+                    "commandNamespace": namespace,
                     "commandName": command,
                 },
                 "addOnCommandParameters": parameters or {},
@@ -395,20 +455,17 @@ class ArchicadConnection:
         if not isinstance(result, dict) or "addOnCommandResponse" not in result:
             raise TapirUnavailableError(
                 f"Archicad ran API.ExecuteAddOnCommand for {command!r} but returned no "
-                f"add-on response. The Tapir add-on is probably not installed. Install "
-                f"the AC26 build from "
-                f"https://github.com/ENZYME-APD/tapir-archicad-automation/releases"
+                f"add-on response. {missing}"
             )
 
         inner = result["addOnCommandResponse"]
         if isinstance(inner, dict) and "error" in inner:
             error = inner["error"] or {}
             raise CommandFailedError(
-                f"Tapir command {command} failed: {error.get('message', 'no message')} "
+                f"{namespace} command {command} failed: "
+                f"{error.get('message', 'no message')} "
                 f"(code {error.get('code', 'none')})"
             )
-        if command == "ChangeWindow":
-            self._note_change_window(parameters or {}, inner)
         return inner
 
     # -- where the tool is -----------------------------------------------

@@ -45,6 +45,7 @@ pure astronomy from latitude, longitude and time.
 | M4 | Archicad read adapter | **Written, untested against Archicad** — every command verified against the Tapir sources; needs the [checklist](docs/archicad.md#manual-test-checklist) run at a workstation |
 | M5 | Archicad write-back | **Written, untested against Archicad** — same |
 | M6 | Validation against Ladybug | **Within tolerance** — 0.19 pt on the headline metric, 98.4% per-face; conditional on confirming north |
+| M7 | Loriini add-on: sun eye views | **Written, unverified** — three commands and a menu; the projection matrix convention still needs calibrating against a live Archicad. See [`docs/addon.md`](docs/addon.md) |
 
 ## Architecture
 
@@ -125,6 +126,28 @@ Try it on the committed fixture:
 ```bash
 uv run sun-study run tests/fixtures/sample_building.ifc --timezone Australia/Sydney
 ```
+
+## The Loriini add-on
+
+Two things Archicad can do and its JSON API cannot ask for: aim the 3D window
+along a direction, and create a 3D Document. Both are needed for the solar
+penetration diagram — a parallel projection taken from the sun's own position,
+one per hour, each a 3D Document on a layout — and neither Tapir nor Archicad's
+own API has a command for either.
+
+So `archicad-addon/` is a small C++ add-on carrying exactly three commands, and
+a Loriini menu inside Archicad that starts this app. It runs **beside** Tapir
+rather than replacing or forking it: everything Tapir already does keeps going
+through Tapir, and if Tapir ever ships these, ours is deleted.
+
+Nobody in the office builds it. Compiling an Archicad add-on needs Visual
+Studio with the v142 toolset, and these workstations have no administrator
+rights, so the `Archicad add-on` workflow builds it on a runner and uploads the
+`.apx`. Installing it needs no rights either: drop the file next to Tapir's and
+add the folder in Options > Add-On Manager.
+
+[`docs/addon.md`](docs/addon.md) records what was verified, how the two missing
+commands were confirmed missing, and the one convention that is still open.
 
 ## Rules are data
 

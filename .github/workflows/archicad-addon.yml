@@ -1,0 +1,68 @@
+name: Archicad add-on
+
+# The add-on is built here and nowhere else.
+#
+# Not a convenience. Compiling an Archicad add-on needs Visual Studio with the
+# v142 toolset, and the workstations this tool runs on have no administrator
+# rights, so nobody in the office can install one. A runner can. The output is
+# a single .apx a colleague drops into the folder beside Tapir's, which needs
+# no rights at all.
+#
+# The recipe is Tapir's, which is the only combination proven to build an
+# Archicad 26 add-on: a windows-2022 runner, the 26.3000 kit from Graphisoft's
+# public releases, and v142 rather than the runner's own v143. Archicad 26's
+# kit predates v143 and does not compile cleanly under it.
+
+on:
+  push:
+    paths:
+      - "archicad-addon/**"
+      - ".github/workflows/archicad-addon.yml"
+  pull_request:
+    paths:
+      - "archicad-addon/**"
+      - ".github/workflows/archicad-addon.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Archicad ${{ matrix.archicad }} / Windows
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The office runs Archicad 26. The matrix exists so that moving to
+          # 27 is a line here rather than a rewrite -- an .apx is compiled
+          # against one major version and cannot be shared across them.
+          - archicad: 26
+            devkit: https://github.com/GRAPHISOFT/archicad-api-devkit/releases/download/26.3000/API.Development.Kit.WIN.26.3000.zip
+            toolset: v142
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the API Development Kit
+        run: python archicad-addon/Tools/download_and_unzip.py ${{ matrix.devkit }} archicad-addon/Build/DevKit
+
+      - name: Generate the project
+        run: >
+          cmake -B archicad-addon/Build
+          -G "Visual Studio 17 2022" -A x64 -T ${{ matrix.toolset }}
+          -DAC_VERSION=${{ matrix.archicad }}
+          -DAC_API_DEVKIT_DIR=archicad-addon/Build/DevKit
+          archicad-addon
+
+      - name: Build
+        run: cmake --build archicad-addon/Build --config RelWithDebInfo
+
+      - name: Upload the add-on
+        uses: actions/upload-artifact@v4
+        with:
+          name: LoriiniAddOn_AC${{ matrix.archicad }}_Win
+          path: archicad-addon/Build/RelWithDebInfo/LoriiniAddOn_AC${{ matrix.archicad }}_Win.apx
+          if-no-files-found: error

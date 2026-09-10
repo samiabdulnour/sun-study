@@ -2491,3 +2491,48 @@ now names how many of itself the sun never reaches. Asked only of an apartment
 that received nothing, because for one that got sun the answer is already
 known; `None` from a caller that never ran the test stays silent rather than
 becoming a finding.
+
+### D82 — Two add-ons, because the missing commands are Archicad's and not Tapir's
+
+The office's solar penetration diagram is made by aiming the 3D window along
+the sun for one hour, making a 3D Document from it, and repeating. Neither of
+those first two steps can be asked for from outside Archicad. Tapir 1.5.8's
+command catalogue, read out of the installed `.apx`, holds no camera,
+projection or 3D Document command, and its `ViewSettings` schema stops at the
+layer combination, scale, rotation, zoom and 3D style. Archicad's own API
+answers `API.Get3DProjectionInfo` with *"not found"*, code 2002.
+
+So the gap is not Tapir being behind. It is that the JSON API has never
+exposed `APIEnv_Change3DProjectionSetsID` or `APIDb_NewDatabaseID`, and only
+a compiled add-on can reach them.
+
+Three ways to close it, and the choice matters for years rather than for this
+feature. **Forking Tapir** means the office runs a custom build of a tool it
+otherwise gets from a release page, and every Tapir release has to be
+re-merged across the five Archicad versions Tapir supports. **Waiting for an
+upstream pull request** puts the delivery date in somebody else's review queue.
+**A second add-on** costs one more file to install and nothing else: two
+add-ons coexist, each registering its own command namespace, and the transport
+is `API.ExecuteAddOnCommand` either way — which is why `run_loriini` is
+`run_tapir` with one word changed.
+
+The second add-on won, and it is deliberately three commands wide. Everything
+Tapir already does keeps going through Tapir. If Tapir ever ships these, ours
+is deleted and one constant changes.
+
+Two things follow from that narrowness. The add-on holds no analysis: the menu
+item starts the Python app rather than computing anything, because a second
+implementation of the astronomy is a second thing to be wrong. And the sun is
+handed to Archicad as a **date** rather than as angles, through
+`API_SunPosition_GivenByDate`, so Archicad computes the sun from the project's
+own georeferencing. Pushing our own angles in would make the two agree by
+construction and destroy the only free cross-check available — the same
+reasoning as the georeferencing check in [D23](#d23--archicads-north-angle-and-why-the-cross-check-compares-sums).
+
+What is not settled is `API_AxonoPars::tranmat`. The header gives its
+arithmetic and nothing gives its row order or its signs, and the structure's
+documentation page was last revised in 2007. `GetProjection` therefore ships
+as an instrument rather than a diagnostic: set an angle by hand, read the
+matrix back, compare. Until that is done against a live Archicad,
+`SetProjection` is written and unverified, and `docs/addon.md` says so in those
+words.
