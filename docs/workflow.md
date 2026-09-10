@@ -331,6 +331,46 @@ nothing. An approved-but-unbuilt tower counted among the existing neighbours
 dominates the baseline and absorbs the site's own shadow. Both are a view
 showing more than its name says.
 
+## Sun eye views
+
+The solar penetration diagram: the model seen from the sun, so every pane the
+sun reaches is a pane you can see. The office makes it by aiming the 3D window
+by hand for each hour, which lands within a few tenths of a degree; this aims
+it exactly, and each view carries Archicad's own sun for its instant. Needs
+the Loriini add-on beside Tapir -- see [addon.md](addon.md) -- because the
+projection is the one thing Tapir has no command for.
+
+**Once per project.** Nothing. The override, the renovation filter and the
+layer combination it starts from are all read off the project.
+
+**Every run.** Click a floor plan tab first; the command refuses to move the
+database under another window, because Archicad then refuses the projection.
+
+```
+sun-study sun-eyes --port 19724 --pen-set "00 FA Pens"
+```
+
+What it makes, all under the tool's prefix:
+
+| | |
+|---|---|
+| `14 \| Sun Eye Views` | one view of the 3D window per hour, 9am to 3pm on 21 June, aimed along the sun |
+| `14 \| Sun Eye 21 Jun 09:00` ... | seven 3D Documents in the Project Map, each with its own projection and sun |
+| `14 \| Sun Eye Documents` | a view of each document at 1:500 |
+| `14 \| Sun Eye Views` layout | the seven documents on one sheet |
+| `14 \| Sun Eye Views` layer combination | `04 \| Shadow Diagrams` with every zone-carrying layer hidden |
+
+Every view is pinned to the `Sun Eye Views` graphic override, the planned
+renovation filter, `DA General Arrangement` model view options and the pen set
+given. Each of those is an option if a project differs; the date and hours come
+from the ruleset's assessment window.
+
+Two things to know. **Save before closing**: views, documents and combinations
+made through the API are ordinary project changes, and an unsaved close loses
+them. And **nothing here can be deleted or re-aimed by the tool** -- a second
+run keeps what is already there under its names and fills only the gaps, so
+to redo an hour, delete its view and document in the Navigator first.
+
 ## What this still needs
 
 Honest status, so nobody plans around something that does not exist.
