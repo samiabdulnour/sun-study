@@ -313,7 +313,8 @@ GS::ObjectState ActivateLayerCombinationCommand::Execute (const GS::ObjectState&
 
 	API_Attr_Head head = {};
 	head.typeID = API_LayerCombID;
-	CopyName (name, head.name);
+	GS::UniString held;
+	CopyAttributeName (name, head, held);
 
 	GSErrCode err = ACAPI_Attribute_Search (&head);
 	if (err != NoError) {
@@ -395,7 +396,8 @@ GS::ObjectState ModifyLayersCommand::Execute (const GS::ObjectState& parameters,
 
 			API_Attribute layer = {};
 			layer.header.typeID = API_LayerID;
-			CopyName (name, layer.header.name);
+			GS::UniString held;
+			CopyAttributeName (name, layer.header, held);
 
 			GSErrCode step = ACAPI_Attribute_Search (&layer.header);
 			if (step != NoError) {

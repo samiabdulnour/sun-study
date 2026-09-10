@@ -1,5 +1,7 @@
 #include "Support.hpp"
 
+#include <cstring>
+
 namespace Loriini {
 
 GS::String CommandNamespace ()
@@ -43,6 +45,17 @@ GS::ObjectState Succeeded ()
 void CopyName (const GS::UniString& from, GS::uchar_t* into)
 {
 	GS::ucsncpy (into, from.ToUStr ().Get (), API_UniLongNameLen - 1);
+}
+
+
+void CopyAttributeName (const GS::UniString& from, API_Attr_Head& into, GS::UniString& held)
+{
+	const GS::UniString::CStrPtr narrow = from.ToCStr ();
+	std::strncpy (into.name, narrow.Get (), API_AttrNameLen - 1);
+	into.name[API_AttrNameLen - 1] = 0;
+
+	held = from;
+	into.uniStringNamePtr = &held;
 }
 
 

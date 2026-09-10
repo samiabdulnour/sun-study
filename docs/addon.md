@@ -1,6 +1,6 @@
 # The Loriini add-on
 
-Three commands Archicad's JSON API does not have, and a menu so Loriini is
+Nine commands Archicad's JSON API does not have, and a menu so Loriini is
 visible from inside the project a colleague is working in.
 
 Read this before changing anything in `archicad-addon/`. The same rule applies
@@ -82,10 +82,16 @@ Creates a 3D Document database with `APIDb_NewDatabaseID`, then sets its
 projection with `APIEnv_ChangeDocumentFrom3DSettingsID`.
 
 The second half is the one that matters. `API_DocumentFrom3DType` carries its
-own `projectionSetting` and its own `vectSunShadow`, so **a 3D Document
-remembers the angle and the sun it was made at**. Without that, seven documents
-made in a row would all show whatever the 3D window happens to display now, and
-a sheet of seven hours would be seven copies of one hour.
+own `projectionSetting`, so **a 3D Document remembers the angle and the sun it
+was made at**. Without that, seven documents made in a row would all show
+whatever the 3D window happens to display now, and a sheet of seven hours would
+be seven copies of one hour.
+
+The vectorial sun shadow is not part of it, though the field names suggest it
+should be. `vectSunShadow` belongs to `API_3DStyle`, and a 3D style is already
+reachable: Tapir's `SetViewSettings` pins one on a view by name through
+`d3styleName`. Make the style once, with the shadow settings the office wants,
+and every document uses it.
 
 Both writes are wrapped in `ACAPI_CallUndoableCommand`. A run that makes seven
 documents and is then abandoned must be undoable in one gesture, not deleted by

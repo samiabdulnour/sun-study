@@ -82,6 +82,18 @@ GS::ObjectState Succeeded ();
 // `GS::uchar_t[API_UniLongNameLen]`.
 void CopyName (const GS::UniString& from, GS::uchar_t* into);
 
+// The same, into an attribute's name.
+//
+// A separate helper because the two are not the same type and look as though
+// they are. A database's `name` is `GS::uchar_t[API_UniLongNameLen]`; an
+// attribute's is `char[API_AttrNameLen]`, narrow and shorter.
+//
+// The unicode name is set alongside it through `uniStringNamePtr`, which is
+// how a layer whose name is not plain ASCII is matched. That pointer is
+// borrowed, not copied, so the string it points at has to outlive the call --
+// which is why the caller passes one it owns rather than a temporary.
+void CopyAttributeName (const GS::UniString& from, API_Attr_Head& into, GS::UniString& held);
+
 // Reads a pen index, a layer index or any other optional integer, leaving the
 // target alone when the caller did not name it.
 //

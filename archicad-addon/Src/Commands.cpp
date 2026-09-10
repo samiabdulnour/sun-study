@@ -247,8 +247,7 @@ GS::Optional<GS::UniString> CreateDocumentFrom3DCommand::GetInputParametersSchem
 			"referenceId": { "type": "string", "description": "Its reference string, the sheet-style ID shown beside the name." },
 			"viewAzimuth": { "type": "number", "description": "Where the camera stands, in degrees clockwise from north." },
 			"viewAltitude": { "type": "number", "description": "How high the camera stands, in degrees above the horizon." },
-			"sun": { "type": "object", "description": "The date and time this document keeps its sun at." },
-			"vectorialSunShadow": { "type": "boolean", "description": "Whether the document draws vectorial sun shadows." }
+			"sun": { "type": "object", "description": "The date and time this document keeps its sun at." }
 		},
 		"required": [ "name" ],
 		"additionalProperties": false
@@ -303,14 +302,12 @@ GS::ObjectState CreateDocumentFrom3DCommand::Execute (const GS::ObjectState& par
 	double azimuth = 0.0;
 	double altitude = 0.0;
 	GS::ObjectState date;
-	bool vectorialSunShadow = false;
 
 	const bool hasDirection = parameters.Get ("viewAzimuth", azimuth) &&
 							  parameters.Get ("viewAltitude", altitude);
 	const bool hasSun = parameters.Get ("sun", date);
-	const bool hasShadow = parameters.Get ("vectorialSunShadow", vectorialSunShadow);
 
-	if (hasDirection || hasSun || hasShadow) {
+	if (hasDirection || hasSun) {
 		API_DocumentFrom3DType settings = {};
 		err = ACAPI_Environment (APIEnv_GetDocumentFrom3DSettingsID, &database.databaseUnId, &settings);
 		if (err != NoError) {
@@ -326,10 +323,6 @@ GS::ObjectState CreateDocumentFrom3DCommand::Execute (const GS::ObjectState& par
 		if (hasSun) {
 			ApplySun (date, settings.projectionSetting.u.axono.sunAngSets);
 		}
-		if (hasShadow) {
-			settings.vectSunShadow = vectorialSunShadow;
-		}
-
 		err = ACAPI_CallUndoableCommand ("Set 3D Document projection", [&] () -> GSErrCode {
 			return ACAPI_Environment (APIEnv_ChangeDocumentFrom3DSettingsID, &database.databaseUnId, &settings);
 		});

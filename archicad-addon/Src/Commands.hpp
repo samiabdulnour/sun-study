@@ -85,6 +85,12 @@ public:
 // its own `projectionSetting`, so a 3D Document remembers the angle and the
 // sun it was made at rather than borrowing whatever the 3D window shows now.
 // That is what makes seven of them on one sheet mean seven different hours.
+//
+// The vectorial sun shadow is **not** here, though it looks as though it
+// should be. `vectSunShadow` belongs to `API_3DStyle`, not to the document,
+// and a 3D style is already reachable from outside: Tapir's `SetViewSettings`
+// pins one on a view by name through `d3styleName`. So the office makes the
+// style once, with the shadow settings it wants, and every document uses it.
 class CreateDocumentFrom3DCommand : public Command {
 public:
 	virtual GS::String						GetName () const override;
