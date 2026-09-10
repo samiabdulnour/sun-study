@@ -2529,10 +2529,10 @@ own georeferencing. Pushing our own angles in would make the two agree by
 construction and destroy the only free cross-check available — the same
 reasoning as the georeferencing check in [D23](#d23--archicads-north-angle-and-why-the-cross-check-compares-sums).
 
-What is not settled is `API_AxonoPars::tranmat`. The header gives its
-arithmetic and nothing gives its row order or its signs, and the structure's
-documentation page was last revised in 2007. `GetProjection` therefore ships
-as an instrument rather than a diagnostic: set an angle by hand, read the
-matrix back, compare. Until that is done against a live Archicad,
-`SetProjection` is written and unverified, and `docs/addon.md` says so in those
-words.
+`API_AxonoPars::tranmat` was the one thing this could not settle from a
+header, and `GetProjection` shipped as the instrument to settle it with. It
+has been: read against the office's own hand-aimed sun view on the Kogarah
+solar study, the matrix is what `ViewMatrix` builds, its frame is the
+project's rather than true north, and `SetProjection` and
+`CreateDocumentFrom3D` both hold on a live Archicad. The measurement, and the
+two kit facts the first build got wrong on the way, are in `docs/addon.md`.

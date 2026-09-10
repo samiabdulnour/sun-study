@@ -286,6 +286,46 @@ Retested the same afternoon, with the 3D window starting from a perspective.
 83.512 and 18.977, with `azimuth` 6.488, `projMod` 15 and the sun given by
 date. **`SetProjection` is verified**, on both the matrix and the frame.
 
+### What a saved view and a 3D Document keep
+
+The two routes to a sun eye set were then tried on the same project, and
+both hold the projection they were made with.
+
+**A view of the 3D window keeps it.** With the window aimed at 09:00 by
+`SetProjection`, Tapir's `CreateViewsInViewMap` from the `Generic Axonometry`
+item made a view; the window was then aimed at 15:00 and a second view made.
+Opening the first by hand swung the window back to bearing 83.506, altitude
+18.977, sun 21 June 2026 09:00 by date -- the add-on's numbers, not the
+83.372 of the office's hand-aimed view beside it. So a saved Axonometry view
+carries its own projection *and* its own sun date, and every other setting on
+it is Tapir's to write.
+
+**A 3D Document keeps it too.** `CreateDocumentFrom3D` for 12:00, once out of
+the undo scope, made a document that opened as a noon sun eye view, confirmed
+by eye. It appears in the Project Map like any other, and a view of it takes
+the same settings as the office's own.
+
+**The settings a sun eye view wants** are not the shadow diagrams'. Read off
+the office's Solar Penetration Diagrams, and corrected by the practice:
+
+| | |
+|---|---|
+| `graphicOverrideCombination` | `Sun Eye Views` -- the yellow glazing for this diagram, distinct from `Shadow Diagrams` |
+| `renovationFilterGuid` | the project's planned filter, the one 749 of its 1,043 views carry |
+| `layerCombination` | `04 \| Shadow Diagrams` with **every layer that carries a zone hidden**, thirteen of them on the reference project, measured from the zones rather than listed |
+| `modelViewOptions` | `DA General Arrangement` |
+| `d3styleName` | `OpenGL Shading with Contours with Shadows` on the views; none on the documents |
+
+Zones matter because they are bodies in 3D: left visible they sit inside the
+glazing the diagram is meant to show through. Tapir cannot name a renovation
+filter, only carry its GUID, so the planned filter is found by reading it off
+an existing view rather than by name.
+
+**Nothing made before a close survives an unsaved close.** Views, folders and
+layer combinations made through the API are ordinary project changes, and the
+first calibration set vanished with a reopen. Save before restarting Archicad
+for a new add-on build.
+
 ## The menu
 
 `RegisterInterface` adds one item under a Loriini menu, and it starts the app
