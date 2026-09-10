@@ -129,13 +129,14 @@ uv run sun-study run tests/fixtures/sample_building.ifc --timezone Australia/Syd
 
 ## The Loriini add-on
 
-Two things Archicad can do and its JSON API cannot ask for: aim the 3D window
-along a direction, and create a 3D Document. Both are needed for the solar
-penetration diagram — a parallel projection taken from the sun's own position,
-one per hour, each a 3D Document on a layout — and neither Tapir nor Archicad's
-own API has a command for either.
+Nine things Archicad can do and its JSON API cannot ask for. Two of them are
+needed for the solar penetration diagram — aim the 3D window along a direction,
+and create a 3D Document — and the rest close walls this project hit and
+worked around: a fill that can carry its own colour and a hole, a worksheet that
+can be drawn into in the session that made it, a layer combination that can be
+activated, and knowing which database the tool is standing in.
 
-So `archicad-addon/` is a small C++ add-on carrying exactly three commands, and
+So `archicad-addon/` is a small C++ add-on carrying those nine commands, and
 a Loriini menu inside Archicad that starts this app. It runs **beside** Tapir
 rather than replacing or forking it: everything Tapir already does keeps going
 through Tapir, and if Tapir ever ships these, ours is deleted.
