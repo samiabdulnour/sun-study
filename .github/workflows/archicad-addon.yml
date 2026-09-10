@@ -89,6 +89,39 @@ jobs:
           path: build.log
           if-no-files-found: ignore
 
+      # A build that succeeds is not the same as an add-on Archicad will open,
+      # and the gap between them cost an install and a restart to discover.
+      # The MDID resource is the add-on's identity: without it Archicad rejects
+      # the file outright as not an add-on, and the resource compiler is
+      # perfectly happy to produce a binary without one.
+      #
+      # The Developer ID sits in the resource as its four bytes, which are
+      # printable ASCII -- the portal shows the same number as "9om/" beside
+      # it. So finding those bytes in the .apx proves the resource survived
+      # into the binary. Both orders are accepted because the byte order is
+      # the resource compiler's business, not ours.
+      - name: Check the add-on carries its identifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          apx="archicad-addon/Build/RelWithDebInfo/LoriiniAddOn_AC${{ matrix.archicad }}_Win.apx"
+          developer=$(sed -n 's/^[[:space:]]*\([0-9]\{6,\}\)[[:space:]]*$/\1/p' \
+                      archicad-addon/RFIX/LoriiniAddOnFix.grc | head -1)
+          echo "Developer ID in the resource: $developer"
+          signature=$(printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+                      $((developer >> 24 & 255)) $((developer >> 16 & 255)) \
+                      $((developer >> 8 & 255)) $((developer & 255)))")
+          reversed=$(printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+                      $((developer & 255)) $((developer >> 8 & 255)) \
+                      $((developer >> 16 & 255)) $((developer >> 24 & 255)))")
+          if grep -qa -e "$signature" -e "$reversed" "$apx"; then
+            echo "MDID present."
+          else
+            echo "::error::The built .apx does not contain the MDID developer id $developer."
+            echo "Archicad will refuse this file as not an add-on."
+            exit 1
+          fi
+
       - name: Upload the add-on
         uses: actions/upload-artifact@v4
         with:
