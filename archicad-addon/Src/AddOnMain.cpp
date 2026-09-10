@@ -2,9 +2,16 @@
 //
 // Two jobs, and they are separate on purpose.
 //
-// The first is the three commands in `Commands.hpp`, which exist because
-// Archicad's JSON API cannot aim a 3D view or make a 3D Document and Tapir
-// therefore cannot either. Those are what the Python side calls.
+// The first is the commands, in three groups, every one of them a thing
+// Archicad's C++ API can do and its JSON API never exposed:
+//
+//   Commands.hpp          the 3D projection and 3D Documents
+//   DrawingCommands.hpp   fills, with the attributes that make them right
+//   ProjectCommands.hpp   where the tool is standing, and what it can see
+//
+// The test for belonging here is narrow and worth restating: no JSON command
+// exists for it anywhere, in Tapir or in Archicad's own API. Anything Tapir
+// already does keeps going through Tapir.
 //
 // The second is a menu, so Loriini is a thing in the interface rather than a
 // window a colleague has to go and find in the Start menu. That matters more
@@ -14,12 +21,17 @@
 // app and gets out of the way.
 
 #include "Commands.hpp"
+#include "DrawingCommands.hpp"
+#include "ProjectCommands.hpp"
 
 #include "APIEnvir.h"
 #include "ACAPinc.h"
 
-#include "IOLocation.hpp"
-#include "IOName.hpp"
+#include <functional>
+
+#include "FileSystem.hpp"
+#include "Location.hpp"
+#include "Name.hpp"
 #include "UniString.hpp"
 
 #if defined (WINDOWS)
@@ -84,16 +96,14 @@ void OpenTheApp ()
 
 	bool exists = false;
 	if (application.IsEmpty () || IO::fileSystem.Contains (application, &exists) != NoError || !exists) {
-		GS::UniString path;
-		application.ToDisplayText (&path);
+		const GS::UniString path = application.ToDisplayText ();
 		ACAPI_WriteReport ("Loriini: " + path + " is not there. Copy Loriini.exe into the same "
 						   "folder as the add-on.", true);
 		return;
 	}
 
 #if defined (WINDOWS)
-	GS::UniString path;
-	application.ToDisplayText (&path);
+	const GS::UniString path = application.ToDisplayText ();
 	const HINSTANCE started = ShellExecuteW (nullptr, L"open",
 											 reinterpret_cast<LPCWSTR> (path.ToUStr ().Get ()),
 											 nullptr, nullptr, SW_SHOWNORMAL);
@@ -175,17 +185,31 @@ GSErrCode __ACENV_CALL Initialize (void)
 	// Every command is checked. A handler that failed to install is a command
 	// that answers "not found" over the wire, which reads on the Python side
 	// as an add-on that is too old rather than one that is half loaded.
-	err = ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::GetProjectionCommand> ());
-	if (err != NoError) {
-		return err;
+	//
+	// Listed rather than called one at a time, because the list is now long
+	// enough that a forgotten `if (err != NoError)` after one of them would
+	// be invisible -- and a half-installed add-on is the failure that reads
+	// as a version problem and sends somebody to the wrong place.
+	const std::function<GSErrCode ()> installers[] = {
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::GetProjectionCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::SetProjectionCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateDocumentFrom3DCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateFillsCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::GetCurrentDatabaseCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::SetCurrentDatabaseCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateWorksheetCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ActivateLayerCombinationCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ModifyLayersCommand> ()); },
+	};
+
+	for (const std::function<GSErrCode ()>& install : installers) {
+		err = install ();
+		if (err != NoError) {
+			return err;
+		}
 	}
 
-	err = ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::SetProjectionCommand> ());
-	if (err != NoError) {
-		return err;
-	}
-
-	return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateDocumentFrom3DCommand> ());
+	return NoError;
 }
 
 

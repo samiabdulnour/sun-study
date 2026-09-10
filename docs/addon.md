@@ -91,6 +91,78 @@ Both writes are wrapped in `ACAPI_CallUndoableCommand`. A run that makes seven
 documents and is then abandoned must be undoable in one gesture, not deleted by
 hand in the Navigator one at a time.
 
+### `Loriini.CreateFills`
+
+The command the diagrams are actually made of, and the one that retires the
+most machinery.
+
+`API_HatchType` carries a good deal that Tapir's `CreateHatches` has no field
+for. What this command reaches and Tapir's does not:
+
+| | Why it matters |
+|---|---|
+| `foregroundRGB` / `backgroundRGB` | the colour itself, not an index into somebody's pen table |
+| a polygon with sub-contours | so a shadow across a courtyard has a hole in it |
+| `determination` | drafting, cut or cover |
+| `ltypeInd`, `penWeight` | the contour's line type and weight |
+| the element ID at creation | rather than a second pass over six thousand fills |
+
+The colour is the important one. [D27](decisions.md) exists because a pen index
+means nothing outside its own pen table, so the tool measures the seven
+reference band colours and then hunts for the nearest pen in the office palette
+— with a one-to-one greedy assignment, a `POOR MATCH` label and a separate
+indistinguishability check, all of it apparatus for a colour the element can
+simply be told. On the reference project one band had no pen within 110.
+
+`APIHatch_HasFgRGBColor` and `APIHatch_HasBkgRGBColor` are what switch the RGB
+fields on. Without the flag the field is ignored in silence; with the flag and
+no field the fill paints black. They are set together here and never
+separately.
+
+The sub-contour is the second. Tapir's schema says *"single contour, no holes"*
+in as many words. A shadow drawn without its hole fills in the courtyard and
+claims a shadow where the sky is.
+
+`determination` is quieter but bites on a sheet. A solar diagram wants a
+**drafting** fill. A cover fill belongs to a room and a cut fill to something
+the section plane passes through, and either can change or vanish under a model
+view option the tool never set — which is how a diagram that looked right on
+screen arrives empty on a layout.
+
+### `Loriini.GetCurrentDatabase` and `SetCurrentDatabase`
+
+Where the tool is standing, asked rather than remembered.
+
+[D63 and D64](decisions.md) exist because Tapir has no `GetCurrentDatabase`,
+`GetCurrentWindow` or `GetDatabases`, so the Python side keeps its own note of
+where it last went — and is wrong the moment anybody clicks a tab.
+`APIDb_GetCurrentDatabaseID` is the call that was missing.
+
+`SetCurrentDatabase` **reads back and compares** before reporting success. That
+is not belt and braces: the wall it replaces is a command that reports success
+and does not move. On Archicad 26, Tapir's `ChangeWindow` answers
+`{"success": true}` and stays put for `windowType` alone, with `storyIndex`,
+and with a floor plan's own `databaseId`. A replacement that trusted its own
+write would be the same trap wearing a different name.
+
+### `Loriini.CreateWorksheet`
+
+The same wall from the other side. Tapir's `CreateWorksheets` works, and
+drawing into a worksheet made in the same session fails with `-2130313110`,
+before and after `RebuildView`. Creating it and entering it in one call is what
+makes it drawable, which is why `makeCurrent` defaults to true.
+
+### `Loriini.ActivateLayerCombination` and `ModifyLayers`
+
+[D59](decisions.md) says a layer combination cannot be activated. It can:
+`APIEnv_ChangeCurrLayerCombID`. The workaround it replaces rewrites every layer
+in the project with `CreateLayers` and `overwriteExisting` to imitate one.
+
+`ModifyLayers` is the other half. A layer's hidden and locked state is two bits
+in an attribute header, and `ACAPI_Attribute_Modify` sets them without
+recreating the layer. Only the bits the caller names are touched, which the
+overwrite approach could not manage.
+
 ## The open question
 
 `API_AxonoPars::tranmat` is a 3x4 matrix. `APIdefs_Base.h` gives the arithmetic:
@@ -169,6 +241,32 @@ No administrator rights needed, which is the point.
 4. In Archicad: **Options > Add-On Manager**, add that folder, restart.
 
 `sun-study archicad-info` reports whether the add-on answered.
+
+## Walls that stay walls
+
+Checked against the headers and **not** fixable by any add-on. Recorded here so
+nobody spends a second day on them.
+
+**A drawing's scale cannot be set.** `API_DrawingType.drawingScale` is marked
+*output only* in the C++ header, exactly as Tapir's silent refusal implies.
+[D55](decisions.md) stands as written, and magnification remains the only handle
+on a drawing's size.
+
+**Graphic override combinations cannot be enumerated.** They are not attributes
+on Archicad 26 — `API_AttrTypeID` has no entry for them, and the
+`APIGraphicOverrides*` names in the headers are teamwork permission flags, not
+accessors. A view can still be *given* a combination by name through Tapir's
+`SetViewSettings`; it cannot be offered a list. Reading the name off an existing
+view stays the answer.
+
+**Morph creation.** Tapir refuses every form with `-2130313114`, and its own
+schema blames Archicad 25 and 26 rather than itself. Worth retesting directly
+through `ACAPI_Element_Create` once the add-on loads, but expect it to stand
+until the office moves to Archicad 27.
+
+**Access refusals.** Property values on hotlinked zones, elements on locked
+layers, properties on fills. These are Archicad enforcing its own rules and
+should keep failing.
 
 ## Known gaps
 

@@ -1,40 +1,10 @@
 #include "Commands.hpp"
 #include "Projection.hpp"
-
-#include "ObjectState.hpp"
-#include "UniString.hpp"
+#include "Support.hpp"
 
 namespace Loriini {
 
 namespace {
-
-// One shape for every failure, so the Python side has one thing to check.
-//
-// Archicad's own number is carried through untranslated. It is a plain
-// `GSErrCode`, and the dev kit's error table is what names it -- a message
-// invented here would be a worse version of a number that already means
-// something exact. This is the same rule the Python adapter follows for
-// Tapir's fixed strings.
-GS::ObjectState Failed (const GS::UniString& what, GSErrCode code)
-{
-	GS::ObjectState error;
-	error.Add ("message", what);
-	error.Add ("code", static_cast<Int32> (code));
-
-	GS::ObjectState result;
-	result.Add ("success", false);
-	result.Add ("error", error);
-	return result;
-}
-
-
-GS::ObjectState Succeeded ()
-{
-	GS::ObjectState result;
-	result.Add ("success", true);
-	return result;
-}
-
 
 // The twelve numbers of a transformation matrix, in the order the header
 // gives them. Reported raw and unrearranged on purpose: the whole reason
@@ -99,18 +69,7 @@ void ApplySun (const GS::ObjectState& date, API_SunAngleSettings& sun)
 }
 
 
-void CopyName (const GS::UniString& from, GS::uchar_t* into)
-{
-	GS::ucsncpy (into, from.ToUStr ().Get (), API_UniLongNameLen - 1);
-}
-
 }		// namespace
-
-
-GS::String CommandNamespace ()
-{
-	return "Loriini";
-}
 
 
 // -- GetProjection ----------------------------------------------------------

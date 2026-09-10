@@ -26,12 +26,6 @@
 
 namespace Loriini {
 
-// The namespace every command below answers under. Reached from outside as
-// `API.ExecuteAddOnCommand` with `commandNamespace` set to this, exactly as
-// Tapir's own commands are reached, so the Python side needs no new transport.
-GS::String CommandNamespace ();
-
-
 // Reads the current 3D projection.
 //
 // Runs on a parallel thread and touches nothing, so it is safe to call while
