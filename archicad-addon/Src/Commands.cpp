@@ -304,13 +304,14 @@ GS::ObjectState CreateDocumentFrom3DCommand::Execute (const GS::ObjectState& par
 		CopyName (referenceId, database.ref);
 	}
 
-	// Undoable, because it is a change to the project a person must be able
-	// to take back. A run that makes seven of these and is then abandoned
-	// should not leave seven documents behind that can only be deleted by
-	// hand, one at a time, in the Navigator.
-	GSErrCode err = ACAPI_CallUndoableCommand ("Create 3D Document", [&] () -> GSErrCode {
-		return ACAPI_Database (APIDb_NewDatabaseID, &database);
-	});
+	// Not inside an undo scope, and that is not a choice. The kit documents
+	// `APIDb_NewDatabaseID` as a non-undoable data structure modifier that
+	// answers APIERR_REFUSEDCMD from inside one, which is what the first live
+	// run got back (-2130312312) when this was wrapped in
+	// ACAPI_CallUndoableCommand. So a document this makes is deleted the way
+	// any other is: by hand, in the Navigator. The name it is given is what
+	// makes that bearable.
+	GSErrCode err = ACAPI_Database (APIDb_NewDatabaseID, &database);
 	if (err != NoError) {
 		return Failed ("Failed to create the 3D Document.", err);
 	}
@@ -342,9 +343,14 @@ GS::ObjectState CreateDocumentFrom3DCommand::Execute (const GS::ObjectState& par
 		if (hasSun) {
 			ApplySun (date, settings.projectionSetting.u.axono.sunAngSets);
 		}
-		err = ACAPI_CallUndoableCommand ("Set 3D Document projection", [&] () -> GSErrCode {
-			return ACAPI_Environment (APIEnv_ChangeDocumentFrom3DSettingsID, &database.databaseUnId, &settings);
-		});
+		// Non-undoable as well, per the same documentation.
+		err = ACAPI_Environment (APIEnv_ChangeDocumentFrom3DSettingsID, &database.databaseUnId, &settings);
+
+		// The settings read back carry a handle the kit's own example frees
+		// after use; nothing here owns it.
+		BMhFree (reinterpret_cast<GSHandle> (settings.cutSetting.shapes));
+		settings.cutSetting.shapes = nullptr;
+
 		if (err != NoError) {
 			return Failed ("The 3D Document was created but its projection could not be set.", err);
 		}

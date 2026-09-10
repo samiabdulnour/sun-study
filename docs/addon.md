@@ -96,9 +96,14 @@ reachable: Tapir's `SetViewSettings` pins one on a view by name through
 `d3styleName`. Make the style once, with the shadow settings the office wants,
 and every document uses it.
 
-Both writes are wrapped in `ACAPI_CallUndoableCommand`. A run that makes seven
-documents and is then abandoned must be undoable in one gesture, not deleted by
-hand in the Navigator one at a time.
+Neither write is undoable, and the first build's attempt to make them so is
+why it failed. The kit documents both `APIDb_NewDatabaseID` and
+`APIEnv_ChangeDocumentFrom3DSettingsID` as *non-undoable data structure
+modifiers*, and the first answers `APIERR_REFUSEDCMD` from inside an undo
+scope: wrapped in `ACAPI_CallUndoableCommand`, the live call came back
+`-2130312312`, which is that code. So seven documents made by a run and then
+abandoned are deleted the way any other is, by hand in the Navigator. The names
+a run gives them are what make that tolerable.
 
 ### `Loriini.CreateFills`
 
