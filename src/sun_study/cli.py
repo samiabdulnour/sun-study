@@ -128,6 +128,7 @@ from sun_study.archicad.sheets import (
 from sun_study.archicad.sun_eyes import (
     DOCUMENT_SCALE,
     PER_SHEET,
+    TITLE_BLOCK_MM,
     SunEyeSettings,
     make_sun_eye_documents,
     make_sun_eye_sheets,
@@ -6250,6 +6251,13 @@ def sun_eye_views(
         ),
     ] = PER_SHEET,
     master_layout: Annotated[str | None, typer.Option("--master-layout")] = None,
+    title_block_mm: Annotated[
+        float,
+        typer.Option(
+            "--title-block-mm",
+            help="Width of the master's title block strip on the right, kept clear of drawings.",
+        ),
+    ] = TITLE_BLOCK_MM,
 ) -> None:
     """Aim the 3D window along the sun for every hour of the assessment window.
 
@@ -6362,7 +6370,12 @@ def sun_eye_views(
         return
     try:
         placed, removed = make_sun_eye_sheets(
-            connection, made, scale=scale, per_sheet=per_sheet, master_layout=master_layout
+            connection,
+            made,
+            scale=scale,
+            per_sheet=per_sheet,
+            master_layout=master_layout,
+            title_block_mm=title_block_mm,
         )
     except ArchicadError as error:
         typer.secho(
@@ -6376,9 +6389,8 @@ def sun_eye_views(
     for report in placed:
         typer.echo(report.describe())
     typer.echo(
-        "  a drawing of a 3D Document is placed at a placeholder size and takes its "
-        "real one when Archicad updates it: open the layout, and if the drawings "
-        "are still small, select them and Update."
+        "  drawings anchored by their centres with their frames freed; they take "
+        "their real size when the layout is next opened."
     )
 
 

@@ -365,10 +365,12 @@ renovation filter, `DA General Arrangement` model view options and the pen set
 given. Each of those is an option if a project differs; the date and hours come
 from the ruleset's assessment window.
 
-A drawing placed from a 3D Document starts at a placeholder size, about 50 mm
-square, and takes its real size when Archicad updates it. Open the layout; if
-the drawings are still small, select them and Update. `--scale` and
-`--per-sheet` change the size and the split.
+The drawings are placed by Tapir and then arranged by the add-on: anchored by
+their centres in a grid that keeps clear of the master's title block, with
+their clip frames freed so each shows the whole document once Archicad has
+regenerated it, which happens when the layout is next opened. `--scale`,
+`--per-sheet` and `--title-block-mm` change the size, the split and the strip
+kept clear.
 
 Two things to know. **Save before closing**: views, documents and combinations
 made through the API are ordinary project changes, and an unsaved close loses

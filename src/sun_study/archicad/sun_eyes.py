@@ -45,7 +45,15 @@ from zoneinfo import ZoneInfo
 
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.layout import LayoutReport, _walk, layout_from_views
+from sun_study.archicad.layout import (
+    MM_PER_M,
+    LayoutReport,
+    LayoutSheet,
+    _drawings_by_name,
+    _walk,
+    layout_from_views,
+    layout_sheet,
+)
 from sun_study.archicad.read import GeoLocation, layer_names, zones
 from sun_study.archicad.views import (
     ModelSource,
@@ -62,6 +70,7 @@ from sun_study.core.solar import solar_position
 __all__ = [
     "DOCUMENT_SCALE",
     "PER_SHEET",
+    "TITLE_BLOCK_MM",
     "SunEye",
     "SunEyeSettings",
     "aim",
@@ -70,6 +79,7 @@ __all__ = [
     "make_sun_eye_views",
     "planned_renovation_filter",
     "sheet_groups",
+    "sheet_positions_for",
     "sun_eye_layer_combination",
     "sun_eyes",
 ]
@@ -83,6 +93,12 @@ DOCUMENT_SCALE = 200.0
 #: How many hours share a sheet. Four puts 9am to noon on one and the
 #: afternoon on the next, which reads as a morning and an afternoon.
 PER_SHEET = 4
+
+#: The strip down the right of the practice's masters that the title block
+#: occupies. Archicad reports a layout's margins and nothing about its master,
+#: so a drawing tiled to the page edge runs under the title block; measured
+#: at about 100 mm on the `DA B1 - VERTICAL` masters.
+TITLE_BLOCK_MM = 100.0
 
 #: The name a run gives its things, after the tool's prefix.
 WORD = "Sun Eye"
@@ -465,6 +481,70 @@ def sheet_groups(
     return groups
 
 
+def sheet_positions_for(
+    sheet: LayoutSheet, count: int, *, title_block_mm: float = TITLE_BLOCK_MM
+) -> list[tuple[float, float]]:
+    """Drawing centres in metres, reading left to right and top to bottom.
+
+    The page less the title block strip is cut into equal cells, as many
+    across as wastes the fewest cells and then keeps them nearest square:
+    four drawings are two by two, not three and one. Layout coordinates run
+    upward from the bottom-left corner, so the first row is put at the top by
+    counting down from the page height rather than up from zero.
+    """
+    if count <= 0:
+        return []
+    left, top, width, height = sheet.usable
+    width = max(width - title_block_mm, 1.0)
+
+    def cost(columns: int) -> tuple[int, float]:
+        rows = -(-count // columns)
+        return (columns * rows - count, abs(math.log((width / columns) / (height / rows))))
+
+    columns = min(range(1, count + 1), key=cost)
+    rows = -(-count // columns)
+    cell_w, cell_h = width / columns, height / rows
+    return [
+        (
+            (left + (index % columns + 0.5) * cell_w) / MM_PER_M,
+            (top + height - (index // columns + 0.5) * cell_h) / MM_PER_M,
+        )
+        for index in range(count)
+    ]
+
+
+def arrange_drawings(
+    connection: ArchicadConnection,
+    layout_database_id: str,
+    placements: Sequence[tuple[str, float, float]],
+) -> int:
+    """Re-anchor the drawings on a sheet by their centres and free their frames.
+
+    ``placements`` is ``(drawing element guid, x, y)`` in metres. Returns how
+    many the add-on arranged. Everything here is the add-on's: Tapir places a
+    drawing and can then change only its magnification.
+    """
+    if not placements:
+        return 0
+    response = connection.run_loriini(
+        "ArrangeDrawings",
+        {
+            "layoutDatabaseId": {"guid": layout_database_id},
+            "drawings": [{"guid": guid, "x": x, "y": y} for guid, x, y in placements],
+            "fitFrame": True,
+            "autoUpdate": True,
+        },
+    )
+    if not isinstance(response, dict) or not response.get("success"):
+        raise ArchicadError(f"ArrangeDrawings answered {response!r}")
+    failures = response.get("failures") or []
+    if failures:
+        raise ArchicadError(
+            f"ArrangeDrawings could not change {len(failures)} drawings: {failures}"
+        )
+    return int(response.get("arranged", 0))
+
+
 def make_sun_eye_sheets(
     connection: ArchicadConnection,
     made: Sequence[tuple[SunEye, StoreyView, bool]],
@@ -472,6 +552,7 @@ def make_sun_eye_sheets(
     scale: float,
     per_sheet: int = PER_SHEET,
     master_layout: str | None = None,
+    title_block_mm: float = TITLE_BLOCK_MM,
 ) -> tuple[list[LayoutReport], list[str]]:
     """The documents on sheets, and any earlier sun eye sheet removed.
 
@@ -480,6 +561,13 @@ def make_sun_eye_sheets(
     than none: it stays in the Layout Book beside the current ones, looking
     equally current. So every sun eye sheet not about to be remade is removed
     first, and the names of those removed are returned for the run to say.
+
+    Placing is Tapir's and arranging is the add-on's. ``CreateDrawings`` puts
+    each drawing down clipped to a placeholder frame and anchored by a corner,
+    and Tapir can change nothing about it afterwards; ``ArrangeDrawings`` then
+    frees the frame, anchors each by its centre and puts it at the centre of
+    its cell. Without the add-on the sheet is still made, and said to be the
+    rough one.
     """
     groups = sheet_groups(made, per_sheet=per_sheet)
     wanted = {name for name, _ in groups}
@@ -505,12 +593,23 @@ def make_sun_eye_sheets(
             )
             removed = [item.name for item in stale]
 
-    reports = [
-        layout_from_views(
+    reports: list[LayoutReport] = []
+    for name, views in groups:
+        report = layout_from_views(
             connection, views, layout_name=name, scale=scale, master_layout=master_layout
         )
-        for name, views in groups
-    ]
+        reports.append(report)
+        if not report.database_id:
+            continue
+        sheet, _ = layout_sheet(connection, report.database_id)
+        placed = _drawings_by_name(connection, report.database_id)
+        positions = sheet_positions_for(sheet, len(views), title_block_mm=title_block_mm)
+        placements = [
+            (str(placed[drawing_name]["elementId"]["guid"]), x, y)
+            for (_, drawing_name), (x, y) in zip(views, positions, strict=True)
+            if drawing_name in placed
+        ]
+        arrange_drawings(connection, report.database_id, placements)
     return reports, removed
 
 

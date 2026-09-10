@@ -14,12 +14,14 @@ import math
 import pytest
 
 from sun_study.archicad import naming
+from sun_study.archicad.layout import LayoutSheet
 from sun_study.archicad.read import GeoLocation
 from sun_study.archicad.sun_eyes import (
     DOCUMENT_SCALE,
     SunEyeSettings,
     make_sun_eye_views,
     sheet_groups,
+    sheet_positions_for,
     sun_eyes,
 )
 from sun_study.archicad.views import StoreyView
@@ -181,3 +183,27 @@ def test_a_set_that_fits_one_sheet_keeps_the_plain_name() -> None:
     eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=[9, 12], timezone="Australia/Sydney")
     made = [(eye, StoreyView(0, "doc", f"ID{eye.stamp}"), False) for eye in eyes]
     assert [name for name, _ in sheet_groups(made, per_sheet=4)] == [f"{SS} Sun Eye Views"]
+
+
+B1 = LayoutSheet(width_mm=1000.0, height_mm=707.0)
+
+
+def test_four_drawings_sit_two_by_two_clear_of_the_title_block() -> None:
+    positions = sheet_positions_for(B1, 4, title_block_mm=100.0)
+    # 900 mm of usable width in two 450 mm columns; rows read from the top,
+    # and layout y runs upward, so the first row is the higher one.
+    assert [(round(x * 1000), round(y * 1000)) for x, y in positions] == [
+        (225, 530),
+        (675, 530),
+        (225, 177),
+        (675, 177),
+    ]
+
+
+def test_three_drawings_sit_in_one_row() -> None:
+    positions = sheet_positions_for(B1, 3, title_block_mm=100.0)
+    assert [(round(x * 1000), round(y * 1000)) for x, y in positions] == [
+        (150, 354),
+        (450, 354),
+        (750, 354),
+    ]

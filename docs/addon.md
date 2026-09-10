@@ -1,6 +1,6 @@
 # The Loriini add-on
 
-Nine commands Archicad's JSON API does not have, and a menu so Loriini is
+Ten commands Archicad's JSON API does not have, and a menu so Loriini is
 visible from inside the project a colleague is working in.
 
 Read this before changing anything in `archicad-addon/`. The same rule applies
@@ -149,6 +149,24 @@ claims a shadow where the sky is.
 the section plane passes through, and either can change or vanish under a model
 view option the tool never set — which is how a diagram that looked right on
 screen arrives empty on a layout.
+
+### `Loriini.ArrangeDrawings`
+
+What a placed Drawing is, once Tapir has placed it. `CreateDrawings` puts a
+Drawing of a 3D Document on a layout **clipped to a placeholder frame about
+59 mm square, anchored by its bottom-left corner, and set to manual update**,
+and Tapir can then change only its magnification. Opening the layout does not
+help: the content regenerates inside the same 59 mm clip. A sheet of seven sun
+eye views was seven stamps, with the fourth in the wrong corner because layout
+coordinates run upward from the bottom-left and the tiling had assumed the
+opposite.
+
+`API_DrawingType` carries all three as plain fields. This command takes each
+Drawing and the point its centre should sit at, sets `anchorPoint` to the
+middle, `isCutWithFrame` off so the frame follows the drawing's own extent,
+`manualUpdate` off, and writes it back with `ACAPI_Element_Change`, all in one
+undo step. Given a `layoutDatabaseId` it makes that layout's database current
+for the call and puts the previous one back after.
 
 ### `Loriini.GetCurrentDatabase` and `SetCurrentDatabase`
 

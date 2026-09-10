@@ -23,6 +23,7 @@
 #include "Commands.hpp"
 #include "DrawingCommands.hpp"
 #include "ProjectCommands.hpp"
+#include "LayoutCommands.hpp"
 
 #include "APIEnvir.h"
 #include "ACAPinc.h"
@@ -204,6 +205,7 @@ GSErrCode __ACENV_CALL Initialize (void)
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateWorksheetCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ActivateLayerCombinationCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ModifyLayersCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ArrangeDrawingsCommand> ()); },
 	};
 
 	for (const std::function<GSErrCode ()>& install : installers) {
