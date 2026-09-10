@@ -421,16 +421,16 @@ GS::ObjectState ModifyLayersCommand::Execute (const GS::ObjectState& parameters,
 			// rewrote all of it every time.
 			bool flag = false;
 			if (one.Get ("isHidden", flag)) {
-				layer.header.flags = flag ? (layer.header.flags | APILay_Hidden)
-										  : (layer.header.flags & ~APILay_Hidden);
+				layer.header.flags = static_cast<short> (flag ? (layer.header.flags | APILay_Hidden)
+														   : (layer.header.flags & ~APILay_Hidden));
 			}
 			if (one.Get ("isLocked", flag)) {
-				layer.header.flags = flag ? (layer.header.flags | APILay_Locked)
-										  : (layer.header.flags & ~APILay_Locked);
+				layer.header.flags = static_cast<short> (flag ? (layer.header.flags | APILay_Locked)
+														   : (layer.header.flags & ~APILay_Locked));
 			}
 			if (one.Get ("isWireframe", flag)) {
-				layer.header.flags = flag ? (layer.header.flags | APILay_ForceToWire)
-										  : (layer.header.flags & ~APILay_ForceToWire);
+				layer.header.flags = static_cast<short> (flag ? (layer.header.flags | APILay_ForceToWire)
+														   : (layer.header.flags & ~APILay_ForceToWire));
 			}
 
 			step = ACAPI_Attribute_Modify (&layer, nullptr);

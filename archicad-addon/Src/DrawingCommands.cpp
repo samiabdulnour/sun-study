@@ -1,6 +1,9 @@
 #include "DrawingCommands.hpp"
 #include "Support.hpp"
 
+// BMAllocateHandle, for the polygon memo handles.
+#include "BM.hpp"
+
 namespace Loriini {
 
 namespace {

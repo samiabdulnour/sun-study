@@ -13,6 +13,10 @@
 #include "APIEnvir.h"
 #include "ACAPinc.h"
 
+// APIGuidToString and APIGuidFromString live here, and ACAPinc.h does not
+// reach them. Central, because three of the command files report a guid.
+#include "API_Guid.hpp"
+
 #include "ObjectState.hpp"
 #include "UniString.hpp"
 

@@ -29,6 +29,10 @@
 
 #include <functional>
 
+// RSGetIndString. The dev kit example reaches it through its own
+// APICommon.h, which is example scaffolding rather than part of the kit.
+#include "RS.hpp"
+
 #include "FileSystem.hpp"
 #include "Location.hpp"
 #include "Name.hpp"

@@ -57,8 +57,37 @@ jobs:
           -DAC_API_DEVKIT_DIR=archicad-addon/Build/DevKit
           archicad-addon
 
+      # Kept, not streamed, so the step after this one can read it back.
+      # `tee` keeps the live log intact for anybody watching the run.
       - name: Build
-        run: cmake --build archicad-addon/Build --config RelWithDebInfo
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build archicad-addon/Build --config RelWithDebInfo 2>&1 | tee build.log
+
+      # A failed compile is only useful if somebody can read it, and a run's
+      # log needs admin rights on the repository. Annotations do not, and they
+      # show on the run's own summary page, so the first errors are visible to
+      # whoever is fixing them without anybody being granted anything.
+      - name: Say what failed
+        if: failure() && steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          echo '## Compiler errors' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -oE '[^ ]+\.(cpp|hpp|h)\([0-9]+,?[0-9]*\) ?: (error|fatal error) [^[]*' build.log \
+            | sort -u | head -40 | tee -a "$GITHUB_STEP_SUMMARY" \
+            | while IFS= read -r line; do echo "::error::$line"; done
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-AC${{ matrix.archicad }}
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Upload the add-on
         uses: actions/upload-artifact@v4
