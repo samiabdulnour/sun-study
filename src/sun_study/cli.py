@@ -125,6 +125,15 @@ from sun_study.archicad.sheets import (
     draw_table,
     straighten_and_tile,
 )
+from sun_study.archicad.sun_eyes import (
+    DOCUMENT_SCALE,
+    SunEyeSettings,
+    make_sun_eye_documents,
+    make_sun_eye_views,
+    planned_renovation_filter,
+    sun_eye_layer_combination,
+    sun_eyes,
+)
 from sun_study.archicad.views import (
     ModelSource,
     StoreyView,
@@ -3416,7 +3425,9 @@ def massing(
 # everything short of Archicad actually answering.
 
 
-def _connect(port: int, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> ArchicadConnection:
+def _connect(
+    port: int, timeout: float = DEFAULT_TIMEOUT_SECONDS, *, switch_database: bool = True
+) -> ArchicadConnection:
     connection = ArchicadConnection(HttpTransport(port=port, timeout_seconds=timeout))
     try:
         connection.require_tapir()
@@ -3438,6 +3449,13 @@ def _connect(port: int, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> ArchicadCon
 
     # Every read below is scoped to the current database, so a worksheet left
     # in front by the last run makes the project look empty of Zones.
+    #
+    # Not for every command, though. The switch moves the database and leaves
+    # the window where it is, and with the two apart Archicad refuses to read
+    # its 3D projection at all (APIERR_BADDATABASE) -- so a command that needs
+    # the projection asks for a floor plan in front instead of moving under it.
+    if not switch_database:
+        return connection
     try:
         was = ensure_model_database(connection)
     except ArchicadError:
@@ -6153,6 +6171,195 @@ def _shadow_report(
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from error
+
+
+@app.command("sun-eyes")
+def sun_eye_views(
+    port: Annotated[int, typer.Option("--port", help="Which Archicad to talk to.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float, typer.Option("--timeout", help="Seconds to wait for one Archicad command.")
+    ] = DEFAULT_TIMEOUT_SECONDS,
+    timezone: Annotated[str, typer.Option("--timezone")] = "Australia/Sydney",
+    year: Annotated[
+        int | None,
+        typer.Option("--year", help="Year of the assessment date. This year by default."),
+    ] = None,
+    ruleset: Annotated[
+        str,
+        typer.Option(
+            "--ruleset",
+            help="Where the date and the hours come from: the ruleset's own assessment window.",
+        ),
+    ] = "nsw_adg",
+    hour: Annotated[
+        str | None,
+        typer.Option(
+            "--hour",
+            help="Whole hours, comma separated, instead of the ruleset's window.",
+        ),
+    ] = None,
+    base_combination: Annotated[
+        str,
+        typer.Option(
+            "--base-combination",
+            help="The layer combination the sun eye set starts from; zones are then hidden.",
+        ),
+    ] = "04 | Shadow Diagrams",
+    override: Annotated[
+        str,
+        typer.Option("--override", help="Graphic override combination that paints the glazing."),
+    ] = "Sun Eye Views",
+    renovation_filter: Annotated[
+        str | None,
+        typer.Option(
+            "--renovation-filter",
+            help=(
+                "GUID of the renovation filter to pin. By default the one most of the "
+                "project's views carry, which is its planned state."
+            ),
+        ),
+    ] = None,
+    model_view_options: Annotated[
+        str | None, typer.Option("--model-view-options")
+    ] = "DA General Arrangement",
+    pen_set: Annotated[str | None, typer.Option("--pen-set")] = None,
+    d3_style: Annotated[
+        str | None, typer.Option("--3d-style", help="3D style for the views of the window.")
+    ] = "OpenGL Shading with Contours with Shadows",
+    documents: Annotated[
+        bool,
+        typer.Option(
+            "--documents/--no-documents",
+            help="Also make one 3D Document per hour, with its own projection, and a sheet.",
+        ),
+    ] = True,
+    layout: Annotated[
+        bool, typer.Option("--layout/--no-layout", help="Place the documents on a layout.")
+    ] = True,
+    master_layout: Annotated[str | None, typer.Option("--master-layout")] = None,
+) -> None:
+    """Aim the 3D window along the sun for every hour of the assessment window.
+
+    One saved view per hour, aimed exactly rather than by hand, each carrying
+    Archicad's own sun for that instant and the settings a sun eye view wants:
+    the glazing override, the planned renovation filter, and the base layer
+    combination with every zone layer hidden. With ``--documents``, one 3D
+    Document per hour as well, and a sheet of them.
+
+    Needs the Loriini add-on: the projection is the one thing Tapir has no
+    command for.
+    """
+    banner()
+    connection = _connect(port, timeout, switch_database=False)
+
+    # A floor plan in front, and nothing moved under it. The zone read needs
+    # a model database current, and the projection read needs the current
+    # database and the front window to agree; a floor plan tab gives both.
+    # Switching the database ourselves, as the other commands do, gives the
+    # first and breaks the second: measured with a 3D Document in front, every
+    # projection call then answered APIERR_BADDATABASE.
+    front = connection.run_tapir("GetCurrentWindowType", {})
+    where = front.get("currentWindowType") if isinstance(front, dict) else None
+    if where != "FloorPlan":
+        typer.secho(
+            f"  Archicad has a {where or 'non-plan window'} in front. Click a floor plan "
+            f"tab first: the 3D projection can only be read and written with the "
+            f"window and the current database agreeing, and this command must not "
+            f"move one without the other.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    rules = load_ruleset(ruleset)
+    when_year = year or dt.date.today().year
+    date = rules.assessment.date_in(when_year)
+    if hour:
+        hours = [int(part) for part in hour.split(",") if part.strip()]
+    else:
+        hours = list(range(rules.assessment.start_time.hour, rules.assessment.end_time.hour + 1))
+
+    geo = read_geo_location(connection)
+    eyes = sun_eyes(geo, date=date, hours=hours, timezone=timezone)
+    turn = (eyes[0].project_bearing_deg - eyes[0].true_bearing_deg) % 360.0 if eyes else 0.0
+    typer.echo(
+        f"  {date:%d %B %Y}, {len(eyes)} instants; project +Y at true bearing "
+        f"{(270.0 + math.degrees(geo.north_radians)) % 360.0:.3f}, so bearings turn by {turn:.3f}"
+    )
+    typer.echo("    hour   altitude   true bearing   project frame")
+    for eye in eyes:
+        typer.echo(
+            f"    {eye.when:%H:%M}   {eye.altitude_deg:7.2f}    {eye.true_bearing_deg:9.2f}"
+            f"      {eye.project_bearing_deg:9.2f}"
+        )
+    if not eyes:
+        typer.secho(
+            "  the sun is down at every hour asked for; nothing to draw.", fg=typer.colors.RED
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        combination, hidden = sun_eye_layer_combination(connection, base=base_combination)
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(
+        f"  layer combination {combination!r}: {base_combination!r} with "
+        f"{len(hidden)} zone layers hidden"
+    )
+
+    guid = renovation_filter or planned_renovation_filter(connection)
+    if guid is None:
+        typer.secho(
+            "  no view in the project carries a renovation filter; none pinned.",
+            fg=typer.colors.YELLOW,
+        )
+    settings = SunEyeSettings(
+        layer_combination=combination,
+        graphic_override=override,
+        renovation_filter_guid=guid,
+        model_view_options=model_view_options,
+        pen_set=pen_set,
+        d3_style=d3_style,
+    )
+
+    try:
+        views = make_sun_eye_views(connection, eyes, settings=settings)
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(f"  views of the 3D window, in {naming.named('Sun Eye Views')!r}:")
+    for _eye, view, reused in views:
+        typer.echo(f"    {view.name}" + ("  (already there, left as aimed)" if reused else ""))
+
+    if not documents:
+        return
+
+    try:
+        made = make_sun_eye_documents(connection, eyes, settings=settings)
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(f"  3D Documents, with views in {naming.named('Sun Eye Documents')!r}:")
+    for _eye, view, reused in made:
+        typer.echo(f"    {view.name}" + ("  (document already there, kept)" if reused else ""))
+
+    if not layout:
+        return
+    try:
+        placed = layout_from_views(
+            connection,
+            [(view.navigator_id, view.name) for _, view, _ in made],
+            layout_name=naming.named("Sun Eye Views"),
+            scale=DOCUMENT_SCALE,
+            master_layout=master_layout,
+        )
+    except ArchicadError as error:
+        typer.secho(
+            f"  the documents are made; the sheet is not: {error}", fg=typer.colors.YELLOW, err=True
+        )
+        return
+    typer.echo(placed.describe())
 
 
 def main() -> None:

@@ -61,6 +61,13 @@ it, including the twelve raw numbers of `API_AxonoPars::tranmat`.
 This is an instrument, not a convenience, and it is why it shipped first. See
 [the convention](#the-convention-settled) below, and the measurement that settled it.
 
+It answers `APIERR_BADDATABASE` (-2130313110) when the front window and the
+current database disagree -- a 3D Document on screen with the database moved
+to a floor plan by `ensure_model_database`, say. Neither half of the add-on
+can put them back together (`SetCurrentDatabase` reports the move refused),
+so a command that needs the projection asks for a floor plan tab in front and
+does not move the database itself.
+
 ### `Loriini.SetProjection`
 
 Takes a bearing and an altitude in degrees, builds the transformation matrix,
