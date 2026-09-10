@@ -9,5 +9,5 @@
    it is what generates Local IDs, and it belongs in a password manager. */
 'MDID' 32500 "Add-On Identifier" {
 	963603759
-	1
+	1001
 }
