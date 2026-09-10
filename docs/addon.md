@@ -64,7 +64,10 @@ This is an instrument, not a convenience, and it is why it shipped first. See
 ### `Loriini.SetProjection`
 
 Takes a bearing and an altitude in degrees, builds the transformation matrix,
-and writes it back through `APIEnv_Change3DProjectionSetsID`.
+and writes it back through `APIEnv_Change3DProjectionSetsID`. The bearing is
+in the **project's frame**, clockwise from the project's own +Y axis, not a
+true bearing; see [the convention](#the-convention-settled) for why and by
+how much that differs.
 
 The sun is given as a **date**, not as angles. `API_SunAngleSettings` carries a
 `sunPosOpt`, and setting it to `API_SunPosition_GivenByDate` makes Archicad
@@ -197,7 +200,7 @@ The important one is what is missing from that list. Every setting a sun eye
 view needs is already reachable through Tapir except the projection itself.
 That is the whole remaining job.
 
-## The open question
+## The convention, settled
 
 `API_AxonoPars::tranmat` is a 3x4 matrix. `APIdefs_Base.h` gives the arithmetic:
 
@@ -210,22 +213,41 @@ z' = tmx[8] * x + tmx[9] * y + tmx[10] * z + tmx[11]
 What it does **not** give is which way Archicad's rows and signs run, or how
 `azimuth` and `projMod` interact with a matrix supplied from outside. The
 structure's own documentation page is four lines long and was last revised in
-December 2007.
+December 2007. So `Projection.cpp` writes its convention down and
+`GetProjection` exists to check it against a view aimed by hand.
 
-So `Projection.cpp` writes its convention down and `GetProjection` exists to
-check it. The calibration is: set a known angle by hand in Archicad's 3D
-Projection Settings, read the matrix back, and compare it against
-`ViewMatrix` for the same angle. **Until that has been done on a live
-Archicad, `SetProjection` is unverified.** It is the same method
-[`archicad.md`](archicad.md) records for everything else that could not be
-settled from a header.
+That check was made on 10 September 2026 against the Kogarah solar study,
+with the office's own `JUNE 21 - 9AM` view open in the 3D window. What came
+back:
 
-There is a second half to the same question, and it is worth 41 degrees on the
-reference project. A sun bearing is a **true** bearing, and Archicad's 3D window
-works in the **project's** frame, which is turned. On that project the tool
-reports the project's +Y axis at true bearing 319.052, so 9am on 21 June is the
-sun at 42.6 true and 83.5 in the project's own frame. The seven instants a
-study draws, at the reference project's latitude:
+```
+tranmat rows:
+  -0.11543   0.99332   0.00000   0
+  -0.32337  -0.03758   0.94553   0
+   0.93921   0.10914   0.32554   0
+orthonormal, determinant 1, invtranmat is the transpose
+azimuth 6.628      projMod 15
+sun     azimuth 6.492  altitude 18.979  given by date, 2017-06-21 09:00
+```
+
+Read against `ViewMatrix`, every part of the convention holds:
+
+| | |
+|---|---|
+| Rows are `right`, `up`, `eye`, in that order | the third row is a unit vector at altitude 18.998, the first is horizontal |
+| No transposition, no sign flip | the third row decodes to bearing 83.372 clockwise from project +Y; its negation and the columns decode to nothing meaningful |
+| The frame is the **project's** | the tool's sun for that instant is true bearing 42.564, which is 83.512 in a project whose +Y sits at 319.052. The hand-aimed view is 0.14 degrees off it |
+| `projMod` 15 is `API_Projection_FreeAx` | the preset whose matrix is its own, in `APIdefs_Elements.h` |
+| `azimuth` is degrees **anticlockwise from +X** | 90 - 83.372 = 6.628, exactly as reported. Not radians, and not a bearing |
+| Archicad's sun uses the same convention | 90 - 6.492 = 83.508 in the project frame, which is true 42.56: this tool's astronomy and Archicad's agree to 0.01 degrees in both axes |
+
+So the bearing `SetProjection` takes is in the project frame, and a caller
+holding a true bearing turns it first: `project = true - (270 + north)`, with
+`north` the project's north angle in degrees, as `GetGeoLocation` reports it.
+On the reference project that turn is 41 degrees, and getting it wrong does not
+fail. It draws a complete, plausible diagram of the building lit from the wrong
+side, which is precisely the failure this project exists to avoid. The seven
+instants a study draws, at the reference project's latitude:
 
 | Hour | Altitude | True bearing | Project frame |
 |---|---|---|---|
@@ -241,16 +263,22 @@ study draws, at the reference project's latitude:
 assessment date and window, in `nsw_adg.yaml`, and the same seven hours the
 shadow diagrams already default to.
 
-Getting that wrong does not fail. It draws a complete, plausible diagram of the
-building lit from the wrong side, which is precisely the failure this project
-exists to avoid. `SetProjection` currently documents its bearing as clockwise
-from north without saying **which** north, and the calibration has to settle
-that at the same time as the matrix.
+### What the first live write taught
 
-What *is* settled is the maths inside the convention. The frame is orthonormal,
-right-handed and correctly oriented at every bearing and altitude tested,
-including the overhead case where a bearing no longer fixes the roll and north
-is put at the top of the page instead.
+The same session then wrote the exact 9am direction back through
+`SetProjection`, and the call answered `success` while the matrix read back
+afterwards was the one from before it. The cause is the second parameter of
+`APIEnv_Change3DProjectionSetsID`. The header describes it as *"switch only
+axono or persp"*, which the first build read as "touch only the axonometric
+half". The kit's own documentation page says the opposite: with it set, *only
+the `isPersp` field is considered* and every other parameter is ignored. The
+parameter is now left out, and `Aim` fills `projMod` and `azimuth` alongside
+the matrix so the dialog agrees with what the window shows.
+
+That build has not yet been retested on a live Archicad. Until it has, the
+read side of the calibration stands and the write side is a fix awaiting its
+check: run `SetProjection` for 21 June 09:00, read back through
+`GetProjection`, and expect a third row at 83.512 and 18.977.
 
 ## The menu
 

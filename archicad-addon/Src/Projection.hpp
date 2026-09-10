@@ -3,9 +3,18 @@
 // Kept apart from the commands because this is the one piece of the add-on
 // whose correctness cannot be read off a header. `API_AxonoPars` carries a
 // `tranmat`, the dev kit describes it in a single line last revised in 2007,
-// and which way its rows and signs run has to be settled by experiment. So it
+// and which way its rows and signs run had to be settled by experiment. So it
 // lives in one small file with the convention written down, and `GetProjection`
 // exists to check that convention against an angle set by hand in Archicad.
+//
+// That check has been done. The office's own `JUNE 21 - 9AM` view, read back
+// through `GetProjection`, is an orthonormal right-handed matrix whose rows
+// are right, up and eye in that order, with no translation -- exactly what
+// `ViewMatrix` builds. Its third row decodes to a bearing of 83.372 and an
+// altitude of 18.998 in the project's frame, against 83.512 and 18.977 for
+// the sun this tool computes for that instant. The frame is the project's:
+// bearings here are clockwise from the project's +Y axis, and a true bearing
+// must be turned by the project's north angle before it arrives.
 //
 // The matrix itself is documented, at least. `API_Tranmat` is a 3x4 laid out
 // row-major, from `APIdefs_Base.h`:
@@ -26,11 +35,11 @@ namespace Loriini {
 
 // Where the camera stands, as two angles.
 //
-// `azimuth` is measured in degrees clockwise from north, which is the
-// bearing convention the rest of this tool speaks and the one an architect
-// reads off a site plan. It is *not* necessarily Archicad's own convention
-// for `API_AxonoPars::azimuth`; converting between them is the calibration
-// this file exists to make checkable.
+// `azimuth` is measured in degrees clockwise from the project's +Y axis.
+// It is a bearing in the project's own frame, not a true bearing: on a
+// project whose +Y sits at true bearing 319, a sun at true 42.6 is passed as
+// 83.5. It is also not Archicad's own `API_AxonoPars::azimuth`, which runs
+// anticlockwise from +X and is derived from this one where it is written.
 //
 // `altitude` is degrees above the horizon. At 90 the camera is overhead and
 // the view direction is straight down, which leaves the horizontal bearing

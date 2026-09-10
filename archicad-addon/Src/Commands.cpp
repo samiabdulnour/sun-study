@@ -2,6 +2,8 @@
 #include "Projection.hpp"
 #include "Support.hpp"
 
+#include <cmath>
+
 namespace Loriini {
 
 namespace {
@@ -69,6 +71,23 @@ void ApplySun (const GS::ObjectState& date, API_SunAngleSettings& sun)
 }
 
 
+// Points a parallel projection at `from`, filling every field Archicad reads.
+//
+// Three fields, not one. The matrix is what the 3D window draws from, but the
+// dialog shows `azimuth` and the preset named by `projMod`, and a matrix
+// written under a preset that disagrees with it is at best confusing. Free
+// Axonometry is the preset whose matrix is its own, and Archicad's `azimuth`
+// is degrees anticlockwise from the project's +X axis -- read off a live
+// project, where a camera bearing of 83.372 came back as 6.628.
+void Aim (const Direction& from, API_AxonoPars& axono)
+{
+	axono.projMod = API_Projection_FreeAx;
+	axono.azimuth = std::fmod (90.0 - from.azimuthDegrees + 360.0, 360.0);
+	axono.tranmat = ViewMatrix (from);
+	axono.invtranmat = InverseViewMatrix (from);
+}
+
+
 }		// namespace
 
 
@@ -88,7 +107,7 @@ GS::Optional<GS::UniString> GetProjectionCommand::GetResponseSchema () const
 		"properties": {
 			"success": { "type": "boolean" },
 			"isPerspective": { "type": "boolean" },
-			"azimuth": { "type": "number", "description": "Archicad's own camera azimuth, in radians, exactly as reported." },
+			"azimuth": { "type": "number", "description": "Archicad's own camera azimuth, exactly as reported: degrees anticlockwise from the project's +X axis, so 90 minus the bearing." },
 			"projectionMode": { "type": "integer", "description": "API_AxonoPars::projMod, the preset selected in the 3D Projection Settings dialog." },
 			"transformation": { "type": "object", "properties": { "tmx": { "type": "array", "items": { "type": "number" } } } },
 			"inverseTransformation": { "type": "object", "properties": { "tmx": { "type": "array", "items": { "type": "number" } } } },
@@ -141,7 +160,7 @@ GS::Optional<GS::UniString> SetProjectionCommand::GetInputParametersSchema () co
 		"properties": {
 			"viewAzimuth": {
 				"type": "number",
-				"description": "Where the camera stands, in degrees clockwise from north. For a sun eye view this is the sun's own bearing."
+				"description": "Where the camera stands, in degrees clockwise from the project's own +Y axis -- the project frame, not true north. For a sun eye view this is the sun's bearing turned by the project's north angle."
 			},
 			"viewAltitude": {
 				"type": "number",
@@ -211,19 +230,20 @@ GS::ObjectState SetProjectionCommand::Execute (const GS::ObjectState& parameters
 	}
 
 	const Direction from = { azimuth, altitude };
-	info.u.axono.tranmat = ViewMatrix (from);
-	info.u.axono.invtranmat = InverseViewMatrix (from);
+	Aim (from, info.u.axono);
 
 	GS::ObjectState date;
 	if (parameters.Get ("sun", date)) {
 		ApplySun (date, info.u.axono.sunAngSets);
 	}
 
-	// `par2` switches only the axonometric half rather than flipping the
-	// window between parallel and perspective, which is what the header's
-	// "switch only axono or persp" note means.
-	bool axonometricOnly = true;
-	err = ACAPI_Environment (APIEnv_Change3DProjectionSetsID, &info, &axonometricOnly);
+	// No second parameter. The header's note on it reads "switch only axono
+	// or persp", which the first build took to mean "touch only the
+	// axonometric half". It means the opposite: with it set, Archicad reads
+	// `isPersp` and ignores every other field, and the call reports success
+	// having changed nothing. Measured on a live project, the matrix read
+	// back after the call was the one from before it.
+	err = ACAPI_Environment (APIEnv_Change3DProjectionSetsID, &info);
 	if (err != NoError) {
 		return Failed ("Failed to change the 3D projection settings.", err);
 	}
@@ -245,7 +265,7 @@ GS::Optional<GS::UniString> CreateDocumentFrom3DCommand::GetInputParametersSchem
 		"properties": {
 			"name": { "type": "string", "description": "The 3D Document's name in the Project Map." },
 			"referenceId": { "type": "string", "description": "Its reference string, the sheet-style ID shown beside the name." },
-			"viewAzimuth": { "type": "number", "description": "Where the camera stands, in degrees clockwise from north." },
+			"viewAzimuth": { "type": "number", "description": "Where the camera stands, in degrees clockwise from the project's own +Y axis, as for SetProjection." },
 			"viewAltitude": { "type": "number", "description": "How high the camera stands, in degrees above the horizon." },
 			"sun": { "type": "object", "description": "The date and time this document keeps its sun at." }
 		},
@@ -317,8 +337,7 @@ GS::ObjectState CreateDocumentFrom3DCommand::Execute (const GS::ObjectState& par
 		if (hasDirection) {
 			const Direction from = { azimuth, altitude };
 			settings.projectionSetting.isPersp = false;
-			settings.projectionSetting.u.axono.tranmat = ViewMatrix (from);
-			settings.projectionSetting.u.axono.invtranmat = InverseViewMatrix (from);
+			Aim (from, settings.projectionSetting.u.axono);
 		}
 		if (hasSun) {
 			ApplySun (date, settings.projectionSetting.u.axono.sunAngSets);
