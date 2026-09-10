@@ -275,10 +275,11 @@ the `isPersp` field is considered* and every other parameter is ignored. The
 parameter is now left out, and `Aim` fills `projMod` and `azimuth` alongside
 the matrix so the dialog agrees with what the window shows.
 
-That build has not yet been retested on a live Archicad. Until it has, the
-read side of the calibration stands and the write side is a fix awaiting its
-check: run `SetProjection` for 21 June 09:00, read back through
-`GetProjection`, and expect a third row at 83.512 and 18.977.
+Retested the same afternoon, with the 3D window starting from a perspective.
+`SetProjection` for 21 June 09:00 at 83.512 and 18.977 came back through
+`GetProjection` as a parallel projection whose third row decodes to exactly
+83.512 and 18.977, with `azimuth` 6.488, `projMod` 15 and the sun given by
+date. **`SetProjection` is verified**, on both the matrix and the frame.
 
 ## The menu
 
