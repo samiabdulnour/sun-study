@@ -31,15 +31,13 @@
 
 #pragma once
 
-#include "APIEnvir.h"
-#include "ACAPinc.h"
+#include "Support.hpp"
 
 namespace Loriini {
 
-class CreateFillsCommand : public API_AddOnCommand {
+class CreateFillsCommand : public Command {
 public:
 	virtual GS::String						GetName () const override;
-	virtual GS::String						GetNamespace () const override;
 	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
 	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
 

@@ -75,7 +75,6 @@ void ApplySun (const GS::ObjectState& date, API_SunAngleSettings& sun)
 // -- GetProjection ----------------------------------------------------------
 
 GS::String GetProjectionCommand::GetName () const			{ return "GetProjection"; }
-GS::String GetProjectionCommand::GetNamespace () const		{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> GetProjectionCommand::GetInputParametersSchema () const
 {
@@ -134,7 +133,6 @@ GS::ObjectState GetProjectionCommand::Execute (const GS::ObjectState& /*paramete
 // -- SetProjection ----------------------------------------------------------
 
 GS::String SetProjectionCommand::GetName () const			{ return "SetProjection"; }
-GS::String SetProjectionCommand::GetNamespace () const		{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> SetProjectionCommand::GetInputParametersSchema () const
 {
@@ -239,7 +237,6 @@ GS::ObjectState SetProjectionCommand::Execute (const GS::ObjectState& parameters
 // -- CreateDocumentFrom3D ---------------------------------------------------
 
 GS::String CreateDocumentFrom3DCommand::GetName () const		{ return "CreateDocumentFrom3D"; }
-GS::String CreateDocumentFrom3DCommand::GetNamespace () const	{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> CreateDocumentFrom3DCommand::GetInputParametersSchema () const
 {

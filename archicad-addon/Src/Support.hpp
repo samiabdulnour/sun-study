@@ -27,6 +27,45 @@ namespace Loriini {
 // Tapir's own commands are reached, so the Python side needs no new transport.
 GS::String CommandNamespace ();
 
+// What every command in this add-on derives from.
+//
+// `API_AddOnCommand` is nine pure virtuals, and six of them have an answer
+// that is the same for every command here. Answering those once means a new
+// command is its name, its schema and its `Execute`, and nothing else -- and
+// it removes the failure that produced this class, where three unimplemented
+// virtuals made all nine command classes abstract and the compiler reported it
+// nine times from inside a GSRoot header, naming neither the methods nor the
+// file they were missing from.
+class Command : public API_AddOnCommand {
+public:
+	virtual GS::String						GetNamespace () const override { return CommandNamespace (); }
+
+	// No shared `$ref` definitions. Each command's schema is written out in
+	// full where it is declared, because there are nine of them rather than a
+	// hundred and a reader should not have to hold two files open.
+	virtual GS::Optional<GS::UniString>		GetSchemaDefinitions () const override { return GS::NoValue; }
+	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override { return GS::NoValue; }
+	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override { return GS::NoValue; }
+
+	// On the main thread unless a command says otherwise. Everything here
+	// either reads or writes project state, and Archicad's element and
+	// database calls are not safe anywhere else.
+	virtual API_AddOnCommandExecutionPolicy	GetExecutionPolicy () const override
+	{
+		return API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread;
+	}
+
+	virtual bool							IsProcessWindowVisible () const override { return false; }
+
+	// Says so, rather than failing quietly.
+	//
+	// This fires when a command's own response does not match the schema it
+	// published -- our bug, not the caller's, and one that otherwise reaches
+	// the Python side as a command that simply returned nothing useful.
+	virtual void							OnResponseValidationFailed (const GS::ObjectState& response) const override;
+};
+
+
 // One shape for every failure.
 //
 // Archicad's own number is carried through untranslated. It is a plain

@@ -21,8 +21,7 @@
 
 #pragma once
 
-#include "APIEnvir.h"
-#include "ACAPinc.h"
+#include "Support.hpp"
 
 namespace Loriini {
 
@@ -32,10 +31,9 @@ namespace Loriini {
 // a person is working. Answers with the axonometric parameters when the
 // window is parallel and the perspective ones when it is not, plus the raw
 // twelve numbers of the transformation matrix, which is the point.
-class GetProjectionCommand : public API_AddOnCommand {
+class GetProjectionCommand : public Command {
 public:
 	virtual GS::String						GetName () const override;
-	virtual GS::String						GetNamespace () const override;
 	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
 	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
 
@@ -60,10 +58,9 @@ public:
 // Archicad's own, computed from the georeferencing the project carries, and a
 // disagreement with this tool's astronomy becomes visible instead of being
 // papered over by writing our answer into both sides.
-class SetProjectionCommand : public API_AddOnCommand {
+class SetProjectionCommand : public Command {
 public:
 	virtual GS::String						GetName () const override;
-	virtual GS::String						GetNamespace () const override;
 	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
 	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
 
@@ -88,10 +85,9 @@ public:
 // its own `projectionSetting`, so a 3D Document remembers the angle and the
 // sun it was made at rather than borrowing whatever the 3D window shows now.
 // That is what makes seven of them on one sheet mean seven different hours.
-class CreateDocumentFrom3DCommand : public API_AddOnCommand {
+class CreateDocumentFrom3DCommand : public Command {
 public:
 	virtual GS::String						GetName () const override;
-	virtual GS::String						GetNamespace () const override;
 	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
 	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
 

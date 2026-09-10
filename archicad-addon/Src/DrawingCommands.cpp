@@ -175,7 +175,6 @@ GSErrCode ApplyAttributes (const GS::ObjectState& wanted, API_HatchType& fill, G
 
 
 GS::String CreateFillsCommand::GetName () const			{ return "CreateFills"; }
-GS::String CreateFillsCommand::GetNamespace () const	{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> CreateFillsCommand::GetInputParametersSchema () const
 {

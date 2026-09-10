@@ -59,7 +59,6 @@ GS::ObjectState DatabaseState (const API_DatabaseInfo& database)
 // -- GetCurrentDatabase -----------------------------------------------------
 
 GS::String GetCurrentDatabaseCommand::GetName () const		{ return "GetCurrentDatabase"; }
-GS::String GetCurrentDatabaseCommand::GetNamespace () const	{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> GetCurrentDatabaseCommand::GetInputParametersSchema () const
 {
@@ -99,7 +98,6 @@ GS::ObjectState GetCurrentDatabaseCommand::Execute (const GS::ObjectState& /*par
 // -- SetCurrentDatabase -----------------------------------------------------
 
 GS::String SetCurrentDatabaseCommand::GetName () const		{ return "SetCurrentDatabase"; }
-GS::String SetCurrentDatabaseCommand::GetNamespace () const	{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> SetCurrentDatabaseCommand::GetInputParametersSchema () const
 {
@@ -196,7 +194,6 @@ GS::ObjectState SetCurrentDatabaseCommand::Execute (const GS::ObjectState& param
 // -- CreateWorksheet --------------------------------------------------------
 
 GS::String CreateWorksheetCommand::GetName () const			{ return "CreateWorksheet"; }
-GS::String CreateWorksheetCommand::GetNamespace () const	{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> CreateWorksheetCommand::GetInputParametersSchema () const
 {
@@ -281,7 +278,6 @@ GS::ObjectState CreateWorksheetCommand::Execute (const GS::ObjectState& paramete
 // -- ActivateLayerCombination -----------------------------------------------
 
 GS::String ActivateLayerCombinationCommand::GetName () const		{ return "ActivateLayerCombination"; }
-GS::String ActivateLayerCombinationCommand::GetNamespace () const	{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> ActivateLayerCombinationCommand::GetInputParametersSchema () const
 {
@@ -338,7 +334,6 @@ GS::ObjectState ActivateLayerCombinationCommand::Execute (const GS::ObjectState&
 // -- ModifyLayers -----------------------------------------------------------
 
 GS::String ModifyLayersCommand::GetName () const		{ return "ModifyLayers"; }
-GS::String ModifyLayersCommand::GetNamespace () const	{ return CommandNamespace (); }
 
 GS::Optional<GS::UniString> ModifyLayersCommand::GetInputParametersSchema () const
 {

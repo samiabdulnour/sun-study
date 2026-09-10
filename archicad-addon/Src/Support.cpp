@@ -8,6 +8,17 @@ GS::String CommandNamespace ()
 }
 
 
+void Command::OnResponseValidationFailed (const GS::ObjectState& /*response*/) const
+{
+	// Written to the report window because there is nowhere else for it to go:
+	// the response has already been handed back by the time this is called, so
+	// it cannot be turned into an error the caller sees.
+	ACAPI_WriteReport ("Loriini: the command '" + GS::UniString (GetName ().ToCStr ()) +
+					   "' returned something its own schema does not allow. This is a bug "
+					   "in the add-on rather than in the request.", false);
+}
+
+
 GS::ObjectState Failed (const GS::UniString& what, GSErrCode code)
 {
 	GS::ObjectState error;

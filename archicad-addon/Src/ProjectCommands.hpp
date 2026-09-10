@@ -40,31 +40,27 @@
 
 #pragma once
 
-#include "APIEnvir.h"
-#include "ACAPinc.h"
+#include "Support.hpp"
 
 namespace Loriini {
 
-#define LORIINI_COMMAND(ClassName, OnMainThread)                                            \
-	class ClassName : public API_AddOnCommand {                                             \
+// All five are the same shape: a name, two schemas and an `Execute`. The
+// namespace, the execution policy and the rest come from `Command`.
+#define LORIINI_COMMAND(ClassName)                                                          \
+	class ClassName : public Command {                                                      \
 	public:                                                                                 \
 		virtual GS::String					GetName () const override;                      \
-		virtual GS::String					GetNamespace () const override;                 \
 		virtual GS::Optional<GS::UniString>	GetInputParametersSchema () const override;     \
 		virtual GS::Optional<GS::UniString>	GetResponseSchema () const override;            \
-		virtual API_AddOnCommandExecutionPolicy GetExecutionPolicy () const override         \
-		{                                                                                   \
-			return OnMainThread;                                                            \
-		}                                                                                   \
 		virtual GS::ObjectState				Execute (const GS::ObjectState& parameters,     \
 													 GS::ProcessControl& processControl) const override; \
 	};
 
-LORIINI_COMMAND (GetCurrentDatabaseCommand, API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread)
-LORIINI_COMMAND (SetCurrentDatabaseCommand, API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread)
-LORIINI_COMMAND (CreateWorksheetCommand, API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread)
-LORIINI_COMMAND (ActivateLayerCombinationCommand, API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread)
-LORIINI_COMMAND (ModifyLayersCommand, API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread)
+LORIINI_COMMAND (GetCurrentDatabaseCommand)
+LORIINI_COMMAND (SetCurrentDatabaseCommand)
+LORIINI_COMMAND (CreateWorksheetCommand)
+LORIINI_COMMAND (ActivateLayerCombinationCommand)
+LORIINI_COMMAND (ModifyLayersCommand)
 
 #undef LORIINI_COMMAND
 
