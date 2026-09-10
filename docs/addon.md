@@ -169,6 +169,32 @@ in an attribute header, and `ACAPI_Attribute_Modify` sets them without
 recreating the layer. Only the bits the caller names are touched, which the
 overwrite approach could not manage.
 
+## What the office's own sun eye views are already set to
+
+Read off a live project that has the whole workflow built by hand: nine saved
+Axonometry views named `JUNE 21 - 9AM` through `DECEMBER 21 - 3PM`, and a 3D
+Document per view beside them. Every setting on them came back through Tapir's
+`GetViewSettings`, and **all of it is writable through `SetViewSettings`**:
+
+| | |
+|---|---|
+| `layerCombination` | `04 \| Shadow Diagrams` |
+| `graphicOverrideCombination` | `Shadow Diagrams` — this is the yellow glazing |
+| `penSetName` | `00 FA Pens` |
+| `modelViewOptions` | `DA Site` |
+| `d3styleName` | `OpenGL Shading with Contours with Shadows`, on the views only |
+| `drawingScale` | 1 on the views, 1000 on the 3D Documents |
+| `structureDisplay` | `EntireStructure` |
+
+Two things follow. The 3D Documents carry **no** `d3styleName`, which agrees
+with the headers: a 3D style belongs to a view, not to a document. And the
+office draws **three** instants per date rather than seven, at 9am, 12pm and
+3pm, across 21 June, 21 September and 21 December.
+
+The important one is what is missing from that list. Every setting a sun eye
+view needs is already reachable through Tapir except the projection itself.
+That is the whole remaining job.
+
 ## The open question
 
 `API_AxonoPars::tranmat` is a 3x4 matrix. `APIdefs_Base.h` gives the arithmetic:
@@ -191,6 +217,24 @@ Projection Settings, read the matrix back, and compare it against
 Archicad, `SetProjection` is unverified.** It is the same method
 [`archicad.md`](archicad.md) records for everything else that could not be
 settled from a header.
+
+There is a second half to the same question, and it is worth 41 degrees on the
+reference project. A sun bearing is a **true** bearing, and Archicad's 3D window
+works in the **project's** frame, which is turned. On that project the tool
+reports the project's +Y axis at true bearing 319.052, so 9am on 2 June is the
+sun at 42.7 true and 83.6 in the project's own frame:
+
+| Hour | True bearing | Project frame |
+|---|---|---|
+| 9:00 | 42.7 | 83.6 |
+| 12:00 | 358.1 | 39.0 |
+| 15:00 | 314.7 | 355.7 |
+
+Getting that wrong does not fail. It draws a complete, plausible diagram of the
+building lit from the wrong side, which is precisely the failure this project
+exists to avoid. `SetProjection` currently documents its bearing as clockwise
+from north without saying **which** north, and the calibration has to settle
+that at the same time as the matrix.
 
 What *is* settled is the maths inside the convention. The frame is orthonormal,
 right-handed and correctly oriented at every bearing and altitude tested,
