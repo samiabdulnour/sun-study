@@ -50,7 +50,9 @@ void CopyName (const GS::UniString& from, GS::uchar_t* into)
 
 void CopyAttributeName (const GS::UniString& from, API_Attr_Head& into, GS::UniString& held)
 {
-	const GS::UniString::CStr narrow = from.ToCStr ();
+	// `auto` because the type `ToCStr` returns is private to `GS::UniString`,
+	// so it can be held but not named.
+	const auto narrow = from.ToCStr ();
 	std::strncpy (into.name, narrow.Get (), API_AttrNameLen - 1);
 	into.name[API_AttrNameLen - 1] = 0;
 
