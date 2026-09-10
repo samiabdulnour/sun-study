@@ -127,8 +127,10 @@ from sun_study.archicad.sheets import (
 )
 from sun_study.archicad.sun_eyes import (
     DOCUMENT_SCALE,
+    PER_SHEET,
     SunEyeSettings,
     make_sun_eye_documents,
+    make_sun_eye_sheets,
     make_sun_eye_views,
     planned_renovation_filter,
     sun_eye_layer_combination,
@@ -6233,9 +6235,20 @@ def sun_eye_views(
             help="Also make one 3D Document per hour, with its own projection, and a sheet.",
         ),
     ] = True,
+    scale: Annotated[
+        float,
+        typer.Option("--scale", help="Scale of the 3D Documents' views, and so of the drawings."),
+    ] = DOCUMENT_SCALE,
     layout: Annotated[
-        bool, typer.Option("--layout/--no-layout", help="Place the documents on a layout.")
+        bool, typer.Option("--layout/--no-layout", help="Place the documents on layouts.")
     ] = True,
+    per_sheet: Annotated[
+        int,
+        typer.Option(
+            "--per-sheet",
+            help="Documents per layout. Four splits the day into a morning and an afternoon.",
+        ),
+    ] = PER_SHEET,
     master_layout: Annotated[str | None, typer.Option("--master-layout")] = None,
 ) -> None:
     """Aim the 3D window along the sun for every hour of the assessment window.
@@ -6321,6 +6334,7 @@ def sun_eye_views(
         model_view_options=model_view_options,
         pen_set=pen_set,
         d3_style=d3_style,
+        document_scale=scale,
     )
 
     try:
@@ -6347,19 +6361,25 @@ def sun_eye_views(
     if not layout:
         return
     try:
-        placed = layout_from_views(
-            connection,
-            [(view.navigator_id, view.name) for _, view, _ in made],
-            layout_name=naming.named("Sun Eye Views"),
-            scale=DOCUMENT_SCALE,
-            master_layout=master_layout,
+        placed, removed = make_sun_eye_sheets(
+            connection, made, scale=scale, per_sheet=per_sheet, master_layout=master_layout
         )
     except ArchicadError as error:
         typer.secho(
-            f"  the documents are made; the sheet is not: {error}", fg=typer.colors.YELLOW, err=True
+            f"  the documents are made; the sheets are not: {error}",
+            fg=typer.colors.YELLOW,
+            err=True,
         )
         return
-    typer.echo(placed.describe())
+    for name in removed:
+        typer.echo(f"  removed the earlier sheet {name!r}")
+    for report in placed:
+        typer.echo(report.describe())
+    typer.echo(
+        "  a drawing of a 3D Document is placed at a placeholder size and takes its "
+        "real one when Archicad updates it: open the layout, and if the drawings "
+        "are still small, select them and Update."
+    )
 
 
 def main() -> None:

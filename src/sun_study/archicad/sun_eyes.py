@@ -45,6 +45,7 @@ from zoneinfo import ZoneInfo
 
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.layout import LayoutReport, _walk, layout_from_views
 from sun_study.archicad.read import GeoLocation, layer_names, zones
 from sun_study.archicad.views import (
     ModelSource,
@@ -60,19 +61,28 @@ from sun_study.core.solar import solar_position
 
 __all__ = [
     "DOCUMENT_SCALE",
+    "PER_SHEET",
     "SunEye",
     "SunEyeSettings",
     "aim",
     "make_sun_eye_documents",
+    "make_sun_eye_sheets",
     "make_sun_eye_views",
     "planned_renovation_filter",
+    "sheet_groups",
     "sun_eye_layer_combination",
     "sun_eyes",
 ]
 
-#: The scale the office's own sun view 3D Documents carry. A view of the 3D
-#: window is at 1:1 and means nothing on a sheet; a document is a drawing.
-DOCUMENT_SCALE = 500.0
+#: The scale the office's own Solar Penetration Diagrams carry. A view of the
+#: 3D window is at 1:1 and means nothing on a sheet; a document is a drawing.
+#: 1:500 was tried first and gave seven stamps on a B1; at 1:200 four of them
+#: fill it, which is what the practice asked for.
+DOCUMENT_SCALE = 200.0
+
+#: How many hours share a sheet. Four puts 9am to noon on one and the
+#: afternoon on the next, which reads as a morning and an afternoon.
+PER_SHEET = 4
 
 #: The name a run gives its things, after the tool's prefix.
 WORD = "Sun Eye"
@@ -179,6 +189,7 @@ class SunEyeSettings:
     model_view_options: str | None = "DA General Arrangement"
     pen_set: str | None = None
     d3_style: str | None = "OpenGL Shading with Contours with Shadows"
+    document_scale: float = DOCUMENT_SCALE
 
     def for_view(self, *, of_document: bool) -> dict[str, Any]:
         """Tapir's ``viewSettings`` for a view of the 3D window or of a document.
@@ -200,7 +211,7 @@ class SunEyeSettings:
         if self.pen_set:
             settings["penSetName"] = self.pen_set
         if of_document:
-            settings["drawingScale"] = int(DOCUMENT_SCALE)
+            settings["drawingScale"] = int(self.document_scale)
         else:
             settings["drawingScale"] = 1
             if self.d3_style:
@@ -409,7 +420,7 @@ def make_sun_eye_documents(
         sources,
         combination=settings.layer_combination,
         folder=home,
-        drawing_scale=DOCUMENT_SCALE,
+        drawing_scale=settings.document_scale,
     )
     _check(
         connection.run_tapir(
@@ -427,6 +438,80 @@ def make_sun_eye_documents(
         "SetViewSettings",
     )
     return list(zip(eyes, views, reused, strict=True))
+
+
+def sheet_groups(
+    made: Sequence[tuple[SunEye, StoreyView, bool]],
+    *,
+    per_sheet: int = PER_SHEET,
+    stem: str | None = None,
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """The documents split across sheets, each sheet named by the hours on it.
+
+    ``(layout name, [(navigator id, drawing name), ...])`` per sheet, in the
+    shape ``layout_from_views`` takes. Seven documents in fours is a morning
+    sheet and an afternoon sheet -- ``09:00-12:00`` and ``13:00-15:00`` --
+    rather than seven stamps on one.
+    """
+    if per_sheet <= 0:
+        raise ValueError(f"per_sheet must be positive, not {per_sheet}")
+    stem = stem or naming.named(f"{WORD} Views")
+    groups: list[tuple[str, list[tuple[str, str]]]] = []
+    for start in range(0, len(made), per_sheet):
+        chunk = made[start : start + per_sheet]
+        first, last = chunk[0][0].when, chunk[-1][0].when
+        name = f"{stem} {first:%H:%M}-{last:%H:%M}" if len(made) > per_sheet else stem
+        groups.append((name, [(view.navigator_id, view.name) for _, view, _ in chunk]))
+    return groups
+
+
+def make_sun_eye_sheets(
+    connection: ArchicadConnection,
+    made: Sequence[tuple[SunEye, StoreyView, bool]],
+    *,
+    scale: float,
+    per_sheet: int = PER_SHEET,
+    master_layout: str | None = None,
+) -> tuple[list[LayoutReport], list[str]]:
+    """The documents on sheets, and any earlier sun eye sheet removed.
+
+    A layout *can* be deleted, unlike a view, and a sheet whose name no longer
+    matches its hours -- the single sheet a first run made, say -- is worse
+    than none: it stays in the Layout Book beside the current ones, looking
+    equally current. So every sun eye sheet not about to be remade is removed
+    first, and the names of those removed are returned for the run to say.
+    """
+    groups = sheet_groups(made, per_sheet=per_sheet)
+    wanted = {name for name, _ in groups}
+    stem = naming.named(f"{WORD} Views")
+
+    removed: list[str] = []
+    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})
+    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
+    if isinstance(root, dict):
+        stale = [
+            item
+            for item in _walk(root)
+            if item.kind == "LayoutItem" and item.name.startswith(stem) and item.name not in wanted
+        ]
+        if stale:
+            connection.run_tapir(
+                "DeleteNavigatorItems",
+                {
+                    "navigatorItemIds": [
+                        {"navigatorItemId": {"guid": item.identifier}} for item in stale
+                    ]
+                },
+            )
+            removed = [item.name for item in stale]
+
+    reports = [
+        layout_from_views(
+            connection, views, layout_name=name, scale=scale, master_layout=master_layout
+        )
+        for name, views in groups
+    ]
+    return reports, removed
 
 
 def _document_item(connection: ArchicadConnection, name: str) -> ModelSource:

@@ -19,8 +19,10 @@ from sun_study.archicad.sun_eyes import (
     DOCUMENT_SCALE,
     SunEyeSettings,
     make_sun_eye_views,
+    sheet_groups,
     sun_eyes,
 )
+from sun_study.archicad.views import StoreyView
 from tests.unit.test_archicad_adapter import connect
 
 KOGARAH = GeoLocation(
@@ -157,3 +159,25 @@ def test_each_view_is_aimed_before_it_is_saved() -> None:
     assert [p["viewSettings"]["graphicOverrideCombination"] for p in pinned] == [
         "Sun Eye Views"
     ] * 2
+
+
+def test_seven_documents_become_a_morning_sheet_and_an_afternoon_sheet() -> None:
+    eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=range(9, 16), timezone="Australia/Sydney")
+    made = [(eye, StoreyView(0, f"doc {eye.stamp}", f"ID{eye.stamp}"), False) for eye in eyes]
+
+    groups = sheet_groups(made, per_sheet=4)
+
+    assert [name for name, _ in groups] == [
+        f"{SS} Sun Eye Views 09:00-12:00",
+        f"{SS} Sun Eye Views 13:00-15:00",
+    ]
+    assert [[i for i, _ in views] for _, views in groups] == [
+        ["ID0900", "ID1000", "ID1100", "ID1200"],
+        ["ID1300", "ID1400", "ID1500"],
+    ]
+
+
+def test_a_set_that_fits_one_sheet_keeps_the_plain_name() -> None:
+    eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=[9, 12], timezone="Australia/Sydney")
+    made = [(eye, StoreyView(0, "doc", f"ID{eye.stamp}"), False) for eye in eyes]
+    assert [name for name, _ in sheet_groups(made, per_sheet=4)] == [f"{SS} Sun Eye Views"]
