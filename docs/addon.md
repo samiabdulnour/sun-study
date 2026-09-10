@@ -350,10 +350,11 @@ should keep failing.
 
 ## Known gaps
 
-**The Local ID has to come from Graphisoft.** `RFIX/LoriiniAddOnFix.grc` holds
-an `'MDID'` resource of two numbers, the practice's Developer ID and a Local ID
-generated per add-on on the Developer Portal's Add-ons tab. Archicad validates
-the pair, and an invented Local ID answers:
+**The Local ID comes from Graphisoft, and cannot be invented.**
+`RFIX/LoriiniAddOnFix.grc` holds an `'MDID'` resource of two numbers, the
+practice's Developer ID and a Local ID generated per add-on on the Developer
+Portal's Add-ons tab. Archicad validates the pair, and an invented Local ID
+answers:
 
 > This add-on cannot be validated. Please contact the distributor.
 
@@ -361,7 +362,15 @@ That message has no detail behind it and nothing appears in a log, so it is
 worth recognising on sight. The dev kit's own FAQ lists the causes: no `MDID`
 resource, one that was not compiled in, one holding demo IDs, one clashing with
 another add-on, or a mistyped Developer ID. The first build hit the demo-ID case
-by using the kit example's own Developer ID with a made-up Local ID.
+by using the kit example's own Developer ID with a made-up Local ID. Swapping in
+the practice's real Developer ID while keeping a made-up Local ID made it worse
+rather than better: Archicad then rejected the file as not an add-on at all. The
+pair is checked, and neither half can be guessed.
+
+Keep the resource file bare. A prose comment above the resource compiled
+without complaint and produced a binary Archicad would not open, which is why
+the build now searches the finished `.apx` for the Developer ID's four bytes
+before it will publish an artifact.
 
 The **Authorization Key** on that same portal page is a secret and is not in
 this repository. It is what generates Local IDs. The two MDID numbers are not
