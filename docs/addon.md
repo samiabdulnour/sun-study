@@ -188,8 +188,10 @@ Document per view beside them. Every setting on them came back through Tapir's
 
 Two things follow. The 3D Documents carry **no** `d3styleName`, which agrees
 with the headers: a 3D style belongs to a view, not to a document. And the
-office draws **three** instants per date rather than seven, at 9am, 12pm and
-3pm, across 21 June, 21 September and 21 December.
+office's *existing* views cover three instants per date, at 9am, 12pm and 3pm,
+across 21 June, 21 September and 21 December. A sun eye set is hourly instead,
+seven instants from 09:00 to 15:00 on 21 June, matching the assessment window
+rather than the three-per-sheet layout the shadow diagrams use.
 
 The important one is what is missing from that list. Every setting a sun eye
 view needs is already reachable through Tapir except the projection itself.
@@ -221,14 +223,23 @@ settled from a header.
 There is a second half to the same question, and it is worth 41 degrees on the
 reference project. A sun bearing is a **true** bearing, and Archicad's 3D window
 works in the **project's** frame, which is turned. On that project the tool
-reports the project's +Y axis at true bearing 319.052, so 9am on 2 June is the
-sun at 42.7 true and 83.6 in the project's own frame:
+reports the project's +Y axis at true bearing 319.052, so 9am on 21 June is the
+sun at 42.6 true and 83.5 in the project's own frame. The seven instants a
+study draws, at the reference project's latitude:
 
-| Hour | True bearing | Project frame |
-|---|---|---|
-| 9:00 | 42.7 | 83.6 |
-| 12:00 | 358.1 | 39.0 |
-| 15:00 | 314.7 | 355.7 |
+| Hour | Altitude | True bearing | Project frame |
+|---|---|---|---|
+| 9:00 | 19.0 | 42.6 | 83.5 |
+| 10:00 | 26.3 | 30.0 | 70.9 |
+| 11:00 | 31.1 | 15.3 | 56.2 |
+| 12:00 | 32.7 | 359.1 | 40.1 |
+| 13:00 | 30.8 | 343.1 | 24.1 |
+| 14:00 | 25.7 | 328.6 | 9.6 |
+| 15:00 | 18.1 | 316.3 | 357.2 |
+
+21 June and 09:00 to 15:00 are not a choice. They are the ruleset's own
+assessment date and window, in `nsw_adg.yaml`, and the same seven hours the
+shadow diagrams already default to.
 
 Getting that wrong does not fail. It draws a complete, plausible diagram of the
 building lit from the wrong side, which is precisely the failure this project
