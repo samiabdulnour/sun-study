@@ -59,7 +59,7 @@ Reads `API_3DProjectionInfo` through `APIEnv_Get3DProjectionSetsID` and reports
 it, including the twelve raw numbers of `API_AxonoPars::tranmat`.
 
 This is an instrument, not a convenience, and it is why it shipped first. See
-[the open question](#the-open-question) below.
+[the convention](#the-convention-settled) below, and the measurement that settled it.
 
 ### `Loriini.SetProjection`
 
