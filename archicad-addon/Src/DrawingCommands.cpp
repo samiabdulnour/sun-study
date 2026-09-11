@@ -1024,18 +1024,18 @@ GS::ObjectState CreateMeshCommand::Execute (const GS::ObjectState& parameters,
 	for (const GS::Array<API_Coord3D>& hole : holes) {
 		rings.Push (hole);
 	}
-	Int32 total = 0;
+	Int32 vertices = 0;
 	for (const GS::Array<API_Coord3D>& ring : rings) {
-		total += static_cast<Int32> (ring.GetSize ()) + 1;
+		vertices += static_cast<Int32> (ring.GetSize ()) + 1;
 	}
-	element.mesh.poly.nCoords = total;
+	element.mesh.poly.nCoords = vertices;
 	element.mesh.poly.nSubPolys = static_cast<Int32> (rings.GetSize ());
 	element.mesh.poly.nArcs = 0;
 
 	API_ElementMemo memo = {};
-	memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((total + 1) * sizeof (API_Coord), ALLOCATE_CLEAR, 0));
+	memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((vertices + 1) * sizeof (API_Coord), ALLOCATE_CLEAR, 0));
 	memo.pends = reinterpret_cast<Int32**> (BMAllocateHandle ((rings.GetSize () + 1) * sizeof (Int32), ALLOCATE_CLEAR, 0));
-	memo.meshPolyZ = reinterpret_cast<double**> (BMAllocateHandle ((total + 1) * sizeof (double), ALLOCATE_CLEAR, 0));
+	memo.meshPolyZ = reinterpret_cast<double**> (BMAllocateHandle ((vertices + 1) * sizeof (double), ALLOCATE_CLEAR, 0));
 	if (memo.coords == nullptr || memo.pends == nullptr || memo.meshPolyZ == nullptr) {
 		ACAPI_DisposeElemMemoHdls (&memo);
 		return Failed ("Ran out of memory laying out the mesh.", APIERR_MEMFULL);
