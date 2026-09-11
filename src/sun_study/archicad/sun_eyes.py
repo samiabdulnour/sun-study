@@ -85,11 +85,12 @@ __all__ = [
     "sun_eyes",
 ]
 
-#: The scale the office's own Solar Penetration Diagrams carry. A view of the
-#: 3D window is at 1:1 and means nothing on a sheet; a document is a drawing.
-#: 1:500 was tried first and gave seven stamps on a B1; at 1:200 four of them
-#: fill it, which is what the practice asked for.
-DOCUMENT_SCALE = 200.0
+#: The scale the office's own sun view 3D Documents carry. A view of the 3D
+#: window is at 1:1 and means nothing on a sheet; a document is a drawing.
+#: 1:200 was tried on the way, when the drawings were still 59 mm stamps and
+#: the scale looked like the reason; with each clipped to its cell the
+#: practice asked for 1:500 back, which shows the street around the building.
+DOCUMENT_SCALE = 500.0
 
 #: How many hours share a sheet. Four puts 9am to noon on one and the
 #: afternoon on the next, which reads as a morning and an afternoon.

@@ -356,7 +356,7 @@ What it makes, all under the tool's prefix:
 |---|---|
 | `14 \| Sun Eye Views` | one view of the 3D window per hour, 9am to 3pm on 21 June, aimed along the sun |
 | `14 \| Sun Eye 21 Jun 09:00` ... | seven 3D Documents in the Project Map, each with its own projection and sun |
-| `14 \| Sun Eye Documents` | a view of each document at 1:200 |
+| `14 \| Sun Eye Documents` | a view of each document at 1:500 |
 | `14 \| Sun Eye Views 09:00-12:00`, `13:00-15:00` layouts | the documents on two sheets, a morning and an afternoon, four to a sheet |
 | `14 \| Sun Eye Views` layer combination | `04 \| Shadow Diagrams` with every zone-carrying layer hidden |
 
