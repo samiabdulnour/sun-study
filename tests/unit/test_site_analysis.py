@@ -163,7 +163,7 @@ def test_the_context_drawing_carries_the_legends_colours_and_the_site_on_top() -
     sides = [math.dist(a, b) for a, b in pairwise(site_lines[0].points)]
     assert sides == pytest.approx([20.0] * 4, rel=0.01)
 
-    labels = {t.text for t in drawing.texts}
+    labels = {t.text for t in drawing.texts if not t.layer.endswith(".Legend")}
     assert {
         "TEST ST",
         "BACK LN",
