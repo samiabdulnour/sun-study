@@ -2634,3 +2634,36 @@ vertices, halving contours and points in turn, because Archicad
 triangulates between every one and a kilometre of 2 m contours reads as
 ground long before that. `--model-radius 0` keeps to the site sheet's
 bundle for a small study.
+
+### D86 — The drawn boundary places the site, and the blocks are kerbed meshes with the roads between
+
+Asked on 11 September 2026: "check the proper north with project location
+setting, so everything is placed properly", and whether roads could be
+part of the terrain.
+
+The north was right and the origin was not. The fetched lot came out the
+same size and the same way round as the modelled building, 35 m and 20 m
+away, because the run had put the site's centre at the project origin and
+the office's origin is a boundary corner. A file that has been modelled
+knows where its site is better than any fetch: the `03 | Site Boundaries`
+layer held seven survey markers, and fitting the lot's convex hull to
+theirs (longest side for the turn, centroid for the shift) landed it with
+a residual of 0.11 m. The fit is `--fit-layer`, on by default, saved to
+the run folder for the runs that stand in a worksheet, and the project
+location is written from the fitted origin so `--anchor location` is right
+afterwards.
+
+The turn was +1.05 degrees, the grid convergence at Sydney: the file's
+north angle is an MGA bearing typed from the survey, where Archicad means
+a true one. Most files will be like that. `--north grid` says so
+explicitly; the north angle itself is not touched, because the sun study
+was made with it and a degree does not move a shadow.
+
+Roads: the office's own files carry a roads mesh with the blocks as holes
+and a footpath mesh per block. The add-on's `CreateMesh` has no holes, and
+the road reserve as one polygon would need a boolean over a thousand
+lots. So the inverse: every block (lots that touch, dissolved, clipped to
+the model's square) is a mesh 150 mm above the terrain, and the roads are
+the terrain between them. Same picture, no holes, no boolean. 119 blocks
+at Kogarah in a minute and a half, three drawn lot by lot where the
+dissolve found three edges at a point.

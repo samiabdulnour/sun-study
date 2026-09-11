@@ -10,6 +10,7 @@ request so the shape of each is asserted rather than assumed.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from sun_study.archicad.site_analysis import (
     summary_rows,
 )
 from sun_study.site import nsw, osm, transport
+from sun_study.site.arcgis import rings_of
 from sun_study.site.geo import Extent, extent_for, lonlat_to_mercator, lonlat_to_mga
 from sun_study.site.pipeline import (
     ContextBundle,
@@ -710,6 +712,79 @@ def test_storeys_come_from_osm_then_the_lep_then_a_stated_default() -> None:
     assert storeys_of(None, None, None) == (2, True)
 
 
+def test_the_fetched_lot_is_turned_and_moved_onto_the_boundary_drawn_in_the_file() -> None:
+    from sun_study.archicad.site_analysis import fit_frame
+
+    bundle = site_bundle()
+    base = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    ours = [base.ring(ring) for ring in bundle.site_rings]
+    # The office drew the same lot 1.04 degrees straighter and 35 m away.
+    turn, shift = math.radians(1.04), (35.5, 19.7)
+    drawn = [
+        (
+            x * math.cos(turn) - y * math.sin(turn) + shift[0],
+            x * math.sin(turn) + y * math.cos(turn) + shift[1],
+        )
+        for ring in ours
+        for x, y in ring
+    ]
+    fit = fit_frame(base, bundle.site_rings, drawn)
+    assert fit.turn_deg == pytest.approx(1.04, abs=0.01)
+    assert fit.shift[0] == pytest.approx(35.5, abs=0.05)
+    assert fit.shift[1] == pytest.approx(19.7, abs=0.05)
+    assert fit.residual_m < 0.01
+    # The fitted frame puts the lot where it was drawn, and inverts.
+    landed = [fit.frame.project(lon, lat) for ring in bundle.site_rings for lon, lat in ring]
+    assert all(
+        math.hypot(a[0] - b[0], a[1] - b[1]) < 0.01 for a, b in zip(landed, drawn, strict=True)
+    )
+    lon, lat = fit.frame.unproject(*landed[0])
+    assert (lon, lat) == pytest.approx(bundle.site_rings[0][0], abs=1e-8)
+    assert "turned +1.04 deg" in fit.describe()
+    again = type(fit).from_dict(fit.as_dict())
+    assert again.frame == fit.frame
+
+    grid = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site", north="grid")
+    assert grid.convergence_deg == 0.0 and base.convergence_deg != 0.0
+
+
+def test_the_blocks_are_the_lots_dissolved_without_the_site_and_clipped_to_the_extent() -> None:
+    from sun_study.archicad.context_model import _blocks
+
+    bundle = site_bundle()
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    site_ring = list(rings_of(bundle.site_lots["features"][0]["geometry"])[0])
+    # Two lots east of the site, touching along a shared side, and one far
+    # outside the extent; the site's own lot is in the cadastre too.
+    d = 0.0004
+    lot_a = [
+        (LON + d, LAT),
+        (LON + 2 * d, LAT),
+        (LON + 2 * d, LAT + d),
+        (LON + d, LAT + d),
+        (LON + d, LAT),
+    ]
+    lot_b = [
+        (LON + 2 * d, LAT),
+        (LON + 3 * d, LAT),
+        (LON + 3 * d, LAT + d),
+        (LON + 2 * d, LAT + d),
+        (LON + 2 * d, LAT),
+    ]
+    far = [(LON + 1, LAT), (LON + 1.001, LAT), (LON + 1.001, LAT + 0.001), (LON + 1, LAT)]
+    cadastre = collection(
+        polygon(site_ring, lotidstring="1//DP1"),
+        polygon(lot_a, lotidstring="2//DP1"),
+        polygon(lot_b, lotidstring="3//DP1"),
+        polygon(far, lotidstring="4//DP1"),
+    )
+    with_lots = replace(bundle, all_lots=cadastre)
+    blocks, fell_back = _blocks(with_lots, frame)
+    assert fell_back == 0
+    assert len(blocks) == 1, "the two lots make one block; the site and the far lot are out"
+    assert len(blocks[0]) == 4, "the shared side is gone"
+
+
 def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> None:
     from sun_study.archicad.context_model import model_context
 
@@ -751,6 +826,8 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
     assert slabs[0]["thickness"] == pytest.approx(2 * 3.1)
     assert slabs[0]["referencePlaneLocation"] == "Bottom"
     assert 24.0 < slabs[0]["level"] < 28.0
+    assert report.blocks == 0, "no cadastre in the site bundle, so no blocks"
+    assert "blocks: 0 meshes" in report.describe()
 
 
 def test_the_location_is_the_site_on_the_grid_with_north_kept() -> None:

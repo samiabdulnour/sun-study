@@ -69,8 +69,10 @@ from sun_study.site import curate
 from sun_study.site.arcgis import rings_of
 from sun_study.site.geo import (
     Point,
+    convex_hull,
     lonlat_to_mga,
     mercator_to_lonlat,
+    mga_to_lonlat,
     mga_zone,
     point_in_ring,
     polyline_length,
@@ -90,6 +92,7 @@ __all__ = [
     "SITE_WORD",
     "SUMMARY_WORD",
     "Drawing",
+    "Fit",
     "Frame",
     "WorksheetNotEnteredError",
     "WorksheetReport",
@@ -186,6 +189,26 @@ class Frame:
             de * math.sin(turn) + dn * math.cos(turn),
         )
 
+    def unproject(self, x: float, y: float) -> tuple[float, float]:
+        """Longitude and latitude of a point given in the project frame."""
+        turn = math.radians(self.plus_y_bearing_deg + self.convergence_deg)
+        de = x * math.cos(turn) + y * math.sin(turn)
+        dn = -x * math.sin(turn) + y * math.cos(turn)
+        return mga_to_lonlat(self.origin[0] + de, self.origin[1] + dn, self.zone)
+
+    def turned_and_moved(self, delta_deg: float, shift: Point) -> Frame:
+        """The frame whose projection is this one's, turned by ``delta_deg``
+        anticlockwise about the origin and then moved by ``shift`` metres."""
+        turn = math.radians(self.plus_y_bearing_deg + self.convergence_deg + delta_deg)
+        de = shift[0] * math.cos(turn) + shift[1] * math.sin(turn)
+        dn = -shift[0] * math.sin(turn) + shift[1] * math.cos(turn)
+        return Frame(
+            self.zone,
+            (self.origin[0] - de, self.origin[1] - dn),
+            self.plus_y_bearing_deg + delta_deg,
+            self.convergence_deg,
+        )
+
     def direction(self, bearing_deg: float) -> Point:
         """A unit vector along a compass bearing, in the project frame."""
         turn = math.radians(bearing_deg - self.plus_y_bearing_deg)
@@ -195,11 +218,120 @@ class Frame:
         return [self.project(lon, lat) for lon, lat in ring]
 
 
+@dataclass(frozen=True)
+class Fit:
+    """How the fetched site had to move to land on the boundary drawn in the file."""
+
+    frame: Frame
+    turn_deg: float
+    """Anticlockwise, from the unfitted frame."""
+    shift: Point
+    """Metres, in the project frame, after the turn."""
+    residual_m: float
+    """Mean distance from the drawn boundary's corners to the fitted lot's edge."""
+    drawn_points: int
+
+    def describe(self) -> str:
+        return (
+            f"turned {self.turn_deg:+.2f} deg and moved ({self.shift[0]:+.1f}, "
+            f"{self.shift[1]:+.1f}) m to sit on the {self.drawn_points} boundary points "
+            f"drawn in the file; residual {self.residual_m:.2f} m"
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "zone": self.frame.zone,
+            "origin": list(self.frame.origin),
+            "plus_y_bearing_deg": self.frame.plus_y_bearing_deg,
+            "convergence_deg": self.frame.convergence_deg,
+            "turn_deg": self.turn_deg,
+            "shift": list(self.shift),
+            "residual_m": self.residual_m,
+            "drawn_points": self.drawn_points,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Fit:
+        return cls(
+            frame=Frame(
+                int(data["zone"]),
+                (float(data["origin"][0]), float(data["origin"][1])),
+                float(data["plus_y_bearing_deg"]),
+                float(data.get("convergence_deg", 0.0)),
+            ),
+            turn_deg=float(data["turn_deg"]),
+            shift=(float(data["shift"][0]), float(data["shift"][1])),
+            residual_m=float(data["residual_m"]),
+            drawn_points=int(data.get("drawn_points", 0)),
+        )
+
+
+def _edge_bearing(hull: Sequence[Point]) -> float:
+    """Direction of the hull's longest side, in degrees, folded to [0, 180)."""
+    best, angle = -1.0, 0.0
+    for a, b in zip(hull, [*hull[1:], hull[0]], strict=True):
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        if length > best:
+            best, angle = length, math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 180.0
+    return angle
+
+
+def _turn_about_origin(points: Iterable[Point], degrees: float) -> list[Point]:
+    c, s = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    return [(x * c - y * s, x * s + y * c) for x, y in points]
+
+
+def _distance_to_ring(point: Point, ring: Sequence[Point]) -> float:
+    best = math.inf
+    for a, b in zip(ring, [*ring[1:], ring[0]], strict=True):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length2 = dx * dx + dy * dy
+        t = (
+            0.0
+            if length2 == 0.0
+            else max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length2))
+        )
+        best = min(best, math.hypot(a[0] + t * dx - point[0], a[1] + t * dy - point[1]))
+    return best
+
+
+def fit_frame(frame: Frame, site_rings: Sequence[Sequence[Point]], drawn: Sequence[Point]) -> Fit:
+    """Turn and move ``frame`` so the site's fetched boundary lands on the
+    boundary drawn in the file.
+
+    Both boundaries are taken by their convex hulls -- the drawn one may be a
+    handful of corner markers, a polyline, a fill, or all three -- and the
+    turn is the difference of their longest sides, the shift the difference
+    of their centroids after that turn. A site is not a circle: its longest
+    side says which way it faces, whatever else was drawn.
+
+    ``site_rings`` are in longitude and latitude; ``drawn`` in project metres.
+    """
+    ours = convex_hull(p for ring in site_rings for p in frame.ring(ring))
+    theirs = convex_hull(drawn)
+    if len(ours) < 3 or len(theirs) < 3:
+        raise ValueError("a boundary fit needs three points on each side")
+    delta = (_edge_bearing(theirs) - _edge_bearing(ours) + 90.0) % 180.0 - 90.0
+    turned = _turn_about_origin(ours, delta)
+    c_ours, c_theirs = ring_centroid(turned), ring_centroid(theirs)
+    shift = (c_theirs[0] - c_ours[0], c_theirs[1] - c_ours[1])
+    landed = [(x + shift[0], y + shift[1]) for x, y in turned]
+    residual = sum(_distance_to_ring(p, landed) for p in theirs) / len(theirs)
+    return Fit(
+        frame=frame.turned_and_moved(delta, shift),
+        turn_deg=delta,
+        shift=shift,
+        residual_m=residual,
+        drawn_points=len(theirs),
+    )
+
+
 def frame_for(
     geo: GeoLocation | None,
     *,
     site_centre: tuple[float, float],
     anchor: str = "location",
+    north: str = "true",
 ) -> Frame:
     """Where the site lands: on the project's own georeferencing, or at its origin.
 
@@ -207,7 +339,14 @@ def frame_for(
     north. ``anchor="site"`` puts the site's centre at ``(0, 0)`` and keeps
     the project's north when it has one, north-up otherwise -- for a project
     that has nothing in it yet and no location set.
+
+    ``north="true"`` takes the project's north angle as a true bearing, which
+    is what Archicad means by it; ``north="grid"`` takes it as an MGA grid
+    bearing, which is what it is in a file whose north was typed from the
+    survey plan, and skips the convergence.
     """
+    if north not in ("true", "grid"):
+        raise ValueError(f"north must be 'true' or 'grid', not {north!r}")
     zone = mga_zone(site_centre[0])
     bearing = geo.project_north_bearing_deg if geo is not None else 0.0
     if anchor == "site":
@@ -223,7 +362,7 @@ def frame_for(
     # short step due north from the origin.
     step = lonlat_to_mga(lon, lat + 1e-4, zone)
     convergence = math.degrees(math.atan2(step[0] - origin[0], step[1] - origin[1]))
-    return Frame(zone, origin, bearing, convergence)
+    return Frame(zone, origin, bearing, convergence if north == "true" else 0.0)
 
 
 # -- what gets drawn -----------------------------------------------------------

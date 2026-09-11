@@ -727,6 +727,7 @@ def run_model(
     try:
         f_contours = soft.submit("contours", lambda: nsw.contours(extent), [])
         f_hob = soft.submit("height of building", lambda: nsw.height_of_building(extent), empty())
+        f_lots = soft.submit("cadastre", lambda: nsw.all_lots(extent), empty())
         f_buildings = soft.submit(
             "building footprints (OSM)", lambda: osm.buildings(extent, log=say), ()
         )
@@ -740,6 +741,7 @@ def run_model(
             scale=1000.0,
             site_lots=site,
             site_rings=tuple(tuple(ring) for ring in rings),
+            all_lots=soft.take(f_lots),
             height_of_building=soft.take(f_hob),
             contours=tuple(contours),
             furniture=osm.Furniture(buildings=tuple(footprints)),
@@ -747,7 +749,10 @@ def run_model(
     finally:
         soft.close()
     bundle.warnings = tuple(soft.warnings)
-    say(f"  contours:{len(bundle.contours)} footprints:{len(bundle.furniture.buildings)}")
+    say(
+        f"  contours:{len(bundle.contours)} footprints:{len(bundle.furniture.buildings)} "
+        f"lots:{len(bundle.all_lots.get('features', []))}"
+    )
     if out_dir is not None:
         say(f"  saved {save(bundle, out_dir / 'data' / 'model.json')}")
     return bundle

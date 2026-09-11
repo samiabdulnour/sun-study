@@ -30,11 +30,14 @@ __all__ = [
     "LonLat",
     "Point",
     "Ring",
+    "clip_ring",
+    "convex_hull",
     "dissolve",
     "extent_for",
     "lonlat_to_mercator",
     "lonlat_to_mga",
     "mercator_to_lonlat",
+    "mga_to_lonlat",
     "mga_zone",
     "point_in_ring",
     "polyline_length",
@@ -237,6 +240,100 @@ def lonlat_to_mga(lon: float, lat: float, zone: int) -> Point:
 
 
 # -- plane geometry ------------------------------------------------------------
+
+
+def mga_to_lonlat(east: float, north: float, zone: int) -> LonLat:
+    """The inverse of ``lonlat_to_mga``, by iteration on the forward formula.
+
+    Four Newton steps from a flat-earth first guess land within a tenth of a
+    millimetre anywhere in a zone; the closed-form inverse is a page of
+    series for the same answer.
+    """
+    lon0 = zone * 6.0 - 183.0
+    lat = math.degrees((north - _FALSE_NORTHING) / (_K0 * _A))
+    lon = lon0 + math.degrees((east - _FALSE_EASTING) / (_K0 * _A * math.cos(math.radians(lat))))
+    for _ in range(6):
+        e, n = lonlat_to_mga(lon, lat, zone)
+        de, dn = east - e, north - n
+        if abs(de) < 1e-5 and abs(dn) < 1e-5:
+            break
+        h = 1e-5
+        e_lon, n_lon = lonlat_to_mga(lon + h, lat, zone)
+        e_lat, n_lat = lonlat_to_mga(lon, lat + h, zone)
+        j11, j21 = (e_lon - e) / h, (n_lon - n) / h
+        j12, j22 = (e_lat - e) / h, (n_lat - n) / h
+        det = j11 * j22 - j12 * j21
+        lon += (j22 * de - j12 * dn) / det
+        lat += (-j21 * de + j11 * dn) / det
+    return lon, lat
+
+
+def clip_ring(ring: Sequence[Point], xmin: float, ymin: float, xmax: float, ymax: float) -> Ring:
+    """The part of a polygon inside an axis-aligned box (Sutherland-Hodgman).
+
+    Empty when nothing of it is inside. A ring that crosses the box comes
+    back with new vertices on the box's sides, which is what a block at the
+    edge of a model needs: an outline that ends where the model does.
+    """
+    out = list(ring)
+    if len(out) > 1 and out[0] == out[-1]:
+        out.pop()
+    # Each side: which coordinate it bounds, the bound, and its sign.
+    for axis, bound, keep_below in (
+        (0, xmin, False),
+        (0, xmax, True),
+        (1, ymin, False),
+        (1, ymax, True),
+    ):
+        if not out:
+            return []
+        kept: list[Point] = []
+        previous = out[-1]
+        for point in out:
+            here = _within(point, axis, bound, keep_below)
+            there = _within(previous, axis, bound, keep_below)
+            if here:
+                if not there:
+                    kept.append(_cross(previous, point, axis, bound))
+                kept.append(point)
+            elif there:
+                kept.append(_cross(previous, point, axis, bound))
+            previous = point
+        out = kept
+    return out if len(out) >= 3 else []
+
+
+def _within(p: Point, axis: int, bound: float, keep_below: bool) -> bool:
+    return p[axis] <= bound if keep_below else p[axis] >= bound
+
+
+def _cross(a: Point, b: Point, axis: int, bound: float) -> Point:
+    t = (bound - a[axis]) / (b[axis] - a[axis])
+    if axis == 0:
+        return (bound, a[1] + t * (b[1] - a[1]))
+    return (a[0] + t * (b[0] - a[0]), bound)
+
+
+def convex_hull(points: Iterable[Point]) -> Ring:
+    """The convex hull, anticlockwise, by Andrew's monotone chain."""
+    unique = sorted(set(points))
+    if len(unique) < 3:
+        return list(unique)
+
+    def turn(o: Point, a: Point, b: Point) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[Point] = []
+    for p in unique:
+        while len(lower) >= 2 and turn(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list[Point] = []
+    for p in reversed(unique):
+        while len(upper) >= 2 and turn(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
 
 
 def ring_area(ring: Sequence[Point]) -> float:

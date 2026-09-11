@@ -57,6 +57,8 @@ Options worth knowing:
 | `--set-location` | write the site's lat/lon and MGA survey point into Project Location |
 | `--model` | terrain mesh and neighbour slabs on the `LORIINI` layer (below) |
 | `--model-radius 500` | how far each way the model reaches; `0` keeps to the site sheet's extent |
+| `--fit-layer auto` | fit the fetched lot onto the boundary drawn on this layer (below); `none` skips it |
+| `--north grid` | the project's north angle is an MGA grid bearing from the survey, not a true one |
 
 Needs the Loriini add-on beside Tapir. A worksheet can only be drawn into in
 the session that made it if the add-on's own `CreateWorksheet` made it and
@@ -68,6 +70,23 @@ from opendata.transport.nsw.gov.au. Without it the stops come from
 OpenStreetMap along with the routes.
 
 ## Where the site lands
+
+**The boundary drawn in the file wins.** When a layer named for a boundary
+(`03 | Site Boundaries`, say; `--fit-layer` names another) holds anything --
+corner markers, a polyline, a fill -- the fetched lot is turned and moved to
+sit on it: the turn is the difference between the longest sides of the two
+convex hulls, the shift the difference of their centroids, and the residual
+(mean distance from the drawn corners to the fitted lot's edge) is printed.
+A residual over 5 m is not used. The fit reads the floor plan, so it is saved
+as `data/fit.json` for the runs that stand in a worksheet, and the project
+location is written from the fitted origin.
+
+At Kogarah the fit turned the lot +1.05 degrees and moved it 40 m, with a
+residual of 0.11 m on seven survey markers. The turn is the grid convergence
+at Sydney: the file's north angle was typed from the survey plan, so it is
+an MGA grid bearing, not the true bearing Archicad means by it. `--north
+grid` lands such a file without a fit. The sun is a degree out either way;
+nothing to correct.
 
 A bundle is in longitude and latitude. To draw it the tool needs to know
 where the project is and which way it faces, and it reads both from
@@ -188,6 +207,17 @@ element on the `LORIINI` layer with an `SA ...` element ID:
 - **Location**: with the project unlocated and the site anchored at the
   origin, `SetGeoLocation` writes the site centre and its MGA survey point
   first, so a survey merged later lands on top.
+
+**Blocks and roads.** The cadastre of the whole square comes with the
+model bundle, and every street block -- the lots that touch, dissolved to
+their outline, clipped to the model's edge -- is a mesh 150 mm above the
+terrain, `SA BLOCK n`. The roads are not modelled; they are the terrain
+left showing between the blocks, with the kerb the blocks' own edge. That
+is how the office's files do it (a roads mesh with the blocks as holes and
+a footpath mesh per block), without the boolean the holes would need. The
+site's own lots are left out of their block, so the project's site model
+shows there. At Kogarah: 119 blocks; three groups of lots would not
+dissolve and are drawn lot by lot, one lot was refused as self-crossing.
 
 The model fetches its own square, `--model-radius` metres each way from the
 site (500 by default: a kilometre across, about 500 footprints and 36,000

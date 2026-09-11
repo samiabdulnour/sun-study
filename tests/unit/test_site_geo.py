@@ -127,3 +127,20 @@ def test_a_boundary_that_will_not_chain_is_refused_rather_than_guessed() -> None
     assert abs(ring_area(outline)) == pytest.approx(400.0)
     # But two lots that share only a vertex leave a degree-four node.
     assert dissolve([a, c]) == [] or len(dissolve([a, c])) == 2
+
+
+def test_the_grid_inverts_and_a_ring_clips_and_hulls() -> None:
+    from sun_study.site.geo import clip_ring, convex_hull, lonlat_to_mga, mga_to_lonlat
+
+    east, north = lonlat_to_mga(151.1357, -33.9697, 56)
+    lon, lat = mga_to_lonlat(east, north, 56)
+    assert lon == pytest.approx(151.1357, abs=1e-9)
+    assert lat == pytest.approx(-33.9697, abs=1e-9)
+
+    square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    clipped = clip_ring(square, 5.0, -1.0, 20.0, 5.0)
+    assert sorted(clipped) == [(5.0, 0.0), (5.0, 5.0), (10.0, 0.0), (10.0, 5.0)]
+    assert clip_ring(square, 20.0, 20.0, 30.0, 30.0) == []
+
+    hull = convex_hull([(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0), (2.0, 1.0), (1.0, 2.0)])
+    assert len(hull) == 4 and (2.0, 1.0) not in hull

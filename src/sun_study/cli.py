@@ -12,6 +12,7 @@ import collections
 import contextlib
 import dataclasses
 import datetime as dt
+import json
 import math
 import os
 import re
@@ -6497,6 +6498,27 @@ def site_analysis(
             help="Also model the terrain and the neighbouring buildings, on the LORIINI layer.",
         ),
     ] = False,
+    fit_layer: Annotated[
+        str,
+        typer.Option(
+            "--fit-layer",
+            help=(
+                "Layer the site boundary is drawn on in the file; the fetched lot is turned "
+                "and moved to sit on it. 'auto' finds a layer named for a boundary; 'none' "
+                "skips the fit."
+            ),
+        ),
+    ] = "auto",
+    north: Annotated[
+        str,
+        typer.Option(
+            "--north",
+            help=(
+                "What the project's north angle is: 'true' (Archicad's meaning) or 'grid', "
+                "an MGA bearing typed from the survey plan."
+            ),
+        ),
+    ] = "true",
     model_radius: Annotated[
         float,
         typer.Option(
@@ -6541,6 +6563,9 @@ def site_analysis(
     """
     banner()
     naming.set_prefix(layer_prefix)
+    if north not in ("true", "grid"):
+        typer.secho("  --north takes 'true' or 'grid'.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
     if anchor not in ("location", "site"):
         typer.secho("  --anchor takes 'location' or 'site'.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
@@ -6634,14 +6659,86 @@ def site_analysis(
         for warning in getattr(bundle, "warnings", ()):
             typer.secho(f"  WARN {warning}", fg=typer.colors.YELLOW)
 
+    model_bundle = site_bundle
+    if model and model_radius > 0:
+        model_bundle = fetch_or_load(
+            "model",
+            True,
+            site_pipeline.load_site,
+            lambda: site_pipeline.run_model(
+                address or "", radius_m=model_radius, out_dir=where, log=say
+            ),
+        )
     if connection is None:
-        if model and model_radius > 0 and from_dir is None:
-            site_pipeline.run_model(address or "", radius_m=model_radius, out_dir=where, log=say)
         typer.echo("  fetched only; nothing drawn.")
         return
 
+    # The boundary drawn in the file, when there is one, says where the site
+    # really sits: the fetched lot is turned and moved onto it, and that fit
+    # is the frame for everything. It reads the floor plan, so it is saved
+    # for the runs that stand in a worksheet.
+    reference = site_bundle if site_bundle is not None else context_bundle
+    if reference is None:
+        reference = model_bundle
+    fit: site_drawing.Fit | None = None
+    fit_path = where / "data" / "fit.json"
+    if reference is not None and fit_layer.casefold() != "none":
+        base = site_drawing.frame_for(
+            geo, site_centre=reference.centre_lonlat, anchor=anchor, north=north
+        )
+        _, here_kind, here_name = site_drawing._standing_in(connection)
+        # A 3D window or a section in front costs nothing to leave; only a
+        # worksheet or a layout does (D84), and those are left alone.
+        if here_kind not in ("FloorPlan", "Worksheet", "Layout", "Detail", ""):
+            context_model._on_the_floor_plan(connection)
+            _, here_kind, here_name = site_drawing._standing_in(connection)
+        layer_name = context_model.boundary_layer(connection, fit_layer)
+        if layer_name is None:
+            if fit_layer.casefold() != "auto":
+                typer.secho(f"  no layer named {fit_layer!r}; no fit.", fg=typer.colors.YELLOW)
+        elif here_kind == "FloorPlan":
+            points = context_model.boundary_points(connection, layer_name)
+            if len(points) >= 3:
+                try:
+                    fit = site_drawing.fit_frame(base, reference.site_rings, points)
+                except ValueError as error:
+                    typer.secho(f"  no fit: {error}", fg=typer.colors.YELLOW)
+            else:
+                typer.secho(
+                    f"  layer {layer_name!r} holds no points to fit to.", fg=typer.colors.YELLOW
+                )
+            if fit is not None and fit.residual_m > 5.0:
+                typer.secho(
+                    f"  the fit to {layer_name!r} is poor ({fit.describe()}); not used.",
+                    fg=typer.colors.YELLOW,
+                )
+                fit = None
+            if fit is not None:
+                fit_path.parent.mkdir(parents=True, exist_ok=True)
+                fit_path.write_text(json.dumps(fit.as_dict(), indent=2), encoding="utf-8")
+                typer.echo(f"  fitted to {layer_name!r}: {fit.describe()}")
+                grid_like = abs(fit.turn_deg + base.convergence_deg) < 0.25
+                if north == "true" and grid_like:
+                    typer.echo(
+                        "  the turn is the grid convergence: this file's north is an MGA grid "
+                        "bearing (--north grid would land it without the fit)."
+                    )
+        elif fit_path.is_file():
+            fit = site_drawing.Fit.from_dict(json.loads(fit_path.read_text(encoding="utf-8")))
+            typer.echo(f"  using the fit saved at {fit_path}: {fit.describe()}")
+        else:
+            typer.secho(
+                f"  the boundary fit reads the floor plan, and {here_name or here_kind!r} is "
+                "in front; no saved fit, so the frame is unfitted.",
+                fg=typer.colors.YELLOW,
+            )
+
     def frame_and_offset(bundle: Any) -> site_drawing.Frame:
-        frame = site_drawing.frame_for(geo, site_centre=bundle.centre_lonlat, anchor=anchor)
+        if fit is not None:
+            return fit.frame
+        frame = site_drawing.frame_for(
+            geo, site_centre=bundle.centre_lonlat, anchor=anchor, north=north
+        )
         x, y = frame.project(*bundle.centre_lonlat)
         distance = math.hypot(x, y)
         typer.echo(
@@ -6663,19 +6760,19 @@ def site_analysis(
     # The location first, so the sheets and the model that follow land on a
     # project that says where it is. Only with the site at the origin: with
     # --anchor location the origin is wherever the project already says.
-    reference = site_bundle if site_bundle is not None else context_bundle
-    if reference is not None and anchor == "site":
+    if reference is not None and (anchor == "site" or fit is not None):
         preset = geo is not None and geo.looks_like_a_city_preset
-        if set_location or (set_location is None and preset):
+        if set_location or (set_location is None and (preset or fit is not None)):
             ground = (
                 context_model.ground_at_site(site_bundle, frame_and_offset(site_bundle))
                 if site_bundle is not None
                 else None
             )
+            # With a fit the origin is wherever the drawn boundary put it;
+            # without one the site's centre is the origin by construction.
+            origin = fit.frame.unproject(0.0, 0.0) if fit is not None else reference.centre_lonlat
             try:
-                geo = context_model.set_project_location(
-                    connection, geo, reference.centre_lonlat, ground_m=ground
-                )
+                geo = context_model.set_project_location(connection, geo, origin, ground_m=ground)
                 typer.echo(f"  project location set to the site: {geo.describe()}")
             except ArchicadError as error:
                 typer.secho(f"  the project location was not set: {error}", fg=typer.colors.YELLOW)
@@ -6723,16 +6820,6 @@ def site_analysis(
         raise typer.Exit(code=2) from error
 
     if model:
-        model_bundle = site_bundle
-        if model_radius > 0:
-            model_bundle = fetch_or_load(
-                "model",
-                True,
-                site_pipeline.load_site,
-                lambda: site_pipeline.run_model(
-                    address or "", radius_m=model_radius, out_dir=where, log=say
-                ),
-            )
         if model_bundle is None:
             typer.secho("  nothing to model from; no bundle.", fg=typer.colors.YELLOW)
         else:
