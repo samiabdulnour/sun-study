@@ -190,12 +190,12 @@ def _hob_at(bundle: SiteBundle, lon: float, lat: float) -> float | None:
 # -- the model ----------------------------------------------------------------------
 
 
-def _clear_previous(connection: ArchicadConnection, layer_index: int) -> int:
+def _clear_previous(connection: ArchicadConnection) -> int:
     """Delete the slabs and meshes of the last run: what sits on the tool's
     layer and carries its ID. Returns how many went.
 
-    On the tool's layer *and* with its ID, both, so a slab somebody moved
-    onto the layer by hand is left alone; three runs had stacked ninety
+    By the ID alone: the ID is the tool's own mark, and a slab a failed
+    move left off the layer still carries it. Three runs had stacked ninety
     slabs before this existed.
     """
     doomed: list[dict[str, Any]] = []
@@ -212,8 +212,7 @@ def _clear_previous(connection: ArchicadConnection, layer_index: int) -> int:
             element
             for element, row in zip(elements, rows, strict=True)
             if isinstance(row, dict)
-            and row.get("layerIndex") == layer_index
-            and str(row.get("id", "")).startswith("SA ")
+            and str(row.get("id", "")).startswith(("SA NEIGHBOUR", "SA TERRAIN"))
         )
     if doomed:
         connection.run_tapir("DeleteElements", {"elements": doomed})
@@ -376,7 +375,7 @@ def model_context(
     layer = ensure_layer(connection, LAYER)
     contours = _contours(bundle, frame)
     notes: list[str] = []
-    removed = _clear_previous(connection, layer.index)
+    removed = _clear_previous(connection)
     if removed:
         notes.append(f"{removed} slabs and meshes from the last run removed first.")
 
