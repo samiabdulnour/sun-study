@@ -427,9 +427,9 @@ def _blocks(bundle: SiteBundle, frame: Frame) -> tuple[list[list[Point]], int]:
     seen: set[tuple[tuple[int, int], ...]] = set()
     unique: list[list[Point]] = []
     for ring in lots:
-        k = tuple(sorted((round(x / 0.05), round(y / 0.05)) for x, y in ring))
-        if k not in seen:
-            seen.add(k)
+        signature = tuple(sorted((round(x / 0.05), round(y / 0.05)) for x, y in ring))
+        if signature not in seen:
+            seen.add(signature)
             unique.append(ring)
     lots = unique
     if not lots:

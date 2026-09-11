@@ -6429,7 +6429,10 @@ def site_analysis(
         bool, typer.Option("--site/--no-site", help="The site analysis worksheet.")
     ] = True,
     summary: Annotated[
-        bool, typer.Option("--summary/--no-summary", help="The development summary worksheet.")
+        bool,
+        typer.Option(
+            "--summary/--no-summary", help="The summary of controls, drawn on a layout of its own."
+        ),
     ] = True,
     scale: Annotated[
         float, typer.Option("--scale", help="Denominator of the context sheet's scale.")
@@ -6809,12 +6812,11 @@ def site_analysis(
             typer.echo(report.describe())
             unplaced |= any("PlaceFigures" in note for note in report.notes)
         if summary_bundle is not None:
-            typer.echo("drawing the development summary...")
-            report = site_drawing.draw_summary(
-                connection, summary_bundle, view=view, wait_s=wait_minutes * 60.0, say=say
+            typer.echo("drawing the summary of controls on its layout...")
+            summary_report = site_drawing.draw_summary(
+                connection, summary_bundle, master_layout=master_layout, say=say
             )
-            typer.echo(report.describe())
-            unplaced |= any("PlaceFigures" in note for note in report.notes)
+            typer.echo(summary_report.describe())
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error

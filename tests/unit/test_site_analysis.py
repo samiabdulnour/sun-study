@@ -456,38 +456,87 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
     assert not any("pen table" in note for note in report.notes)
 
 
-def test_an_existing_worksheet_is_entered_and_cleared_first() -> None:
+def test_the_summary_of_controls_is_drawn_straight_onto_a_layout_of_its_own() -> None:
+    layout_book = {
+        "navigatorItemTree": {
+            "navigatorItemId": {"guid": "ROOT"},
+            "name": "root",
+            "children": [
+                {
+                    "navigatorItem": {
+                        "type": "MasterLayoutItem",
+                        "name": "A1 - VERTICAL NO SCALE",
+                        "navigatorItemId": {"guid": "M1"},
+                        "children": [],
+                    }
+                },
+                {
+                    "navigatorItem": {
+                        "type": "LayoutItem",
+                        "name": f"{SS} Development Summary",
+                        "navigatorItemId": {"guid": "OLD"},
+                        "children": [],
+                    }
+                },
+            ],
+        }
+    }
     connection, transport_ = connect(
         {
-            "GetCurrentDatabase": Sequential(
-                {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
-                {"databaseId": {"guid": "DB"}, "windowType": "Worksheet"},
-            ),
-            "GetNavigatorItemTree": navigator_tree((f"{SS} Development Summary", "NAV")),
-            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "DB"}}]},
+            "GetNavigatorItemTree": layout_book,
+            "DeleteNavigatorItems": {"success": True},
+            "CreateLayout": {"databases": [{"databaseId": {"guid": "LAY"}}]},
+            "GetLayoutSettings": {
+                "layoutSettings": [
+                    {
+                        "horizontalSize": 841.0,
+                        "verticalSize": 594.0,
+                        "leftMargin": 10.0,
+                        "topMargin": 10.0,
+                        "rightMargin": 10.0,
+                        "bottomMargin": 10.0,
+                    }
+                ]
+            },
             "SetCurrentDatabase": {"success": True},
-            "GetElementsByType": {"elements": [{"elementId": {"guid": "OLD"}}]},
-            "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 1}]},
-            "DeleteElements": {"success": True},
-            "GetAttributesByType": {"attributes": []},
+            "GetCurrentDatabase": {"databaseId": {"guid": "LAY"}, "windowType": "Layout"},
+            "GetAttributesByType": {
+                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+            },
+            "GetLayers": {
+                "layers": [
+                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                ]
+            },
             "CreateLayers": {"success": True},
-            "GetLayers": {"layers": []},
+            "GetPenTables": {"penTables": []},
             "CreatePolylines": {"elements": [{"elementId": {"guid": "P"}}]},
-            "CreateTexts": {"elements": [{"elementId": {"guid": "T"}}]},
-            "SetDetailsOfElements": {"success": True},
+            "CreateTexts": {"success": True, "elements": [{"guid": "T"}]},
         }
     )
     bundle = SummaryBundle("1 Test St", "1 TEST STREET", "LOT 1 - DP 1", None, nsw.SiteControls())
-    with pytest.raises(Exception, match="Created layer"):
-        # No attributes at all: the layer cannot be found after creation, and
-        # the run stops there rather than drawing onto layer zero.
-        draw_summary(connection, bundle, view=False)
-    assert transport_.parameters_for("SetCurrentDatabase") == {
-        "databaseId": {"guid": "DB"},
-        "windowType": "Worksheet",
-    }
+    report = draw_summary(connection, bundle, master_layout="A1 no scale")
+    assert report.master == "A1 - VERTICAL NO SCALE" and report.database_id == "LAY"
+    assert report.lines > 5 and report.texts > 5
+    assert "drawn on the sheet itself" in report.describe()
     commands = transport_.commands()
-    assert commands.index("SetCurrentDatabase") < commands.index("DeleteElements")
+    # The stale sheet goes, the new one is made on the master, entered, drawn.
+    assert commands.index("DeleteNavigatorItems") < commands.index("CreateLayout")
+    assert commands.index("CreateLayout") < commands.index("SetCurrentDatabase")
+    assert commands.index("SetCurrentDatabase") < commands.index("CreateTexts")
+    assert transport_.parameters_for("SetCurrentDatabase") == {
+        "databaseId": {"guid": "LAY"},
+        "windowType": "Layout",
+    }
+    # Paper metres, hanging from the usable top-left corner 15 mm in: the
+    # title sits near x = 0.026 m, y just under 0.569 m, on an A1 landscape.
+    texts = transport_.parameters_for("CreateTexts")["texts"]
+    title = next(t for t in texts if t["text"] == "DEVELOPMENT SUMMARY")
+    assert 0.02 < title["coordinate"]["x"] < 0.03
+    assert 0.55 < title["coordinate"]["y"] < 0.58
+    assert title["height"] == pytest.approx(8.2), "paper millimetres, as on the worksheet"
+    assert all(0.0 < t["coordinate"]["y"] < 0.58 for t in texts), "everything on the sheet"
+    assert "elementId" not in title, "a layout element takes no ID"
 
 
 def test_a_context_extent_is_the_sheet_at_its_scale() -> None:

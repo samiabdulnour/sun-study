@@ -40,21 +40,31 @@ import base64
 import math
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.draw import Pen, _looks_like, ensure_layer, pen_table, place_texts
+from sun_study.archicad.draw import (
+    Pen,
+    _looks_like,
+    create_texts,
+    ensure_layer,
+    pen_table,
+    place_texts,
+)
 from sun_study.archicad.layout import (
     MM_PER_M,
     LayoutSheet,
+    _create_layout,
     _drawings_by_name,
+    _master_named,
     _walk,
     layout_from_views,
     layout_sheet,
+    master_layouts,
 )
 from sun_study.archicad.read import GeoLocation
 from sun_study.archicad.series import _worksheets, clear_database, database_of
@@ -94,6 +104,7 @@ __all__ = [
     "Drawing",
     "Fit",
     "Frame",
+    "LayoutReport",
     "WorksheetNotEnteredError",
     "WorksheetReport",
     "context_drawing",
@@ -643,6 +654,21 @@ class Drawing:
             self.figures.append(
                 Figure(self.layer(part), path, at, width_m, height_m, angle_rad, name)
             )
+
+    def moved(self, dx: float, dy: float) -> Drawing:
+        """The same drawing, every coordinate shifted."""
+        out = Drawing(self.scale, self.word)
+        for fill in self.fills:
+            out.fills.append(
+                replace(fill, rings=[[(x + dx, y + dy) for x, y in ring] for ring in fill.rings])
+            )
+        for line in self.lines:
+            out.lines.append(replace(line, points=[(x + dx, y + dy) for x, y in line.points]))
+        for text in self.texts:
+            out.texts.append(replace(text, at=(text.at[0] + dx, text.at[1] + dy)))
+        if self.figures:
+            raise ValueError("a drawing with figures is not moved")
+        return out
 
     def line(
         self,
@@ -1975,9 +2001,13 @@ def summary_rows(bundle: SummaryBundle) -> list[tuple[str, str, list[str]]]:
 SUMMARY_SCALE = 100.0
 
 
-def summary_drawing(bundle: SummaryBundle) -> Drawing:
-    """The planning-controls table, as texts and rules."""
-    drawing = Drawing(SUMMARY_SCALE, SUMMARY_WORD)
+def summary_drawing(bundle: SummaryBundle, scale: float = SUMMARY_SCALE) -> Drawing:
+    """The planning-controls table, as texts and rules.
+
+    At ``scale`` 1 the millimetres are paper millimetres, which is what a
+    layout wants; the table then runs down from ``(0, 0)``.
+    """
+    drawing = Drawing(scale, SUMMARY_WORD)
     mm = drawing.mm
     body, lead, pad = 3.9, mm(5.2), mm(5.2)
     left, right = 0.0, mm(372)
@@ -2543,7 +2573,14 @@ A1_MASTER = "A1 no scale"
 
 
 def _remove_layout(connection: ArchicadConnection, name: str) -> None:
-    """Delete the layout called ``name``, if the Layout Book has one."""
+    """Delete the layout called ``name``, if the Layout Book has one.
+
+    Never while standing in it. Archicad went away mid-call the one time a
+    run deleted the layout that was its current database (11 September
+    2026, the summary sheet drawn twice in a row), so the database is moved
+    to the floor plan first. A layout, unlike a worksheet, can be entered
+    again afterwards, so nothing is lost by leaving it.
+    """
     response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})
     root = response.get("navigatorItemTree") if isinstance(response, dict) else None
     if not isinstance(root, dict):
@@ -2554,6 +2591,9 @@ def _remove_layout(connection: ArchicadConnection, name: str) -> None:
         if item.kind == "LayoutItem" and _tidy(item.name) == _tidy(name)
     ]
     if stale:
+        _, here_kind, here_name = _standing_in(connection)
+        if here_kind == "Layout" and _tidy(here_name) == _tidy(name):
+            connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
         connection.run_tapir(
             "DeleteNavigatorItems",
             {
@@ -2786,19 +2826,132 @@ def draw_site(
     )
 
 
+@dataclass(frozen=True)
+class LayoutReport:
+    """A sheet drawn on directly: no worksheet, no view, no drawing."""
+
+    name: str
+    database_id: str
+    master: str
+    lines: int
+    texts: int
+    notes: tuple[str, ...] = ()
+
+    def describe(self) -> str:
+        lines = [
+            f"  layout {self.name!r} on {self.master!r}: {self.lines} rules and {self.texts} "
+            "texts, drawn on the sheet itself"
+        ]
+        lines.extend(f"    {note}" for note in self.notes)
+        return "\n".join(lines)
+
+
+#: Paper millimetres from the sheet's usable corner to the table's corner.
+SUMMARY_MARGIN_MM = 15.0
+
+
 def draw_summary(
     connection: ArchicadConnection,
     bundle: SummaryBundle,
     *,
-    view: bool = True,
-    wait_s: float = 0.0,
+    master_layout: str | None = None,
+    margin_mm: float = SUMMARY_MARGIN_MM,
     say: Callable[[str], None] | None = None,
-) -> WorksheetReport:
-    return _draw(
-        connection,
-        summary_drawing(bundle),
-        naming.named(SUMMARY_WORD),
-        view=view,
-        wait_s=wait_s,
-        say=say,
+) -> LayoutReport:
+    """The summary of controls, drawn straight onto a layout of its own.
+
+    A table is paper, not model: it has no scale to keep and nothing to
+    place it over, so it goes on the sheet as texts and rules rather than
+    into a worksheet with a view and a drawing on top. A layout made in the
+    session *can* be entered through the add-on -- unlike a worksheet (D84);
+    measured on the Kogarah solar study, 11 September 2026 -- and texts,
+    polylines and fills draw into it. Element IDs are the one thing a layout
+    element will not take, and a table does not need them.
+
+    Layout coordinates are metres, upward from the sheet's bottom-left
+    (``docs/addon.md``); the table hangs from the usable area's top-left
+    corner, ``margin_mm`` in.
+    """
+    name = naming.named(SUMMARY_WORD)
+    notes: list[str] = []
+    _remove_layout(connection, name)
+    masters = master_layouts(connection)
+    master = _master_named(masters, master_layout or A1_MASTER)
+    database_id = _create_layout(connection, name, master)
+    sheet, assumed = layout_sheet(connection, database_id)
+    if assumed:
+        notes.append("the sheet size could not be read; an A1 is assumed.")
+    if not _enter_layout(connection, database_id):
+        raise ArchicadError(
+            f"the layout {name!r} was made but could not be entered to draw on; "
+            "open it in the Layout Book and run again."
+        )
+    left, top, _width, _height = sheet.usable
+    x0 = (left + margin_mm) / MM_PER_M
+    y0 = (sheet.height_mm - top - margin_mm) / MM_PER_M
+    drawing = summary_drawing(bundle, scale=1.0).moved(x0, y0)
+    attributes = _attributes(connection)
+    if not attributes.pens:
+        notes.append("the pen table could not be read; lines take the tool's current pen.")
+    lines, texts = _flush_on_paper(connection, drawing, attributes)
+    if say:
+        say(f"  {lines} rules and {texts} texts on the layout")
+    return LayoutReport(
+        name=name,
+        database_id=database_id,
+        master=master.name,
+        lines=lines,
+        texts=texts,
+        notes=tuple(notes),
     )
+
+
+def _flush_on_paper(
+    connection: ArchicadConnection, drawing: Drawing, attributes: _Attributes
+) -> tuple[int, int]:
+    """The drawing's rules and texts into the current layout, on no layer of
+    the tool's own: a layout element sits on the Archicad layer, and a layer
+    made for a table on paper is one more layer for nothing. Fills and
+    figures are not drawn on paper here. Returns ``(lines, texts)``."""
+    lines: list[dict[str, Any]] = []
+    for line in drawing.lines:
+        data: dict[str, Any] = {"coordinates": [{"x": x, "y": y} for x, y in line.points]}
+        pen = attributes.pen(line.colour)
+        if pen is not None:
+            data["linePenIndex"] = pen
+        if line.weight_mm is not None:
+            data["penWeightMm"] = line.weight_mm
+        lines.append(data)
+    for batch in _batched(lines, 500):
+        _created(
+            connection.run_tapir("CreatePolylines", {"polylinesData": batch}), "CreatePolylines"
+        )
+    rows: list[dict[str, Any]] = []
+    for text in drawing.texts:
+        one: dict[str, Any] = {
+            "coordinate": {"x": text.at[0], "y": text.at[1], "z": 0.0},
+            "text": text.text,
+            "height": text.height_mm,
+            "justification": text.justification,
+        }
+        if text.justification in _ANCHORS:
+            one["anchor"] = _ANCHORS[text.justification]
+        pen = attributes.pen(text.colour)
+        if pen is not None:
+            one["pen"] = pen
+        rows.append(one)
+    create_texts(connection, rows)
+    return len(lines), len(rows)
+
+
+def _enter_layout(connection: ArchicadConnection, database_id: str) -> bool:
+    """Make a layout the current database through the add-on. False if refused
+    or if Archicad says it stands somewhere else afterwards."""
+    try:
+        connection.run_loriini(
+            "SetCurrentDatabase", {"databaseId": {"guid": database_id}, "windowType": "Layout"}
+        )
+    except ArchicadError:
+        return False
+    here_id, _, _ = _standing_in(connection)
+    return here_id == database_id
