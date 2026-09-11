@@ -6258,6 +6258,10 @@ def sun_eye_views(
             help="Width of the master's title block strip on the right, kept clear of drawings.",
         ),
     ] = TITLE_BLOCK_MM,
+    layer_prefix: Annotated[
+        str | None,
+        typer.Option("--layer-prefix", help="What every view, document and sheet is named under."),
+    ] = None,
 ) -> None:
     """Aim the 3D window along the sun for every hour of the assessment window.
 
@@ -6271,6 +6275,7 @@ def sun_eye_views(
     command for.
     """
     banner()
+    naming.set_prefix(layer_prefix)
     connection = _connect(port, timeout, switch_database=False)
 
     # A floor plan in front, and nothing moved under it. The zone read needs

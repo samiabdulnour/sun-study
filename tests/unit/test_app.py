@@ -1451,3 +1451,28 @@ def test_the_shadow_study_runs_after_the_others(hidden_window: Any) -> None:
         "massing",
         "shadows",
     ]
+
+
+def test_the_sun_eye_run_sends_what_is_filled_in_and_nothing_else(hidden_window: Any) -> None:
+    hidden_window.do_facade.set(False)
+    hidden_window.do_sun_eyes.set(True)
+    hidden_window.eye_pen_set.insert(0, "00 FA Pens")
+    (job,) = hidden_window.jobs()
+    assert job.label == window.SUN_EYE_JOB
+    assert job.args[:3] == ["sun-eyes", "--timezone", "Australia/Sydney"]
+    assert job.args[job.args.index("--port") + 1] == "19723"
+    assert job.args[job.args.index("--pen-set") + 1] == "00 FA Pens"
+    assert job.args[job.args.index("--scale") + 1] == "500"
+    assert job.args[job.args.index("--per-sheet") + 1] == "4"
+    assert job.args[job.args.index("--override") + 1] == "Sun Eye Views"
+    # Blank hours: the ruleset's own window, not an empty flag.
+    assert "--hour" not in job.args
+
+
+def test_the_sun_eye_settings_survive_a_save(hidden_window: Any) -> None:
+    hidden_window.eye_scale.delete(0, "end")
+    hidden_window.eye_scale.insert(0, "200")
+    hidden_window.do_sun_eyes.set(True)
+    saved = hidden_window.settings()
+    assert saved["eye_scale"] == "200"
+    assert saved["study_sun_eyes"] is True

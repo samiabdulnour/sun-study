@@ -107,6 +107,7 @@ FACADE_JOB = "facade skin"
 PLANS_JOB = "apartment plans and sheets"
 COMMUNAL_JOB = "communal open space"
 SHADOW_JOB = "shadow diagram"
+SUN_EYE_JOB = "sun eye views"
 
 
 class Tooltip:
@@ -656,16 +657,7 @@ class Window:
         self._facade(self._section(self.FACADE))
         self._diagrams(self._section(self.DIAGRAMS))
         self._shadows(self._section(self.SHADOWS))
-        self._not_yet(
-            self._section(self.EYE),
-            "Not built yet, and nothing on this page does anything.\n\n"
-            "A view from the sun's own position, at one moment: everything it "
-            "can see is in sun and everything hidden behind something else is "
-            "in shade. It answers 'why is this balcony dark at ten' in one "
-            "picture, which a banded plan never does — the plan says how much "
-            "and this says what by.\n\n"
-            "When it exists, its settings will be here.",
-        )
+        self._sun_eyes(self._section(self.EYE))
 
     def _section(self, title: str) -> ttk.Frame:
         """One tab, and the frame its settings are built into.
@@ -1248,6 +1240,112 @@ class Window:
             "left at the root of the book.",
         )
 
+    def _sun_eyes(self, frame: ttk.Frame) -> None:
+        """The sun eye views: the model seen from the sun, one view per hour.
+
+        Everything it can see is in sun and everything hidden is in shade,
+        which answers "why is this balcony dark at ten" in one picture. The
+        settings here are the ones read off the practice's own diagrams; the
+        date and the hours come from the ruleset's assessment window and are
+        not offered, because a sun eye set at the wrong date is a plausible
+        picture of the wrong day.
+
+        Needs the Loriini add-on beside Tapir, and a floor plan tab in front
+        when it runs: the projection can only be written with the window and
+        the current database agreeing, and the run says so if they do not.
+        """
+        row = 0
+        self.do_sun_eyes = tk.BooleanVar(value=False)
+        box = ttk.Checkbutton(
+            frame, text="Sun eye views", variable=self.do_sun_eyes, command=self._sync
+        )
+        box.grid(row=row, column=0, columnspan=2, sticky="w")
+        Tooltip(
+            box,
+            "The model seen from the sun's own position at each hour of the "
+            "assessment window, as saved views, 3D Documents and sheets. Off "
+            "by default: it needs the Loriini add-on installed beside Tapir, "
+            "and a floor plan tab in front in Archicad when it runs.",
+        )
+        row += 1
+        self._caption(
+            frame,
+            row,
+            "Seven views along the sun, 9am to 3pm on 21 June, each exact to the "
+            "sun's own bearing; the documents on two sheets.",
+        )
+        row += 1
+
+        self.eye_pen_set, row = self._entry(
+            frame,
+            row,
+            "Pen set",
+            "",
+            "Name of the pen set the views use. Blank keeps each view's own.",
+            "The practice's drawing pens, so the sheet prints the way the "
+            "other DA drawings do. Read off the office's own sun views on the "
+            "reference project as '00 FA Pens'.",
+        )
+        self.eye_override, row = self._entry(
+            frame,
+            row,
+            "Graphic override",
+            "Sun Eye Views",
+            "The override combination that paints the glazing.",
+            "This is the yellow on the diagram: an override rule, not drawn "
+            "geometry. It is a different combination from the shadow "
+            "diagrams', and a view given the wrong one shows plain glass.",
+        )
+        self.eye_base_combination, row = self._entry(
+            frame,
+            row,
+            "Layers, from",
+            "04 | Shadow Diagrams",
+            "The layer combination the views start from. Zones are then hidden.",
+            "Every layer that carries a zone is hidden on top of this, "
+            "measured from the zones themselves: zones are bodies in 3D and "
+            "sit inside the glazing the diagram is meant to show through.",
+        )
+        self.eye_scale, row = self._entry(
+            frame,
+            row,
+            "Scale",
+            "500",
+            "Denominator of the documents' scale on the sheet.",
+            "1:500 shows the street around the building, which is what the "
+            "practice's sheets do. The views of the 3D window itself are at "
+            "1:1 whatever this says; a document is the drawing.",
+        )
+        self.eye_per_sheet, row = self._entry(
+            frame,
+            row,
+            "Per sheet",
+            "4",
+            "Documents on each layout. Four is a morning sheet and an afternoon sheet.",
+            "Seven hours in fours is 9am to noon on one sheet and 1pm to 3pm "
+            "on the next, in the same grid with one cell empty. Every sheet "
+            "is laid out as a full one so the two match.",
+        )
+        self.eye_title_block, row = self._entry(
+            frame,
+            row,
+            "Title block width",
+            "100",
+            "Millimetres kept clear down the right of the sheet.",
+            "Archicad reports a layout's margins and nothing about its "
+            "master, so the drawings would otherwise tile under the title "
+            "block. About 100 mm on the DA B1 VERTICAL masters.",
+        )
+        self.eye_hours, row = self._entry(
+            frame,
+            row,
+            "Hours",
+            "",
+            "Whole hours, comma separated. Blank is the ruleset's window, 9 to 15.",
+            "Only for a sheet that needs fewer. The assessment window is the "
+            "ruleset's and a set drawn at other hours is not the study.",
+        )
+
     def _folder_row(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
     ) -> tuple[ttk.Entry, int]:
@@ -1578,6 +1676,7 @@ class Window:
             (PLANS_JOB, self.do_plans, self.DIAGRAMS),
             (COMMUNAL_JOB, self.do_communal, self.DIAGRAMS),
             (SHADOW_JOB, self.do_shadows, self.SHADOWS),
+            (SUN_EYE_JOB, self.do_sun_eyes, self.EYE),
         ]
 
     def _open_section(self) -> str:
@@ -1683,6 +1782,13 @@ class Window:
             "shadow_favourite": self.shadow_favourite,
             "shadow_storey": self.shadow_storey,
             "shadow_study_subset": self.shadow_study_subset,
+            "eye_pen_set": self.eye_pen_set,
+            "eye_override": self.eye_override,
+            "eye_base_combination": self.eye_base_combination,
+            "eye_scale": self.eye_scale,
+            "eye_per_sheet": self.eye_per_sheet,
+            "eye_title_block": self.eye_title_block,
+            "eye_hours": self.eye_hours,
             "adg_subset": self.adg_subset,
             "layer_prefix": self.prefix,
             "archicad_wait_minutes": self.wait_min,
@@ -1697,6 +1803,7 @@ class Window:
             "study_plans": self.do_plans,
             "study_communal": self.do_communal,
             "study_shadows": self.do_shadows,
+            "study_sun_eyes": self.do_sun_eyes,
             "study_hourly": self.do_hourly,
         }
 
@@ -2257,6 +2364,28 @@ class Window:
                 args += ["--shadow-subset", self.shadow_study_subset.get()]
             args += ["--year", self.year.get().strip() or "2024"]
             made.append(Job(SHADOW_JOB, args))
+
+        if self.do_sun_eyes.get():
+            args = ["sun-eyes", "--timezone", "Australia/Sydney", *common]
+            # Only what is filled in is sent, so the command's own defaults
+            # -- read off the practice's diagrams -- hold for a blank field,
+            # and a blank pen set keeps each view's own rather than naming
+            # one the project does not have.
+            for flag, field in (
+                ("--pen-set", self.eye_pen_set),
+                ("--override", self.eye_override),
+                ("--base-combination", self.eye_base_combination),
+                ("--scale", self.eye_scale),
+                ("--per-sheet", self.eye_per_sheet),
+                ("--title-block-mm", self.eye_title_block),
+                ("--hour", self.eye_hours),
+            ):
+                if field.get().strip():
+                    args += [flag, field.get().strip()]
+            if self.master.get():
+                args += ["--master-layout", self.master.get()]
+            args += ["--year", self.year.get().strip() or "2024"]
+            made.append(Job(SUN_EYE_JOB, args))
 
         return made
 

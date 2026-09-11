@@ -350,6 +350,9 @@ database under another window, because Archicad then refuses the projection.
 sun-study sun-eyes --port 19724 --pen-set "00 FA Pens"
 ```
 
+Or tick **Sun eye views** in the Loriini window, which has the same settings
+on its own tab and runs this command.
+
 What it makes, all under the tool's prefix:
 
 | | |
