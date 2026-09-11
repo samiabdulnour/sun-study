@@ -6473,6 +6473,21 @@ def site_analysis(
         bool,
         typer.Option("--view/--no-view", help="Make a view of each worksheet in the View Map."),
     ] = True,
+    layout: Annotated[
+        bool,
+        typer.Option(
+            "--layout/--no-layout", help="Also put each sheet's view on a layout of its own."
+        ),
+    ] = True,
+    master_layout: Annotated[str | None, typer.Option("--master-layout")] = None,
+    title_block_mm: Annotated[
+        float,
+        typer.Option("--title-block-mm", help="Width of the master's title block, kept clear."),
+    ] = 100.0,
+    hatch_fill: Annotated[
+        str | None,
+        typer.Option("--hatch-fill", help="Name of the fill to hatch heritage items with."),
+    ] = None,
     wait_minutes: Annotated[
         float,
         typer.Option(
@@ -6625,6 +6640,10 @@ def site_analysis(
                 view=view,
                 wait_s=wait_minutes * 60.0,
                 say=say,
+                hatch_fill=hatch_fill,
+                layout=layout,
+                master_layout=master_layout,
+                title_block_mm=title_block_mm,
             )
             typer.echo(report.describe())
             unplaced |= any("PlaceFigures" in note for note in report.notes)
@@ -6637,6 +6656,10 @@ def site_analysis(
                 view=view,
                 wait_s=wait_minutes * 60.0,
                 say=say,
+                hatch_fill=hatch_fill,
+                layout=layout,
+                master_layout=master_layout,
+                title_block_mm=title_block_mm,
             )
             typer.echo(report.describe())
             unplaced |= any("PlaceFigures" in note for note in report.notes)

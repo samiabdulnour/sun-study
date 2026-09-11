@@ -152,7 +152,8 @@ def test_the_context_drawing_carries_the_legends_colours_and_the_site_on_top() -
     assert [f.colour for f in zoning] == ["#f7c1bd"], (
         "R3 is drawn in the R3 tan; DM is not a category"
     )
-    assert zoning[0].element_id == "SA ZONE R3"
+    assert zoning[0].element_id == "SA R3 MEDIUM DENSITY RESIDENTIAL (R3)"
+    assert all(f.element_id for f in drawing.fills), "every fill says what it is"
     institutions = [f for f in drawing.fills if f.layer.endswith(".Institutions")]
     assert institutions[0].colour == "#f27ba9" and institutions[0].contour == "#e5237e"
     assert any(f.layer.endswith(".Heritage") for f in drawing.fills)
@@ -427,7 +428,7 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
     }
 
     fills = [f for call in transport_.all_parameters_for("CreateFills") for f in call["fills"]]
-    zone = next(f for f in fills if f.get("elementId") == "SA ZONE R3")
+    zone = next(f for f in fills if f.get("elementId") == "SA R3 MEDIUM DENSITY RESIDENTIAL (R3)")
     assert zone["determination"] == "drafting" and zone["showArea"] is False
     assert zone["foregroundColour"] == pytest.approx(
         {"red": 0xF7 / 255, "green": 0xC1 / 255, "blue": 0xBD / 255}
@@ -661,3 +662,16 @@ def test_one_roundel_per_stop_not_one_per_kerb() -> None:
     far = Stop(151.13 + 200.0 / (111_320.0 * 0.83), -33.96, "Next stop")
     merged = cluster_stops([here, across, far])
     assert len(merged) == 2 and merged[0].name == "Princes Hwy"
+
+
+def test_the_map_field_is_centred_beside_the_title_block() -> None:
+    from sun_study.archicad.layout import LayoutSheet
+    from sun_study.archicad.site_analysis import _sheet_frame
+
+    sheet = LayoutSheet(
+        width_mm=841.0, height_mm=594.0, left_mm=10.0, top_mm=10.0, right_mm=10.0, bottom_mm=10.0
+    )
+    x0, y0, x1, y1 = _sheet_frame(sheet, width_mm=690.0, height_mm=594.0, title_block_mm=100.0)
+    assert (x1 - x0) * 1000 == pytest.approx(690.0), "the field fits, so it keeps its size"
+    assert (y1 - y0) * 1000 == pytest.approx(574.0), "the page is shorter than the field"
+    assert (x0 + x1) / 2 * 1000 == pytest.approx(10.0 + (821.0 - 100.0) / 2)

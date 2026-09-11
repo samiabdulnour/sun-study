@@ -48,9 +48,22 @@ from typing import Any
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import Pen, _looks_like, ensure_layer, pen_table, place_texts
+from sun_study.archicad.layout import (
+    MM_PER_M,
+    LayoutSheet,
+    _drawings_by_name,
+    layout_from_views,
+    layout_sheet,
+)
 from sun_study.archicad.read import GeoLocation
 from sun_study.archicad.series import _worksheets, clear_database, database_of
-from sun_study.archicad.views import ModelSource, ensure_layer_combination, views_for_sources
+from sun_study.archicad.sun_eyes import TITLE_BLOCK_MM
+from sun_study.archicad.views import (
+    ModelSource,
+    StoreyView,
+    ensure_layer_combination,
+    views_for_sources,
+)
 from sun_study.site import curate
 from sun_study.site.arcgis import rings_of
 from sun_study.site.geo import (
@@ -103,7 +116,7 @@ FOLDER_WORD = "Site Analysis"
 TITLE_MM = 7.0
 LEGEND_MM = 3.2
 STREET_MM = 4.0
-LABEL_MM = 5.0
+LABEL_MM = 3.0
 #: A stop or station roundel: radius, and the letter in it.
 ROUNDEL_MM = 4.0
 ROUNDEL_TEXT_MM = 4.5
@@ -346,6 +359,11 @@ class Drawing:
         hatch: bool = False,
         weight_mm: float | None = None,
     ) -> None:
+        # An ID on every fill, so a schedule or a Find & Select can pick the
+        # railway, the heritage items or the wash out of six thousand fills:
+        # the legend meaning where the caller gives one, the layer's part
+        # otherwise.
+        identifier = element_id or f"SA {part.upper()}"
         for outer, holes in _polygons(rings):
             self.fills.append(
                 Fill(
@@ -353,7 +371,7 @@ class Drawing:
                     [outer, *holes],
                     colour,
                     contour,
-                    element_id,
+                    identifier,
                     wash,
                     hatch,
                     weight_mm,
@@ -518,9 +536,20 @@ def _wrapped(label: str, width: int = 14) -> str:
     return "\n".join(lines)
 
 
-def _roundel(drawing: Drawing, part: str, at: Point, letter: str, colour: str) -> None:
+def _roundel(
+    drawing: Drawing, part: str, at: Point, letter: str, colour: str, meaning: str
+) -> None:
     """A letter in a thin circle on white: the office's stop and station symbol."""
-    drawing.circle(part, at, drawing.mm(ROUNDEL_MM), colour=colour, fill="#ffffff", weight_mm=0.35)
+    ring = [
+        (
+            at[0] + drawing.mm(ROUNDEL_MM) * math.cos(2 * math.pi * i / 24),
+            at[1] + drawing.mm(ROUNDEL_MM) * math.sin(2 * math.pi * i / 24),
+        )
+        for i in range(24)
+    ]
+    drawing.fill(
+        part, [ring], "#ffffff", contour=colour, weight_mm=0.35, element_id=f"SA {meaning}"
+    )
     drawing.text(part, letter, at, height_mm=ROUNDEL_TEXT_MM, colour=colour)
 
 
@@ -544,7 +573,9 @@ def _band(
         (body_r[0] - nx * hh, body_r[1] - ny * hh),
         (body_l[0] - nx * hh, body_l[1] - ny * hh),
     ]
-    drawing.fill(part, [ring], "#ffffff", contour="#555555", weight_mm=0.2)
+    drawing.fill(
+        part, [ring], "#ffffff", contour="#555555", weight_mm=0.2, element_id="SA STREET NAME BAND"
+    )
 
 
 def _along(points: Sequence[Point]) -> float:
@@ -773,7 +804,12 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
         # Washed back with white, as the office's sheets have it, so the
         # overlays read and the photo stays a ground rather than a picture.
         drawing.fill(
-            "Aerial", [_map_rectangle(bundle, frame)], "#ffffff", contour="#ffffff", wash=True
+            "Aerial",
+            [_map_rectangle(bundle, frame)],
+            "#ffffff",
+            contour="#ffffff",
+            wash=True,
+            element_id="SA AERIAL WASH",
         )
 
     # Zoning first, so everything else sits over it.
@@ -789,7 +825,7 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
             [frame.ring(r) for r in rings_of(feature.get("geometry"))],
             cat.fill,
             contour=cat.stroke or cat.fill,
-            element_id=f"SA ZONE {code}",
+            element_id=f"SA {cat.label} ({code})",
             wash=wash,
         )
 
@@ -801,7 +837,7 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
             [frame.ring(r) for r in institution.rings],
             cat.fill,
             contour=cat.stroke or cat.fill,
-            element_id=f"SA {cat.label} {institution.name}",
+            element_id=f"SA {cat.label}: {institution.name}",
             wash=wash,
         )
 
@@ -810,7 +846,13 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
         rings = [frame.ring(r) for r in rings_of(feature.get("geometry"))]
         if rings:
             present["railway"] = railway
-            drawing.fill("Railway", rings, railway.fill, contour=railway.stroke)
+            drawing.fill(
+                "Railway",
+                rings,
+                railway.fill,
+                contour=railway.stroke,
+                element_id="SA RAILWAY TRACKS",
+            )
 
     heritage = curate.category("heritage")
     for feature in bundle.heritage["features"]:
@@ -820,7 +862,13 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
         if rings:
             present["heritage"] = heritage
             drawing.fill(
-                "Heritage", rings, "#a97b3f", contour="#a97b3f", hatch=True, weight_mm=0.25
+                "Heritage",
+                rings,
+                "#a97b3f",
+                contour="#a97b3f",
+                hatch=True,
+                weight_mm=0.25,
+                element_id="SA GENERAL HERITAGE SITE",
             )
 
     for feature in bundle.all_lots["features"]:
@@ -859,15 +907,22 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
     radius = drawing.mm(ROUNDEL_MM)
     for stop in bundle.bus.stops:
         at = frame.project(stop.lon, stop.lat)
-        _roundel(drawing, "Bus stops", at, "B", BUS_BLUE)
+        _roundel(drawing, "Bus stops", at, "B", BUS_BLUE, "BUS STOP")
         placer.reserve(at[0], at[1], radius * 2, radius * 2)
     for stop in bundle.bus.tram_stops:
         at = frame.project(stop.lon, stop.lat)
-        _roundel(drawing, "Stations", at, "L", TRAM_PINK)
+        _roundel(drawing, "Stations", at, "L", TRAM_PINK, "TRAM STOP")
     for station in bundle.stations:
         at = frame.project(station.lon, station.lat)
         tram = "LIGHT RAIL" in station.name.upper() or "TRAM" in station.name.upper()
-        _roundel(drawing, "Stations", at, "L" if tram else "T", TRAM_PINK if tram else SITE_RED)
+        _roundel(
+            drawing,
+            "Stations",
+            at,
+            "L" if tram else "T",
+            TRAM_PINK if tram else SITE_RED,
+            "LIGHT RAIL STOP" if tram else "TRAIN STATION",
+        )
         placer.reserve(at[0], at[1], radius * 2, radius * 2)
         name = _wrapped(station.name.upper())
         spot = placer.place(
@@ -919,7 +974,9 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
             points = frame.ring(ring)
             # A red wash with a heavy dashed edge, and no word on it: the
             # legend says what red is.
-            drawing.fill("Site", [points], site.fill, contour=SITE_RED, wash=True)
+            drawing.fill(
+                "Site", [points], site.fill, contour=SITE_RED, wash=True, element_id="SA SITE"
+            )
             drawing.line("Site", points, colour=SITE_RED, dashed=True, weight_mm=0.9, closed=True)
 
     legend_at = _furniture_of_sheet(drawing, bundle, frame, title="CONTEXT ANALYSIS")
@@ -1723,6 +1780,7 @@ class WorksheetReport:
     layers: tuple[str, ...]
     view: str
     notes: tuple[str, ...] = ()
+    layout: str = ""
 
     def describe(self) -> str:
         made = f"reused, cleared {self.cleared} elements" if self.reused else "created"
@@ -1738,6 +1796,10 @@ class WorksheetReport:
             )
         if self.view:
             lines.append(f"    view {self.view!r} in the View Map")
+        if self.layout:
+            lines.append(
+                f"    layout {self.layout!r} in the Layout Book, the sheet centred on the site"
+            )
         lines.extend(f"    {note}" for note in self.notes)
         return "\n".join(lines)
 
@@ -1786,7 +1848,7 @@ def _attribute_index(
     return None
 
 
-def _attributes(connection: ArchicadConnection) -> _Attributes:
+def _attributes(connection: ArchicadConnection, *, hatch_fill: str | None = None) -> _Attributes:
     try:
         pens = pen_table(connection)
     except ArchicadError:
@@ -1798,7 +1860,16 @@ def _attributes(connection: ArchicadConnection) -> _Attributes:
             connection, "Fill", ("50%", "50 %", "Percent 50", "Percentage 50")
         ),
         hatch_fill=_attribute_index(
-            connection, "Fill", ("Grid Diagonal", "Hatch 45", "Diagonal", "45 Hatch", "Hatch")
+            connection,
+            "Fill",
+            (
+                *([hatch_fill] if hatch_fill else []),
+                "Grid 50x50 Diagonal",
+                "Grid Diagonal",
+                "Hatch 45",
+                "Diagonal",
+                "Hatch",
+            ),
         ),
         pens=pens,
     )
@@ -2145,10 +2216,12 @@ def _flush(
     return len(fills) - refused, len(lines), len(drawing.texts), on_layer, refused
 
 
-def _view_of(connection: ArchicadConnection, navigator_id: str, name: str, drawing: Drawing) -> str:
+def _view_of(
+    connection: ArchicadConnection, navigator_id: str, name: str, drawing: Drawing
+) -> StoreyView | None:
     """A view of the worksheet at the sheet's scale, showing the drawing's layers."""
     if not navigator_id:
-        return ""
+        return None
     combination = ensure_layer_combination(
         connection, naming.named(drawing.word), show=drawing.layers, hide=[]
     )
@@ -2160,7 +2233,7 @@ def _view_of(connection: ArchicadConnection, navigator_id: str, name: str, drawi
         drawing_scale=drawing.scale,
     )
     if not views:
-        return ""
+        return None
     # The sheet's own colours, not the project's: a graphic override
     # combination in force on the window greys every 2D element, which is
     # how the first live site sheet came out in one grey. And the office's
@@ -2190,7 +2263,7 @@ def _view_of(connection: ArchicadConnection, navigator_id: str, name: str, drawi
             break
         except ArchicadError:
             continue
-    return views[0].name
+    return views[0]
 
 
 #: Archicad's built-in graphic override combination that overrides nothing.
@@ -2211,6 +2284,79 @@ def _site_pen_set(connection: ArchicadConnection) -> str | None:
     return None
 
 
+def _sheet_frame(
+    sheet: LayoutSheet, *, width_mm: float, height_mm: float, title_block_mm: float
+) -> tuple[float, float, float, float]:
+    """The map field on the page, in metres: as big as the sheet allows up
+    to the field's own size, centred in what is left beside the title block."""
+    left, top, width, height = sheet.usable
+    room = max(width - title_block_mm, 1.0)
+    fw, fh = min(width_mm, room), min(height_mm, height)
+    x0 = left + (room - fw) / 2.0
+    y0 = top + (height - fh) / 2.0
+    return (x0 / MM_PER_M, y0 / MM_PER_M, (x0 + fw) / MM_PER_M, (y0 + fh) / MM_PER_M)
+
+
+def place_on_layout(
+    connection: ArchicadConnection,
+    view: StoreyView,
+    drawing: Drawing,
+    *,
+    site_centre: Point,
+    master_layout: str | None = None,
+    title_block_mm: float = TITLE_BLOCK_MM,
+) -> str:
+    """The view on a sheet of its own, the map field centred on the site.
+
+    Tapir places the drawing clipped to a placeholder and anchored by a
+    corner (D51); the add-on's ``ArrangeDrawings`` then sets the frame to the
+    map field and puts the drawing's own origin where the site's centre lands
+    at the field's centre -- the worksheet origin is the project origin, and
+    the site sits ``site_centre`` metres from it. Returns the layout's name.
+    """
+    name = view.name
+    report = layout_from_views(
+        connection,
+        [(view.navigator_id, name)],
+        layout_name=name,
+        scale=drawing.scale,
+        master_layout=master_layout,
+    )
+    if not report.database_id:
+        raise ArchicadError(f"the layout {name!r} was not made")
+    sheet, _ = layout_sheet(connection, report.database_id)
+    placed = _drawings_by_name(connection, report.database_id)
+    if name not in placed:
+        raise ArchicadError(f"the drawing {name!r} is not on the layout {name!r}")
+    x0, y0, x1, y1 = _sheet_frame(
+        sheet, width_mm=MAP_WIDTH_MM, height_mm=MAP_HEIGHT_MM, title_block_mm=title_block_mm
+    )
+    origin = (
+        (x0 + x1) / 2.0 - site_centre[0] / drawing.scale,
+        (y0 + y1) / 2.0 - site_centre[1] / drawing.scale,
+    )
+    response = connection.run_loriini(
+        "ArrangeDrawings",
+        {
+            "layoutDatabaseId": {"guid": report.database_id},
+            "drawings": [
+                {
+                    "guid": str(placed[name]["elementId"]["guid"]),
+                    "x": origin[0],
+                    "y": origin[1],
+                    "frame": {"xMin": x0, "yMin": y0, "xMax": x1, "yMax": y1},
+                }
+            ],
+            "anchor": "origin",
+            "frameRelativeToOrigin": False,
+            "autoUpdate": True,
+        },
+    )
+    if not isinstance(response, dict) or not response.get("success"):
+        raise ArchicadError(f"ArrangeDrawings answered {response!r}")
+    return report.layout_name
+
+
 def _draw(
     connection: ArchicadConnection,
     drawing: Drawing,
@@ -2219,8 +2365,13 @@ def _draw(
     view: bool,
     wait_s: float = 0.0,
     say: Callable[[str], None] | None = None,
+    hatch_fill: str | None = None,
+    layout: bool = False,
+    site_centre: Point = (0.0, 0.0),
+    master_layout: str | None = None,
+    title_block_mm: float = TITLE_BLOCK_MM,
 ) -> WorksheetReport:
-    attributes = _attributes(connection)
+    attributes = _attributes(connection, hatch_fill=hatch_fill)
     notes: list[str] = []
     if attributes.solid_fill is None:
         notes.append(
@@ -2252,11 +2403,26 @@ def _draw(
     if refused:
         notes.append(f"Archicad refused {refused} fills; they are left out of the sheet.")
     view_name = ""
+    layout_name = ""
     if view:
         try:
-            view_name = _view_of(connection, navigator_id, name, drawing)
+            made_view = _view_of(connection, navigator_id, name, drawing)
+            view_name = made_view.name if made_view else ""
         except ArchicadError as error:
             notes.append(f"the worksheet is drawn; its view is not: {error}")
+            made_view = None
+        if layout and made_view is not None:
+            try:
+                layout_name = place_on_layout(
+                    connection,
+                    made_view,
+                    drawing,
+                    site_centre=site_centre,
+                    master_layout=master_layout,
+                    title_block_mm=title_block_mm,
+                )
+            except ArchicadError as error:
+                notes.append(f"the view is made; its sheet is not: {error}")
     return WorksheetReport(
         name=name,
         database_id=database_id,
@@ -2269,6 +2435,7 @@ def _draw(
         layers=tuple(drawing.layers),
         view=view_name,
         notes=tuple(notes),
+        layout=layout_name,
     )
 
 
@@ -2280,6 +2447,10 @@ def draw_context(
     view: bool = True,
     wait_s: float = 0.0,
     say: Callable[[str], None] | None = None,
+    hatch_fill: str | None = None,
+    layout: bool = False,
+    master_layout: str | None = None,
+    title_block_mm: float = TITLE_BLOCK_MM,
 ) -> WorksheetReport:
     return _draw(
         connection,
@@ -2288,6 +2459,11 @@ def draw_context(
         view=view,
         wait_s=wait_s,
         say=say,
+        hatch_fill=hatch_fill,
+        layout=layout,
+        site_centre=frame.project(*bundle.centre_lonlat),
+        master_layout=master_layout,
+        title_block_mm=title_block_mm,
     )
 
 
@@ -2299,6 +2475,10 @@ def draw_site(
     view: bool = True,
     wait_s: float = 0.0,
     say: Callable[[str], None] | None = None,
+    hatch_fill: str | None = None,
+    layout: bool = False,
+    master_layout: str | None = None,
+    title_block_mm: float = TITLE_BLOCK_MM,
 ) -> WorksheetReport:
     return _draw(
         connection,
@@ -2307,6 +2487,11 @@ def draw_site(
         view=view,
         wait_s=wait_s,
         say=say,
+        hatch_fill=hatch_fill,
+        layout=layout,
+        site_centre=frame.project(*bundle.centre_lonlat),
+        master_layout=master_layout,
+        title_block_mm=title_block_mm,
     )
 
 
