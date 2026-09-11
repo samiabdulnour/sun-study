@@ -190,6 +190,28 @@ def _hob_at(bundle: SiteBundle, lon: float, lat: float) -> float | None:
 # -- the model ----------------------------------------------------------------------
 
 
+def _on_the_floor_plan(connection: ArchicadConnection) -> None:
+    """Make the floor plan the current database, and check that it is.
+
+    A slab or a mesh is a model element and cannot be created while a
+    worksheet or a layout is current, which is where the sheets leave the
+    run standing. Tapir's ``ChangeWindow`` moves the database while the
+    window stays (D40); the add-on's ``GetCurrentDatabase`` says whether it
+    did, since the answer is not to be believed.
+    """
+    here = connection.run_loriini("GetCurrentDatabase", {})
+    if isinstance(here, dict) and here.get("windowType") == "FloorPlan":
+        return
+    connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
+    here = connection.run_loriini("GetCurrentDatabase", {})
+    if not isinstance(here, dict) or here.get("windowType") != "FloorPlan":
+        raise ArchicadError(
+            "The floor plan could not be made the current database, and a slab or a "
+            "mesh cannot be created anywhere else. Click a storey in the Project Map "
+            "and run again."
+        )
+
+
 def _terrain(
     connection: ArchicadConnection,
     bundle: SiteBundle,
@@ -214,6 +236,28 @@ def _terrain(
         if len(run) >= 2:
             sublines.append({"coordinates": run})
     lowest = min([p["z"] for p in outline] + [s["coordinates"][0]["z"] for s in sublines])
+    # The add-on's command first: Tapir's CreateMeshes answers APIERR_BADINDEX
+    # for every mesh on Archicad 26 (measured), so it is only the fallback
+    # for an add-on built before the command existed.
+    try:
+        answer = connection.run_loriini(
+            "CreateMesh",
+            {
+                "outline": outline,
+                "levelLines": [s["coordinates"] for s in sublines],
+                "skirt": "solid",
+                "skirtLevel": lowest - SKIRT_M,
+                "layerIndex": layer_index,
+                "elementId": "SA TERRAIN",
+            },
+        )
+        guid = str(answer.get("guid", "")) if isinstance(answer, dict) else ""
+        if guid:
+            return [{"elementId": {"guid": guid}}]
+        raise ArchicadError(f"CreateMesh answered {answer!r}")
+    except ArchicadError as error:
+        if "not have the registered" not in str(error):
+            raise
     response = connection.run_tapir(
         "CreateMeshes",
         {
@@ -263,6 +307,7 @@ def model_context(
     say: Callable[[str], None] | None = None,
 ) -> ContextModelReport:
     """The terrain and the neighbours, in the model, on the ``LORIINI`` layer."""
+    _on_the_floor_plan(connection)
     layer = ensure_layer(connection, LAYER)
     contours = _contours(bundle, frame)
     notes: list[str] = []

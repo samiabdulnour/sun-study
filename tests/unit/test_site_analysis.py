@@ -457,7 +457,10 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
 def test_an_existing_worksheet_is_entered_and_cleared_first() -> None:
     connection, transport_ = connect(
         {
-            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+            "GetCurrentDatabase": Sequential(
+                {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+                {"databaseId": {"guid": "DB"}, "windowType": "Worksheet"},
+            ),
             "GetNavigatorItemTree": navigator_tree((f"{SS} Development Summary", "NAV")),
             "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "DB"}}]},
             "SetCurrentDatabase": {"success": True},
@@ -542,6 +545,7 @@ def test_the_run_waits_for_a_person_to_open_the_worksheet() -> None:
             "GetCurrentDatabase": Sequential(
                 {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
                 {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+                {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
                 {"databaseId": {"guid": "NEW"}, "windowType": "Worksheet"},
             ),
             "GetNavigatorItemTree": navigator_tree((f"{SS} Site Analysis", "NAV")),
@@ -556,7 +560,7 @@ def test_the_run_waits_for_a_person_to_open_the_worksheet() -> None:
         True,
     )
     assert said and "double-click" in said[0]
-    assert transport_.commands().count("GetCurrentDatabase") == 3
+    assert transport_.commands().count("GetCurrentDatabase") == 4
 
 
 def test_texts_fall_back_to_tapir_and_a_move_when_the_add_on_is_older() -> None:
@@ -716,12 +720,13 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
             "GetAttributesByType": {
                 "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
             },
+            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
             "GetLayers": {
                 "layers": [
                     {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
                 ]
             },
-            "CreateMeshes": {"elements": [{"elementId": {"guid": "MESH"}}]},
+            "CreateMesh": {"success": True, "guid": "MESH"},
             "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
             "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
             "SetPropertyValuesOfElements": {"executionResults": [{"success": True}]},
@@ -731,9 +736,11 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
     )
     report = model_context(connection, bundle, frame)
     assert report.terrain and report.contours == 2
-    mesh = transport_.parameters_for("CreateMeshes")["meshesData"][0]
-    assert len(mesh["polygonCoordinates"]) == 4 and mesh["skirtType"] == "SolidBodyWithSkirt"
-    assert all("z" in p for p in mesh["polygonCoordinates"])
+    mesh = transport_.parameters_for("CreateMesh")
+    assert len(mesh["outline"]) == 4 and mesh["skirt"] == "solid"
+    assert all("z" in p for p in mesh["outline"])
+    assert mesh["layerIndex"] == 9 and mesh["elementId"] == "SA TERRAIN"
+    assert len(mesh["levelLines"]) == 2, "both contours lie inside the extent"
     slabs = transport_.parameters_for("CreateSlabs")["slabsData"]
     # The one footprint in the fixture sits 30 m east of the site, two storeys
     # by OSM, standing on the ground the contours give.

@@ -249,7 +249,7 @@ def _polygons(rings: Sequence[Sequence[Point]]) -> list[tuple[list[Point], list[
 
     A cadastral or zoning feature arrives as every ring of a multipolygon in
     one list, outers and holes together, and a fill given a "hole" that lies
-    outside its outer contour is refused (``APIERR_CANCEL`` on the Kogarah
+    outside its outer contour is refused (``APIERR_IRREGULARPOLY`` on the Kogarah
     run, for the first zoning polygon with two parts). So the rings are
     placed by containment, largest first: a ring inside an outer is that
     outer's hole, unless it sits inside one of its holes already, in which
@@ -2133,7 +2133,12 @@ def ensure_worksheet(
     if here_id == database_id and here_kind == "Worksheet":
         return database_id, navigator_id, reused
     if _enter(connection, database_id):
-        return database_id, navigator_id, reused
+        # Read back rather than believed: a move answered as made and not
+        # made is how a run once drew a second copy of a sheet over the
+        # first, having found nothing to clear.
+        here_id, here_kind, _ = _standing_in(connection)
+        if here_id == database_id and here_kind == "Worksheet":
+            return database_id, navigator_id, reused
     _wait_until_in_front(connection, database_id, name, wait_s=wait_s, say=say)
     return database_id, navigator_id, reused
 

@@ -877,3 +877,206 @@ GS::ObjectState PlaceFiguresCommand::Execute (const GS::ObjectState& parameters,
 }
 
 }		// namespace Loriini
+
+
+// -- CreateMesh -------------------------------------------------------------------
+
+namespace Loriini {
+
+namespace {
+
+// `[{x,y,z}, ...]`, at least three of them.
+bool ReadOutline (const GS::ObjectState& mesh, GS::Array<API_Coord3D>& into, GS::UniString& why)
+{
+	GS::Array<GS::ObjectState> points;
+	if (!mesh.Get ("outline", points) || points.GetSize () < 3) {
+		why = "A mesh needs an 'outline' of at least three points.";
+		return false;
+	}
+	for (const GS::ObjectState& point : points) {
+		API_Coord3D c = {};
+		if (!point.Get ("x", c.x) || !point.Get ("y", c.y) || !point.Get ("z", c.z)) {
+			why = "Each outline point needs an x, a y and a z.";
+			return false;
+		}
+		into.Push (c);
+	}
+	return true;
+}
+
+}		// namespace
+
+
+GS::String CreateMeshCommand::GetName () const			{ return "CreateMesh"; }
+
+GS::Optional<GS::UniString> CreateMeshCommand::GetInputParametersSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"outline": {
+				"type": "array",
+				"description": "The mesh's edge, each point with its own level. Do not repeat the first point.",
+				"items": {
+					"type": "object",
+					"properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } },
+					"required": [ "x", "y", "z" ]
+				},
+				"minItems": 3
+			},
+			"levelLines": {
+				"type": "array",
+				"description": "Contours inside the outline: each a run of points at their level.",
+				"items": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } },
+						"required": [ "x", "y", "z" ]
+					},
+					"minItems": 2
+				}
+			},
+			"skirt": { "type": "string", "enum": [ "solid", "skirt", "surface" ], "description": "A solid body down to skirtLevel, a surface with a skirt, or the surface alone." },
+			"skirtLevel": { "type": "number" },
+			"layerIndex": { "type": "integer" },
+			"floorIndex": { "type": "integer" },
+			"elementId": { "type": "string" }
+		},
+		"required": [ "outline" ],
+		"additionalProperties": false
+	})");
+}
+
+GS::Optional<GS::UniString> CreateMeshCommand::GetResponseSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"success": { "type": "boolean" },
+			"guid": { "type": "string" },
+			"error": { "type": "object" }
+		}
+	})");
+}
+
+GS::ObjectState CreateMeshCommand::Execute (const GS::ObjectState& parameters,
+											GS::ProcessControl& /*processControl*/) const
+{
+	GS::UniString why;
+	GS::Array<API_Coord3D> outline;
+	if (!ReadOutline (parameters, outline, why)) {
+		return Failed (why, APIERR_BADPARS);
+	}
+	API_Element element = {};
+	element.header.type = API_MeshID;
+	GSErrCode err = ACAPI_Element_GetDefaults (&element, nullptr);
+	if (err != NoError) {
+		return Failed ("Could not read the Mesh tool's defaults.", err);
+	}
+	ReadInt (parameters, "layerIndex", element.header.layer);
+	ReadShort (parameters, "floorIndex", element.header.floorInd);
+
+	GS::UniString skirt;
+	if (parameters.Get ("skirt", skirt)) {
+		element.mesh.skirt = (skirt == "solid") ? 1 : (skirt == "skirt") ? 2 : 3;
+	}
+	parameters.Get ("skirtLevel", element.mesh.skirtLevel);
+	element.mesh.level = 0.0;
+
+	// The polygon: one-based, the first point repeated last, with a level per
+	// vertex beside it -- the kit's own Element_Test lays it out this way.
+	const Int32 n = static_cast<Int32> (outline.GetSize ());
+	element.mesh.poly.nCoords = n + 1;
+	element.mesh.poly.nSubPolys = 1;
+	element.mesh.poly.nArcs = 0;
+
+	API_ElementMemo memo = {};
+	memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((n + 2) * sizeof (API_Coord), ALLOCATE_CLEAR, 0));
+	memo.pends = reinterpret_cast<Int32**> (BMAllocateHandle (2 * sizeof (Int32), ALLOCATE_CLEAR, 0));
+	memo.meshPolyZ = reinterpret_cast<double**> (BMAllocateHandle ((n + 2) * sizeof (double), ALLOCATE_CLEAR, 0));
+	if (memo.coords == nullptr || memo.pends == nullptr || memo.meshPolyZ == nullptr) {
+		ACAPI_DisposeElemMemoHdls (&memo);
+		return Failed ("Ran out of memory laying out the mesh.", APIERR_MEMFULL);
+	}
+	for (Int32 i = 0; i < n; ++i) {
+		(*memo.coords)[i + 1].x = outline[i].x;
+		(*memo.coords)[i + 1].y = outline[i].y;
+		(*memo.meshPolyZ)[i + 1] = outline[i].z;
+	}
+	(*memo.coords)[n + 1] = (*memo.coords)[1];
+	(*memo.meshPolyZ)[n + 1] = (*memo.meshPolyZ)[1];
+	(*memo.pends)[1] = n + 1;
+
+	// The level lines: zero-based, each run ending where `meshLevelEnds` says,
+	// every vertex with an ID of its own.
+	Int32 total = 0;
+	GS::Array<GS::Array<API_Coord3D>> runs;
+	GS::Array<GS::Array<GS::ObjectState>> lines;
+	parameters.Get ("levelLines", lines);
+	for (const GS::Array<GS::ObjectState>& line : lines) {
+		GS::Array<API_Coord3D> run;
+		for (const GS::ObjectState& point : line) {
+			API_Coord3D c = {};
+			if (point.Get ("x", c.x) && point.Get ("y", c.y) && point.Get ("z", c.z)) {
+				run.Push (c);
+			}
+		}
+		if (run.GetSize () >= 2) {
+			total += static_cast<Int32> (run.GetSize ());
+			runs.Push (run);
+		}
+	}
+	if (total > 0) {
+		element.mesh.levelLines.nCoords = total;
+		element.mesh.levelLines.nSubLines = static_cast<Int32> (runs.GetSize ());
+		memo.meshLevelCoords = reinterpret_cast<API_MeshLevelCoord**> (BMAllocateHandle (total * sizeof (API_MeshLevelCoord), ALLOCATE_CLEAR, 0));
+		memo.meshLevelEnds = reinterpret_cast<Int32**> (BMAllocateHandle (runs.GetSize () * sizeof (Int32), ALLOCATE_CLEAR, 0));
+		if (memo.meshLevelCoords == nullptr || memo.meshLevelEnds == nullptr) {
+			ACAPI_DisposeElemMemoHdls (&memo);
+			return Failed ("Ran out of memory laying out the level lines.", APIERR_MEMFULL);
+		}
+		Int32 at = 0;
+		Int32 which = 0;
+		for (const GS::Array<API_Coord3D>& run : runs) {
+			for (const API_Coord3D& c : run) {
+				(*memo.meshLevelCoords)[at].c = c;
+				(*memo.meshLevelCoords)[at].vertexID = at + 1;
+				++at;
+			}
+			(*memo.meshLevelEnds)[which++] = at;
+		}
+	}
+
+	GSErrCode failure = NoError;
+	GS::UniString failureText;
+	err = ACAPI_CallUndoableCommand ("Create terrain mesh", [&] () -> GSErrCode {
+		GSErrCode step = ACAPI_Element_Create (&element, &memo);
+		if (step != NoError) {
+			failure = step;
+			failureText = "Archicad refused to create the mesh.";
+			return step;
+		}
+		GS::UniString identifier;
+		if (parameters.Get ("elementId", identifier) && !identifier.IsEmpty ()) {
+			step = ACAPI_Database (APIDb_ChangeElementInfoStringID, &element.header.guid, &identifier);
+			if (step != NoError) {
+				failure = step;
+				failureText = "The mesh was created but would not take its element ID.";
+				return step;
+			}
+		}
+		return NoError;
+	});
+	ACAPI_DisposeElemMemoHdls (&memo);
+	if (err != NoError) {
+		return Failed (failureText.IsEmpty () ? GS::UniString ("Failed to create the mesh.") : failureText,
+					   failure != NoError ? failure : err);
+	}
+
+	GS::ObjectState result = Succeeded ();
+	result.Add ("guid", APIGuidToString (element.header.guid));
+	return result;
+}
+
+}		// namespace Loriini

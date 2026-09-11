@@ -112,6 +112,33 @@ public:
 													 GS::ProcessControl& processControl) const override;
 };
 
+
+// The terrain: one Mesh from contours.
+//
+// Tapir's `CreateMeshes` answers APIERR_BADINDEX (-2130313114) on Archicad
+// 26 for every shape of mesh, with or without level lines, on the floor plan
+// -- measured on the Kogarah solar study, 11 September 2026 -- and its own
+// schema notes the refusal. This one takes the Mesh tool's defaults for
+// everything it is not told, which is where an index comes from, and gives
+// every level-line vertex an ID of its own, which the kit's structure asks
+// for and Tapir leaves at zero.
+class CreateMeshCommand : public Command {
+public:
+	virtual GS::String						GetName () const override;
+	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
+	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
+
+	virtual API_AddOnCommandExecutionPolicy	GetExecutionPolicy () const override
+	{
+		return API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread;
+	}
+
+	virtual bool							IsProcessWindowVisible () const override { return true; }
+
+	virtual GS::ObjectState					Execute (const GS::ObjectState& parameters,
+													 GS::ProcessControl& processControl) const override;
+};
+
 }		// namespace Loriini
 
 #endif

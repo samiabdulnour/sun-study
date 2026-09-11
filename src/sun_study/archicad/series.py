@@ -253,7 +253,7 @@ def clear_database(connection: ArchicadConnection) -> tuple[int, int]:
       from counting again afterwards.
     """
     doomed: list[dict[str, Any]] = []
-    for element_type in ("Hatch", "Text", "PolyLine"):
+    for element_type in ("Hatch", "Text", "PolyLine", "Picture"):
         response = connection.run_tapir("GetElementsByType", {"elementType": element_type})
         elements = response.get("elements") if isinstance(response, dict) else None
         if isinstance(elements, list):
@@ -265,7 +265,7 @@ def clear_database(connection: ArchicadConnection) -> tuple[int, int]:
     connection.run_tapir("DeleteElements", {"elements": doomed})
 
     left = 0
-    for element_type in ("Hatch", "Text", "PolyLine"):
+    for element_type in ("Hatch", "Text", "PolyLine", "Picture"):
         response = connection.run_tapir("GetElementsByType", {"elementType": element_type})
         elements = response.get("elements") if isinstance(response, dict) else None
         if isinstance(elements, list):

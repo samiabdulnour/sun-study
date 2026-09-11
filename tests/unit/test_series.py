@@ -386,4 +386,6 @@ def test_elements_left_behind_by_a_refused_delete_are_reported() -> None:
     deleted, left = clear_database(connection)
 
     assert deleted == 0, "nothing actually went"
-    assert left == 3, "and the run must say so rather than claim a clean sheet"
+    assert left == 4, (
+        "one per kind asked for, and the run must say so rather than claim a clean sheet"
+    )
