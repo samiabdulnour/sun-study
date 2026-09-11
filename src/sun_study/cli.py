@@ -6479,15 +6479,17 @@ def site_analysis(
             "--layout/--no-layout", help="Also put each sheet's view on a layout of its own."
         ),
     ] = True,
-    master_layout: Annotated[str | None, typer.Option("--master-layout")] = None,
+    master_layout: Annotated[
+        str | None,
+        typer.Option(
+            "--master-layout",
+            help="The sheet's master. The office's A1 no-scale master by default.",
+        ),
+    ] = None,
     title_block_mm: Annotated[
         float,
         typer.Option("--title-block-mm", help="Width of the master's title block, kept clear."),
     ] = 100.0,
-    hatch_fill: Annotated[
-        str | None,
-        typer.Option("--hatch-fill", help="Name of the fill to hatch heritage items with."),
-    ] = None,
     wait_minutes: Annotated[
         float,
         typer.Option(
@@ -6640,7 +6642,6 @@ def site_analysis(
                 view=view,
                 wait_s=wait_minutes * 60.0,
                 say=say,
-                hatch_fill=hatch_fill,
                 layout=layout,
                 master_layout=master_layout,
                 title_block_mm=title_block_mm,
@@ -6656,7 +6657,6 @@ def site_analysis(
                 view=view,
                 wait_s=wait_minutes * 60.0,
                 say=say,
-                hatch_fill=hatch_fill,
                 layout=layout,
                 master_layout=master_layout,
                 title_block_mm=title_block_mm,

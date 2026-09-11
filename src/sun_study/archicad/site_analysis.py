@@ -52,6 +52,7 @@ from sun_study.archicad.layout import (
     MM_PER_M,
     LayoutSheet,
     _drawings_by_name,
+    _walk,
     layout_from_views,
     layout_sheet,
 )
@@ -113,18 +114,20 @@ FOLDER_WORD = "Site Analysis"
 
 # Text heights, in millimetres on paper. A text keeps its paper size in any
 # view, so these are what the sheet prints at whatever scale it is placed.
-TITLE_MM = 7.0
-LEGEND_MM = 3.2
-STREET_MM = 4.0
+TITLE_MM = 3.0
+LEGEND_MM = 3.0
+STREET_MM = 3.0
 LABEL_MM = 3.0
 #: A stop or station roundel: radius, and the letter in it.
-ROUNDEL_MM = 4.0
-ROUNDEL_TEXT_MM = 4.5
+ROUNDEL_MM = 3.0
+ROUNDEL_TEXT_MM = 3.0
 #: The white double-headed band a street name sits in.
-BAND_MM = 7.0
-SMALL_MM = 2.6
+BAND_MM = 5.5
+#: Spacing of the heritage hatch lines, on paper.
+HATCH_MM = 2.5
+SMALL_MM = 3.0
 NEIGHBOUR_MM = 3.0
-SUN_MM = 8.8
+SUN_MM = 3.0
 
 INK = "#111111"
 SITE_RED = "#e30613"
@@ -275,6 +278,98 @@ def _polygons(rings: Sequence[Sequence[Point]]) -> list[tuple[list[Point], list[
     return polygons
 
 
+#: Which of a sheet's five layers each part of the drawing goes on.
+LAYER_GROUPS: dict[str, dict[str, str]] = {
+    CONTEXT_WORD: {
+        "Aerial": "Aerial",
+        "Zoning": "Land Use",
+        "Institutions": "Land Use",
+        "Railway": "Land Use",
+        "Heritage": "Land Use",
+        "Site": "Land Use",
+        "Cadastre": "Lines",
+        "Roads": "Lines",
+        "Bus routes": "Lines",
+        "Walking catchment": "Lines",
+        "Bus stops": "Labels",
+        "Stations": "Labels",
+        "Labels": "Labels",
+        "Road names": "Labels",
+        "Frame": "Sheet",
+        "Legend": "Sheet",
+    },
+    SITE_WORD: {
+        "Aerial": "Aerial",
+        "Site": "Site",
+        "Site lots": "Site",
+        "Dimensions": "Site",
+        "Levels": "Site",
+        "Cadastre": "Context",
+        "Zoning": "Context",
+        "Contours": "Context",
+        "Roads": "Context",
+        "Buildings": "Context",
+        "Noise": "Furniture",
+        "Traffic": "Furniture",
+        "Utilities": "Furniture",
+        "Parking": "Furniture",
+        "Access": "Furniture",
+        "Trees": "Furniture",
+        "Services": "Furniture",
+        "Bus stops": "Furniture",
+        "Neighbours": "Furniture",
+        "Road names": "Furniture",
+        "Sun path": "Sheet",
+        "Winds": "Sheet",
+        "Frame": "Sheet",
+        "Legend": "Sheet",
+    },
+    SUMMARY_WORD: {"Table": "Table"},
+}
+
+
+def _hatch_segments(
+    rings: Sequence[Sequence[Point]], spacing_m: float, angle_deg: float = 45.0
+) -> list[tuple[Point, Point]]:
+    """Parallel lines across a polygon with holes, clipped to it.
+
+    Worked in a frame turned so the lines are horizontal: each line crosses
+    the polygon's edges at an even number of points, and the crossings in
+    pairs are what lies inside -- the even-odd rule, which handles a hole
+    and a concave outline alike.
+    """
+    a = math.radians(angle_deg)
+    c, sn = math.cos(a), math.sin(a)
+
+    def turn(pt: Point) -> Point:
+        return (pt[0] * c + pt[1] * sn, -pt[0] * sn + pt[1] * c)
+
+    def back(pt: Point) -> Point:
+        return (pt[0] * c - pt[1] * sn, pt[0] * sn + pt[1] * c)
+
+    edges: list[tuple[Point, Point]] = []
+    for ring in rings:
+        turned = [turn(pt) for pt in ring]
+        edges.extend(zip(turned, [*turned[1:], turned[0]], strict=True))
+    if not edges or spacing_m <= 0:
+        return []
+    ys = [pt[1] for edge in edges for pt in edge]
+    segments: list[tuple[Point, Point]] = []
+    y = min(ys) + spacing_m / 2.0
+    top = max(ys)
+    while y < top:
+        crossings: list[float] = []
+        for (x1, y1), (x2, y2) in edges:
+            if (y1 > y) != (y2 > y):
+                crossings.append(x1 + (y - y1) * (x2 - x1) / (y2 - y1))
+        crossings.sort()
+        for left, right in zip(crossings[0::2], crossings[1::2], strict=False):
+            if right - left > 1e-6:
+                segments.append((back((left, y)), back((right, y))))
+        y += spacing_m
+    return segments
+
+
 @dataclass
 class Fill:
     layer: str
@@ -345,7 +440,15 @@ class Drawing:
         return value * self.scale / 1000.0
 
     def layer(self, part: str) -> str:
-        return naming.layer(part, self.word)
+        """The layer a part goes on: one of five per sheet.
+
+        Every element carries its meaning as its ID, so a layer per data
+        class was bookkeeping nobody needed; five is what a person switches
+        on and off -- the photo, the land use, the lines, the labels, the
+        sheet furniture.
+        """
+        group = LAYER_GROUPS.get(self.word, {}).get(part, part)
+        return naming.layer(group, self.word)
 
     def fill(
         self,
@@ -365,6 +468,14 @@ class Drawing:
         # otherwise.
         identifier = element_id or f"SA {part.upper()}"
         for outer, holes in _polygons(rings):
+            if hatch:
+                # The lines of the hatch are the drawing's own, so their
+                # spacing is the sheet's and not a fill attribute's: a fill
+                # pattern scaled for 1:100 reads solid at 1:3000.
+                for segment in _hatch_segments([outer, *holes], self.mm(HATCH_MM)):
+                    self.lines.append(
+                        Line(self.layer(part), list(segment), contour or colour, False, 0.18)
+                    )
             self.fills.append(
                 Fill(
                     self.layer(part),
@@ -829,7 +940,14 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
             wash=wash,
         )
 
+    # One parcel once. Fifty named complexes around a hospital resolve to the
+    # hospital's own parcel, and the first run drew it seventy times over.
+    drawn: set[tuple[tuple[float, float], ...]] = set()
     for institution in bundle.institutions:
+        key = tuple((round(x, 6), round(y, 6)) for x, y in institution.rings[0][:8])
+        if key in drawn:
+            continue
+        drawn.add(key)
         cat = curate.category(institution.category)
         present[institution.category] = cat
         drawing.fill(
@@ -1474,17 +1592,17 @@ def site_drawing(bundle: SiteBundle, frame: Frame) -> Drawing:
             drawing.line(
                 "Sun path",
                 [
-                    (at[0] + mm(10.7) * math.cos(theta), at[1] + mm(10.7) * math.sin(theta)),
-                    (at[0] + mm(17.7) * math.cos(theta), at[1] + mm(17.7) * math.sin(theta)),
+                    (at[0] + mm(6.0) * math.cos(theta), at[1] + mm(6.0) * math.sin(theta)),
+                    (at[0] + mm(10.0) * math.cos(theta), at[1] + mm(10.0) * math.sin(theta)),
                 ],
                 colour="#e0c860",
                 weight_mm=1.0,
             )
-        drawing.circle("Sun path", at, mm(10.7), colour=SUN_YELLOW, fill=SUN_YELLOW)
+        drawing.circle("Sun path", at, mm(6.0), colour=SUN_YELLOW, fill=SUN_YELLOW)
         drawing.text("Sun path", label, (at[0], at[1] - mm(SUN_MM * 0.9)), height_mm=SUN_MM)
-        placer.reserve(at[0], at[1], mm(38), mm(38))
+        placer.reserve(at[0], at[1], mm(22), mm(22))
     north = on_arc(0.0, outer)
-    drawing.circle("Sun path", north, mm(10.7), colour=SUN_YELLOW, fill=SUN_YELLOW)
+    drawing.circle("Sun path", north, mm(6.0), colour=SUN_YELLOW, fill=SUN_YELLOW)
     drawing.text("Sun path", "N", (north[0], north[1] - mm(SUN_MM * 0.45)), height_mm=SUN_MM)
 
     # Prevailing winds: banners at the reference sheet's corners, pointing in.
@@ -1811,8 +1929,8 @@ class _Attributes:
     pens: tuple[Pen, ...]
     wash_fill: int | None = None
     """A percentage fill, for a wash the photo shows through."""
-    hatch_fill: int | None = None
-    """A diagonal hatch, for the heritage items."""
+    empty_fill: int | None = None
+    """An empty fill with a contour: what a drawn hatch sits in."""
 
     def pen(self, colour: str) -> int | None:
         if not self.pens:
@@ -1848,7 +1966,7 @@ def _attribute_index(
     return None
 
 
-def _attributes(connection: ArchicadConnection, *, hatch_fill: str | None = None) -> _Attributes:
+def _attributes(connection: ArchicadConnection) -> _Attributes:
     try:
         pens = pen_table(connection)
     except ArchicadError:
@@ -1859,18 +1977,7 @@ def _attributes(connection: ArchicadConnection, *, hatch_fill: str | None = None
         wash_fill=_attribute_index(
             connection, "Fill", ("50%", "50 %", "Percent 50", "Percentage 50")
         ),
-        hatch_fill=_attribute_index(
-            connection,
-            "Fill",
-            (
-                *([hatch_fill] if hatch_fill else []),
-                "Grid 50x50 Diagonal",
-                "Grid Diagonal",
-                "Hatch 45",
-                "Diagonal",
-                "Hatch",
-            ),
-        ),
+        empty_fill=_attribute_index(connection, "Fill", ("Empty Fill", "Empty")),
         pens=pens,
     )
 
@@ -2160,8 +2267,8 @@ def _flush(
             "foregroundColour": {"red": r, "green": g, "blue": b},
             "backgroundColour": {"red": r, "green": g, "blue": b},
         }
-        if fill.hatch and attributes.hatch_fill is not None:
-            data["fillIndex"] = attributes.hatch_fill
+        if fill.hatch and attributes.empty_fill is not None:
+            data["fillIndex"] = attributes.empty_fill
             data["backgroundPen"] = 0
             del data["backgroundColour"]
         elif fill.wash and attributes.wash_fill is not None:
@@ -2284,6 +2391,35 @@ def _site_pen_set(connection: ArchicadConnection) -> str | None:
     return None
 
 
+#: The master every sheet of this tool goes on, unless told otherwise: the
+#: office's A1 with no stated scale, since a context sheet at 1:3000 and a
+#: site sheet at 1:400 have no master of their own. Matched by its words, so
+#: the office's punctuation does not matter.
+A1_MASTER = "A1 no scale"
+
+
+def _remove_layout(connection: ArchicadConnection, name: str) -> None:
+    """Delete the layout called ``name``, if the Layout Book has one."""
+    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})
+    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
+    if not isinstance(root, dict):
+        return
+    stale = [
+        item
+        for item in _walk(root)
+        if item.kind == "LayoutItem" and _tidy(item.name) == _tidy(name)
+    ]
+    if stale:
+        connection.run_tapir(
+            "DeleteNavigatorItems",
+            {
+                "navigatorItemIds": [
+                    {"navigatorItemId": {"guid": item.identifier}} for item in stale
+                ]
+            },
+        )
+
+
 def _sheet_frame(
     sheet: LayoutSheet, *, width_mm: float, height_mm: float, title_block_mm: float
 ) -> tuple[float, float, float, float]:
@@ -2315,12 +2451,17 @@ def place_on_layout(
     the site sits ``site_centre`` metres from it. Returns the layout's name.
     """
     name = view.name
+    # Remade, not reused: a layout keeps the master it was made on and nothing
+    # can change that after, so a sheet from an earlier run on another master
+    # would stay wrong for good. The sheet is the tool's own, and the drawing
+    # on it is regenerated either way.
+    _remove_layout(connection, name)
     report = layout_from_views(
         connection,
         [(view.navigator_id, name)],
         layout_name=name,
         scale=drawing.scale,
-        master_layout=master_layout,
+        master_layout=master_layout or A1_MASTER,
     )
     if not report.database_id:
         raise ArchicadError(f"the layout {name!r} was not made")
@@ -2365,13 +2506,12 @@ def _draw(
     view: bool,
     wait_s: float = 0.0,
     say: Callable[[str], None] | None = None,
-    hatch_fill: str | None = None,
     layout: bool = False,
     site_centre: Point = (0.0, 0.0),
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
 ) -> WorksheetReport:
-    attributes = _attributes(connection, hatch_fill=hatch_fill)
+    attributes = _attributes(connection)
     notes: list[str] = []
     if attributes.solid_fill is None:
         notes.append(
@@ -2447,7 +2587,6 @@ def draw_context(
     view: bool = True,
     wait_s: float = 0.0,
     say: Callable[[str], None] | None = None,
-    hatch_fill: str | None = None,
     layout: bool = False,
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
@@ -2459,7 +2598,6 @@ def draw_context(
         view=view,
         wait_s=wait_s,
         say=say,
-        hatch_fill=hatch_fill,
         layout=layout,
         site_centre=frame.project(*bundle.centre_lonlat),
         master_layout=master_layout,
@@ -2475,7 +2613,6 @@ def draw_site(
     view: bool = True,
     wait_s: float = 0.0,
     say: Callable[[str], None] | None = None,
-    hatch_fill: str | None = None,
     layout: bool = False,
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
@@ -2487,7 +2624,6 @@ def draw_site(
         view=view,
         wait_s=wait_s,
         say=say,
-        hatch_fill=hatch_fill,
         layout=layout,
         site_centre=frame.project(*bundle.centre_lonlat),
         master_layout=master_layout,

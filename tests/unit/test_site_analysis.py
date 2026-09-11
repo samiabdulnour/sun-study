@@ -148,23 +148,23 @@ def test_the_context_drawing_carries_the_legends_colours_and_the_site_on_top() -
     frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
     drawing = context_drawing(bundle, frame)
 
-    zoning = [f for f in drawing.fills if f.layer == f"{SS} {CONTEXT_WORD}.Zoning"]
+    zoning = [f for f in drawing.fills if "(R3)" in f.element_id or "(DM)" in f.element_id]
     assert [f.colour for f in zoning] == ["#f7c1bd"], (
         "R3 is drawn in the R3 tan; DM is not a category"
     )
     assert zoning[0].element_id == "SA R3 MEDIUM DENSITY RESIDENTIAL (R3)"
     assert all(f.element_id for f in drawing.fills), "every fill says what it is"
-    institutions = [f for f in drawing.fills if f.layer.endswith(".Institutions")]
+    institutions = [f for f in drawing.fills if f.element_id.startswith("SA MEDICAL")]
     assert institutions[0].colour == "#f27ba9" and institutions[0].contour == "#e5237e"
-    assert any(f.layer.endswith(".Heritage") for f in drawing.fills)
+    assert any(f.element_id == "SA GENERAL HERITAGE SITE" for f in drawing.fills)
 
-    site_lines = [line for line in drawing.lines if line.layer.endswith(".Site")]
+    site_lines = [line for line in drawing.lines if line.dashed and line.weight_mm == 0.9]
     assert site_lines and site_lines[0].dashed and site_lines[0].colour == "#e30613"
     # The site is 20 m a side in the project frame, whatever the turn.
     sides = [math.dist(a, b) for a, b in pairwise(site_lines[0].points)]
     assert sides == pytest.approx([20.0] * 4, rel=0.01)
 
-    labels = {t.text for t in drawing.texts if not t.layer.endswith(".Legend")}
+    labels = {t.text for t in drawing.texts if not t.layer.endswith(".Sheet")}
     assert {
         "TEST ST",
         "BACK LN",
@@ -177,17 +177,18 @@ def test_the_context_drawing_carries_the_legends_colours_and_the_site_on_top() -
     assert "SITE" not in labels, "the legend says what red is"
     assert any(t.text.startswith("400m") for t in drawing.texts)
     # A street gets its white band, a lane does not: one band.
-    bands = [f for f in drawing.fills if f.layer.endswith(".Road names")]
+    bands = [f for f in drawing.fills if f.element_id == "SA STREET NAME BAND"]
     assert len(bands) == 1 and bands[0].colour == "#ffffff" and len(bands[0].rings[0]) == 6
     # The stop's letter sits on the roundel's centre, in the roundel's colour.
     letter = next(t for t in drawing.texts if t.text == "B")
-    roundel = next(f for f in drawing.fills if f.layer.endswith(".Bus stops"))
+    roundel = next(f for f in drawing.fills if f.element_id == "SA BUS STOP")
     centre = (sum(x for x, _ in roundel.rings[0]) / 24, sum(y for _, y in roundel.rings[0]) / 24)
     assert letter.at == pytest.approx(centre, abs=1e-6) and letter.colour == "#2f7fd6"
-    assert any(f.hatch for f in drawing.fills if f.layer.endswith(".Heritage"))
-    assert any(f.wash for f in drawing.fills if f.layer.endswith(".Site"))
+    assert any(f.hatch for f in drawing.fills if f.element_id == "SA GENERAL HERITAGE SITE")
+    assert len(drawing.layers) <= 5, drawing.layers
+    assert any(f.wash for f in drawing.fills if f.element_id == "SA SITE")
     # Legend rows only for what is on the map.
-    legend = [t.text for t in drawing.texts if t.layer.endswith(".Legend")]
+    legend = [t.text for t in drawing.texts if t.layer.endswith(".Sheet")]
     assert "R3 MEDIUM DENSITY RESIDENTIAL" in legend and "MEDICAL" in legend
     assert "R2 LOW DENSITY RESIDENTIAL" not in legend
     assert drawing.mm(4.0) == pytest.approx(12.0), "4 mm on paper is 12 m at 1:3000"
@@ -232,32 +233,28 @@ def test_the_site_drawing_dimensions_levels_and_orients_the_site() -> None:
     texts = [t.text for t in drawing.texts]
 
     dimensions = [
-        t.text
-        for t in drawing.texts
-        if t.layer.endswith(".Dimensions") and t.text.startswith("SB ")
+        t.text for t in drawing.texts if t.layer.endswith(".Site") and t.text.startswith("SB ")
     ]
     assert len(dimensions) == 4
     assert all(abs(float(t.split()[1]) - 20.0) < 0.2 for t in dimensions)
     levels = [
-        t.text for t in drawing.texts if t.layer.endswith(".Levels") and t.text.startswith("RL ")
+        t.text for t in drawing.texts if t.layer.endswith(".Site") and t.text.startswith("RL ")
     ]
     assert len(levels) == 4
     info = next(
-        t.text
-        for t in drawing.texts
-        if t.layer.endswith(".Dimensions") and t.text.startswith("FALL")
+        t.text for t in drawing.texts if t.layer.endswith(".Site") and t.text.startswith("FALL")
     )
     assert "AREA 400" in info or "AREA 399" in info or "AREA 401" in info
     assert "3\n2 STOREY\nR3 MEDIUM DENSITY RESIDENTIAL" in texts
     assert {"W\nAM", "W\nPM", "S\nAM", "S\nPM", "N", "NE SUMMER SEA BREEZE"} <= set(texts)
-    assert any(f.layer.endswith(".Access") for f in drawing.fills), "a driveway becomes a triangle"
-    assert any(line.layer.endswith(".Noise") for line in drawing.lines), (
+    assert any(f.element_id == "SA ACCESS" for f in drawing.fills), "a driveway becomes a triangle"
+    assert any(line.colour == "#3b4fd8" for line in drawing.lines), (
         "a hierarchy-4 road is a noise source"
     )
-    assert any(line.layer.endswith(".Buildings") for line in drawing.lines)
+    assert len(drawing.layers) <= 5, drawing.layers
 
     # The north disc sits along true north from the site, at 0.42 of the field.
-    north = next(t for t in drawing.texts if t.text == "N" and t.layer.endswith(".Sun path"))
+    north = next(t for t in drawing.texts if t.text == "N" and t.layer.endswith(".Sheet"))
     direction = frame.direction(0.0)
     radius = min(690.0, 594.0) * 0.2 * 0.42
     assert north.at[0] == pytest.approx(direction[0] * radius, abs=1.0)
@@ -675,3 +672,26 @@ def test_the_map_field_is_centred_beside_the_title_block() -> None:
     assert (x1 - x0) * 1000 == pytest.approx(690.0), "the field fits, so it keeps its size"
     assert (y1 - y0) * 1000 == pytest.approx(574.0), "the page is shorter than the field"
     assert (x0 + x1) / 2 * 1000 == pytest.approx(10.0 + (821.0 - 100.0) / 2)
+
+
+def test_the_hatch_is_drawn_as_lines_clipped_to_the_polygon() -> None:
+    from sun_study.archicad.site_analysis import _hatch_segments
+
+    square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    hole = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]
+    segments = _hatch_segments([square, hole], 1.0)
+    assert segments, "a 10 m square at 1 m spacing has lines"
+    for a, b in segments:
+        assert abs((b[1] - a[1]) - (b[0] - a[0])) < 1e-6, "45 degrees"
+        mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        assert 0 <= mid[0] <= 10 and 0 <= mid[1] <= 10
+        assert not (4 < mid[0] < 6 and 4 < mid[1] < 6), "not across the hole"
+
+
+def test_one_institution_parcel_is_drawn_once() -> None:
+    bundle = context_bundle()
+    same = bundle.institutions[0]
+    bundle.institutions = (same, Institution("education", "St George Hospital School", same.rings))
+    drawing = context_drawing(bundle, frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site"))
+    parcels = [f for f in drawing.fills if f.element_id.startswith(("SA MEDICAL", "SA EDUCATION"))]
+    assert len(parcels) == 1
