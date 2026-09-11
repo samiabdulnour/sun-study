@@ -6389,8 +6389,8 @@ def sun_eye_views(
     for report in placed:
         typer.echo(report.describe())
     typer.echo(
-        "  drawings anchored by their centres with their frames freed; they take "
-        "their real size when the layout is next opened."
+        "  each drawing's origin is at the centre of its cell and its frame clips to "
+        "the cell; the content fills the frame when the layout is next opened."
     )
 
 

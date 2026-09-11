@@ -365,10 +365,12 @@ renovation filter, `DA General Arrangement` model view options and the pen set
 given. Each of those is an option if a project differs; the date and hours come
 from the ruleset's assessment window.
 
-The drawings are placed by Tapir and then arranged by the add-on: anchored by
-their centres in a grid that keeps clear of the master's title block, with
-their clip frames freed so each shows the whole document once Archicad has
-regenerated it, which happens when the layout is next opened. `--scale`,
+The drawings are placed by Tapir and then arranged by the add-on: a grid of
+equal cells that keeps clear of the master's title block, each drawing's
+origin at the centre of its cell and its frame clipped to the cell, so each
+is a window around the building rather than the whole site. The content fills
+the frame once Archicad has regenerated it, which happens when the layout is
+next opened. `--scale`,
 `--per-sheet` and `--title-block-mm` change the size, the split and the strip
 kept clear.
 

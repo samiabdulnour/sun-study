@@ -78,6 +78,7 @@ __all__ = [
     "make_sun_eye_sheets",
     "make_sun_eye_views",
     "planned_renovation_filter",
+    "sheet_cells_for",
     "sheet_groups",
     "sheet_positions_for",
     "sun_eye_layer_combination",
@@ -93,6 +94,10 @@ DOCUMENT_SCALE = 200.0
 #: How many hours share a sheet. Four puts 9am to noon on one and the
 #: afternoon on the next, which reads as a morning and an afternoon.
 PER_SHEET = 4
+
+#: Between a drawing's clip frame and the edge of its cell, in millimetres.
+#: Room for the drawing title Archicad puts under each.
+CELL_GAP_MM = 20.0
 
 #: The strip down the right of the practice's masters that the title block
 #: occupies. Archicad reports a layout's margins and nothing about its master,
@@ -481,16 +486,22 @@ def sheet_groups(
     return groups
 
 
-def sheet_positions_for(
-    sheet: LayoutSheet, count: int, *, title_block_mm: float = TITLE_BLOCK_MM
-) -> list[tuple[float, float]]:
-    """Drawing centres in metres, reading left to right and top to bottom.
+def sheet_cells_for(
+    sheet: LayoutSheet,
+    count: int,
+    *,
+    title_block_mm: float = TITLE_BLOCK_MM,
+    gap_mm: float = CELL_GAP_MM,
+) -> list[tuple[float, float, float, float]]:
+    """Equal cells on the page, as ``(xMin, yMin, xMax, yMax)`` in metres.
 
     The page less the title block strip is cut into equal cells, as many
     across as wastes the fewest cells and then keeps them nearest square:
     four drawings are two by two, not three and one. Layout coordinates run
-    upward from the bottom-left corner, so the first row is put at the top by
-    counting down from the page height rather than up from zero.
+    upward from the bottom-left corner, so the first cell is put at the top
+    by counting down from the page height rather than up from zero. Each cell
+    is shrunk by ``gap_mm`` on every side, which is where the drawing's title
+    goes.
     """
     if count <= 0:
         return []
@@ -504,25 +515,45 @@ def sheet_positions_for(
     columns = min(range(1, count + 1), key=cost)
     rows = -(-count // columns)
     cell_w, cell_h = width / columns, height / rows
-    return [
-        (
-            (left + (index % columns + 0.5) * cell_w) / MM_PER_M,
-            (top + height - (index // columns + 0.5) * cell_h) / MM_PER_M,
+    cells: list[tuple[float, float, float, float]] = []
+    for index in range(count):
+        x0 = left + (index % columns) * cell_w
+        y1 = top + height - (index // columns) * cell_h
+        cells.append(
+            (
+                (x0 + gap_mm) / MM_PER_M,
+                (y1 - cell_h + gap_mm) / MM_PER_M,
+                (x0 + cell_w - gap_mm) / MM_PER_M,
+                (y1 - gap_mm) / MM_PER_M,
+            )
         )
-        for index in range(count)
-    ]
+    return cells
+
+
+def sheet_positions_for(
+    sheet: LayoutSheet, count: int, *, title_block_mm: float = TITLE_BLOCK_MM
+) -> list[tuple[float, float]]:
+    """The centres of ``sheet_cells_for``, in metres."""
+    cells = sheet_cells_for(sheet, count, title_block_mm=title_block_mm, gap_mm=0.0)
+    return [((x0 + x1) / 2.0, (y0 + y1) / 2.0) for x0, y0, x1, y1 in cells]
 
 
 def arrange_drawings(
     connection: ArchicadConnection,
     layout_database_id: str,
-    placements: Sequence[tuple[str, float, float]],
+    placements: Sequence[tuple[str, tuple[float, float, float, float]]],
 ) -> int:
-    """Re-anchor the drawings on a sheet by their centres and free their frames.
+    """Put each drawing's origin at the centre of a cell and clip it to the cell.
 
-    ``placements`` is ``(drawing element guid, x, y)`` in metres. Returns how
-    many the add-on arranged. Everything here is the add-on's: Tapir places a
-    drawing and can then change only its magnification.
+    ``placements`` is ``(drawing element guid, (xMin, yMin, xMax, yMax))`` in
+    metres on the layout. Returns how many the add-on arranged.
+
+    The origin rather than the centre of the content, and a clip rather than a
+    free frame, because of what a drawing of a 3D Document is: the whole site
+    model, projected. Freed, it swamps the sheet; its origin is the projected
+    model origin, which on a site modelled around it is the building. The
+    placeholder frame Tapir leaves is centred there too, only 59 mm wide --
+    "almost there, just expand it", as the practice put it.
     """
     if not placements:
         return 0
@@ -530,8 +561,17 @@ def arrange_drawings(
         "ArrangeDrawings",
         {
             "layoutDatabaseId": {"guid": layout_database_id},
-            "drawings": [{"guid": guid, "x": x, "y": y} for guid, x, y in placements],
-            "fitFrame": True,
+            "drawings": [
+                {
+                    "guid": guid,
+                    "x": (x0 + x1) / 2.0,
+                    "y": (y0 + y1) / 2.0,
+                    "frame": {"xMin": x0, "yMin": y0, "xMax": x1, "yMax": y1},
+                }
+                for guid, (x0, y0, x1, y1) in placements
+            ],
+            "anchor": "origin",
+            "frameRelativeToOrigin": False,
             "autoUpdate": True,
         },
     )
@@ -603,10 +643,10 @@ def make_sun_eye_sheets(
             continue
         sheet, _ = layout_sheet(connection, report.database_id)
         placed = _drawings_by_name(connection, report.database_id)
-        positions = sheet_positions_for(sheet, len(views), title_block_mm=title_block_mm)
+        cells = sheet_cells_for(sheet, len(views), title_block_mm=title_block_mm)
         placements = [
-            (str(placed[drawing_name]["elementId"]["guid"]), x, y)
-            for (_, drawing_name), (x, y) in zip(views, positions, strict=True)
+            (str(placed[drawing_name]["elementId"]["guid"]), cell)
+            for (_, drawing_name), cell in zip(views, cells, strict=True)
             if drawing_name in placed
         ]
         arrange_drawings(connection, report.database_id, placements)

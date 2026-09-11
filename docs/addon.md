@@ -1,6 +1,6 @@
 # The Loriini add-on
 
-Ten commands Archicad's JSON API does not have, and a menu so Loriini is
+Eleven commands Archicad's JSON API does not have, and a menu so Loriini is
 visible from inside the project a colleague is working in.
 
 Read this before changing anything in `archicad-addon/`. The same rule applies
@@ -161,12 +161,25 @@ eye views was seven stamps, with the fourth in the wrong corner because layout
 coordinates run upward from the bottom-left and the tiling had assumed the
 opposite.
 
-`API_DrawingType` carries all three as plain fields. This command takes each
-Drawing and the point its centre should sit at, sets `anchorPoint` to the
-middle, `isCutWithFrame` off so the frame follows the drawing's own extent,
-`manualUpdate` off, and writes it back with `ACAPI_Element_Change`, all in one
-undo step. Given a `layoutDatabaseId` it makes that layout's database current
-for the call and puts the previous one back after.
+`API_DrawingType` carries all of it as plain fields, and this command writes
+them back with `ACAPI_Element_Change`, all in one undo step. Given a
+`layoutDatabaseId` it makes that layout's database current for the call and
+puts the previous one back after.
+
+Freeing the frame was tried first and is the wrong answer: a drawing of a 3D
+Document is the **whole site model** projected, and freed it swamps the sheet.
+The office's diagram is a window around the building. So the frame stays a
+clip, sized to the cell the drawing sits in, and the drawing is placed by its
+**own origin** -- `useOwnOrigoAsAnchor` -- which for a 3D Document is the
+projected model origin, and on a site modelled around its origin that is the
+building. The placeholder frame Tapir leaves is centred there too; it is only
+59 mm wide. "Almost there, just expand it", as the practice put it.
+
+`GetDrawings` beside it reads every Drawing on a layout back -- position,
+anchor, frame, bounds and the content box from
+`APIDb_GetFullDrawingContentBoxID` -- because a frame written in the wrong
+coordinate space is a drawing off the page, and this is how that is seen
+rather than guessed.
 
 ### `Loriini.GetCurrentDatabase` and `SetCurrentDatabase`
 

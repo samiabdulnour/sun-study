@@ -20,6 +20,7 @@ from sun_study.archicad.sun_eyes import (
     DOCUMENT_SCALE,
     SunEyeSettings,
     make_sun_eye_views,
+    sheet_cells_for,
     sheet_groups,
     sheet_positions_for,
     sun_eyes,
@@ -207,3 +208,13 @@ def test_three_drawings_sit_in_one_row() -> None:
         (450, 354),
         (750, 354),
     ]
+
+
+def test_cells_are_the_grid_less_a_gap_for_the_title() -> None:
+    cells = sheet_cells_for(B1, 4, title_block_mm=100.0, gap_mm=20.0)
+    x0, y0, x1, y1 = (round(v * 1000) for v in cells[0])
+    # First cell: top-left, 450 x 353.5 mm, inset 20 mm on every side.
+    assert (x0, y0, x1, y1) == (20, 374, 430, 687)
+    # Every cell the same size.
+    sizes = {(round((c[2] - c[0]) * 1000), round((c[3] - c[1]) * 1000)) for c in cells}
+    assert sizes == {(410, 314)}

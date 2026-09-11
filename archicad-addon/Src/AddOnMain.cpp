@@ -205,6 +205,7 @@ GSErrCode __ACENV_CALL Initialize (void)
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateWorksheetCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ActivateLayerCombinationCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ModifyLayersCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::GetDrawingsCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ArrangeDrawingsCommand> ()); },
 	};
 
