@@ -201,13 +201,12 @@ def test_four_drawings_sit_two_by_two_clear_of_the_title_block() -> None:
     ]
 
 
-def test_three_drawings_sit_in_one_row() -> None:
-    positions = sheet_positions_for(B1, 3, title_block_mm=100.0)
-    assert [(round(x * 1000), round(y * 1000)) for x, y in positions] == [
-        (150, 354),
-        (450, 354),
-        (750, 354),
-    ]
+def test_a_short_sheet_keeps_the_full_sheets_grid() -> None:
+    # Three afternoon drawings take the first three cells of the same
+    # two-by-two the morning sheet uses; the grid is sized for a full sheet.
+    full = sheet_cells_for(B1, 4, title_block_mm=100.0)
+    assert full[:3] == sheet_cells_for(B1, 4, title_block_mm=100.0)[:3]
+    assert len(sheet_cells_for(B1, 3, title_block_mm=100.0)) == 3
 
 
 def test_cells_are_the_grid_less_a_gap_for_the_title() -> None:

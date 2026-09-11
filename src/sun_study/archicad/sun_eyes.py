@@ -644,7 +644,10 @@ def make_sun_eye_sheets(
             continue
         sheet, _ = layout_sheet(connection, report.database_id)
         placed = _drawings_by_name(connection, report.database_id)
-        cells = sheet_cells_for(sheet, len(views), title_block_mm=title_block_mm)
+        # The grid of a full sheet, whatever this one holds: an afternoon of
+        # three drawings sits in the morning's two-by-two with one cell empty,
+        # not in a row of three at a different size.
+        cells = sheet_cells_for(sheet, per_sheet, title_block_mm=title_block_mm)[: len(views)]
         placements = [
             (str(placed[drawing_name]["elementId"]["guid"]), cell)
             for (_, drawing_name), cell in zip(views, cells, strict=True)
