@@ -6612,6 +6612,9 @@ def site_analysis(
             )
         return frame
 
+    # The photo is placed by the add-on; only an add-on without the command
+    # leaves the tiles for a person, and only then is the hint worth printing.
+    unplaced = False
     try:
         if context_bundle is not None:
             typer.echo("drawing the context analysis...")
@@ -6624,6 +6627,7 @@ def site_analysis(
                 say=say,
             )
             typer.echo(report.describe())
+            unplaced |= any("PlaceFigures" in note for note in report.notes)
         if site_bundle is not None:
             typer.echo("drawing the site analysis...")
             report = site_drawing.draw_site(
@@ -6635,12 +6639,14 @@ def site_analysis(
                 say=say,
             )
             typer.echo(report.describe())
+            unplaced |= any("PlaceFigures" in note for note in report.notes)
         if summary_bundle is not None:
             typer.echo("drawing the development summary...")
             report = site_drawing.draw_summary(
                 connection, summary_bundle, view=view, wait_s=wait_minutes * 60.0, say=say
             )
             typer.echo(report.describe())
+            unplaced |= any("PlaceFigures" in note for note in report.notes)
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
@@ -6650,12 +6656,13 @@ def site_analysis(
         "Project Map before the next export, and save: a worksheet made through the API "
         "does not survive an unsaved close."
     )
-    for bundle in (context_bundle, site_bundle):
-        if bundle is not None and bundle.aerial is not None:
-            typer.echo(
-                f"  aerial tiles with world files in {bundle.aerial.folder}; place them with "
-                f"File > External Content > Place External Drawing."
-            )
+    if unplaced:
+        for bundle in (context_bundle, site_bundle):
+            if bundle is not None and bundle.aerial is not None:
+                typer.echo(
+                    f"  aerial tiles with world files in {bundle.aerial.folder}; place them with "
+                    f"File > External Content > Place External Drawing."
+                )
 
 
 def main() -> None:
