@@ -25,7 +25,11 @@ ALLOWED_IMPORTS: dict[str, set[str]] = {
     "rules": {"core"},
     "ingest": {"core"},
     "report": {"core", "rules"},
-    "archicad": {"core", "rules", "ingest", "report"},
+    # Site and context analysis: open-data fetching and curation. Pure of
+    # Archicad, like ``core``, so the geocoder, the projection and the legend
+    # rules are tested without a licence.
+    "site": {"core"},
+    "archicad": {"core", "rules", "ingest", "report", "site"},
 }
 
 LAYERS = sorted(ALLOWED_IMPORTS)

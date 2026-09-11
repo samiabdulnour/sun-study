@@ -2536,3 +2536,49 @@ solar study, the matrix is what `ViewMatrix` builds, its frame is the
 project's rather than true north, and `SetProjection` and
 `CreateDocumentFrom3D` both hold on a live Archicad. The measurement, and the
 two kit facts the first build got wrong on the way, are in `docs/addon.md`.
+
+### D83 — The site analysis is a port, drawn where the office works, and the site lands by the project's own georeferencing
+
+The office's `au-site-analysis` generator already answers "what is around this
+address": a TypeScript pipeline over NSW open data that prints the context
+analysis, the site analysis and the development summary to an A1 PDF, with a
+DXF beside it for import. Asked to bring that into Loriini, three choices
+were open and each was made the same way.
+
+**Port, not wrap.** Running the TypeScript from Python -- a Node on the
+workstation, a subprocess, a DXF merged by hand -- would have kept one
+implementation but put Node, Chromium and `pyproj` on machines that cannot
+install anything (see the workstation note in memory). The fetch layer is
+small and stdlib-shaped: ArcGIS REST queries, Overpass, one Valhalla call.
+So it is ported, endpoint for endpoint and rule for rule, into a `site`
+layer that knows nothing about Archicad, with the transverse Mercator
+arithmetic written out (Redfearn, from the GDA Technical Manual, checked
+against its worked example to the millimetre) rather than imported. The
+approved dependency set is unchanged.
+
+**Draw, not import.** The generator's DXF puts everything on `SA_` layers in
+MGA metres for a person to merge. Drawing the same content as native elements
+into a worksheet -- through the add-on's `CreateWorksheet` (D33) and
+`CreateFills` with the legend's RGB (D82), then Tapir's polylines and texts
+(D60) -- means no file on disk, no merge dialog, no pen matching, and a
+rerun that clears its own worksheet. The aerial is the one thing not drawn:
+no command places a picture, so it is saved with world files for placing by
+hand.
+
+**The site lands where the project says it is.** A bundle is in longitude
+and latitude and the project has a location and a north angle, so there is
+exactly one place for every point: projected to the MGA grid, moved so the
+origin's own grid position is zero, turned so true north sits where the
+project's north angle puts it -- corrected for the grid's own convergence,
+about one degree at Sydney, which is the difference between a survey's
+north and the sun's. It is the same turn the sun eye views make in the other
+direction, tested against the same figure, so a site and a sun study cannot
+face different ways. A project whose location is still the Sydney preset
+would put the site eleven kilometres off; the run says so, and
+`--anchor site` puts the site's centre at the origin instead.
+
+What follows from the port: the site bundle stores every OpenStreetMap
+building footprint in its extent with the storeys and height OSM records,
+which the sheets only label. That is the material for the next step, a
+massing of the neighbours on a context layer, and the reason it is fetched
+now rather than later.

@@ -31,6 +31,7 @@ import typer
 
 from sun_study import AUTHOR, PRODUCT, STOP_FILE_VAR, __version__, licence
 from sun_study.archicad import naming
+from sun_study.archicad import site_analysis as site_drawing
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
     DEFAULT_TIMEOUT_SECONDS,
@@ -80,6 +81,7 @@ from sun_study.archicad.penetration import (
 )
 from sun_study.archicad.read import (
     ArchicadZone,
+    GeoLocation,
     classification_item_names,
     classification_items_of,
     clear_selection,
@@ -221,6 +223,7 @@ from sun_study.report.csv_out import write_csv
 from sun_study.report.header import build_header
 from sun_study.report.json_out import write_json
 from sun_study.rules.ruleset import BUILTIN_RULESETS, Ruleset, RulesetError, load_ruleset
+from sun_study.site import pipeline as site_pipeline
 
 #: A sheet label that is a time of day. Those are shadow diagrams; the
 #: banded and two-hour plans are not, and the two go to different subsets.
@@ -6397,6 +6400,237 @@ def sun_eye_views(
         "  each drawing's origin is at the centre of its cell and its frame clips to "
         "the cell; the content fills the frame when the layout is next opened."
     )
+
+
+def _site_out_dir(address: str, out: Path | None) -> Path:
+    """Where a run keeps what it fetched: under Documents, by address, unless told."""
+    if out is not None:
+        return out
+    documents = Path.home() / "Documents"
+    root = documents if documents.is_dir() else Path.home()
+    return root / "Loriini" / "site-analysis" / site_pipeline.slug(address)
+
+
+@app.command("site-analysis")
+def site_analysis(
+    address: Annotated[
+        str | None,
+        typer.Argument(help='The site, e.g. "26-30 Campsie St, Campsie NSW 2194". NSW only.'),
+    ] = None,
+    port: Annotated[int, typer.Option("--port", help="Which Archicad to talk to.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float, typer.Option("--timeout", help="Seconds to wait for one Archicad command.")
+    ] = DEFAULT_TIMEOUT_SECONDS,
+    context: Annotated[
+        bool, typer.Option("--context/--no-context", help="The context analysis worksheet.")
+    ] = True,
+    site: Annotated[
+        bool, typer.Option("--site/--no-site", help="The site analysis worksheet.")
+    ] = True,
+    summary: Annotated[
+        bool, typer.Option("--summary/--no-summary", help="The development summary worksheet.")
+    ] = True,
+    scale: Annotated[
+        float, typer.Option("--scale", help="Denominator of the context sheet's scale.")
+    ] = 3000.0,
+    site_scale: Annotated[
+        float | None,
+        typer.Option(
+            "--site-scale", help="The site sheet's scale. Chosen to fit the site by default."
+        ),
+    ] = None,
+    anchor: Annotated[
+        str,
+        typer.Option(
+            "--anchor",
+            help=(
+                "Where the site lands: 'location' puts it where the project's own "
+                "georeferencing says it is; 'site' puts the site's centre at the project origin."
+            ),
+        ),
+    ] = "location",
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out", help="Folder for what was fetched. Documents/Loriini/site-analysis by default."
+        ),
+    ] = None,
+    from_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--from", help="Draw the bundles saved in this folder's data/ instead of fetching."
+        ),
+    ] = None,
+    with_aerial: Annotated[
+        bool,
+        typer.Option("--aerial", help="Also save the aerial photo as georeferenced JPEG tiles."),
+    ] = False,
+    fetch_only: Annotated[
+        bool,
+        typer.Option("--fetch-only", help="Fetch and save the bundles; do not touch Archicad."),
+    ] = False,
+    view: Annotated[
+        bool,
+        typer.Option("--view/--no-view", help="Make a view of each worksheet in the View Map."),
+    ] = True,
+    layer_prefix: Annotated[
+        str | None,
+        typer.Option("--layer-prefix", help="What every layer, worksheet and view is named under."),
+    ] = None,
+) -> None:
+    """Draw the context analysis, site analysis and development summary for
+    an address into worksheets of the open project.
+
+    Fetched from NSW open data -- cadastre, ePlanning, topography, Transport
+    for NSW, OpenStreetMap and Valhalla -- and drawn as native fills, lines
+    and texts at true ground scale in the project's own frame, with a view of
+    each sheet at its scale. Needs the Loriini add-on beside Tapir: a
+    worksheet can only be drawn into in the session that made it through the
+    add-on's own command.
+    """
+    banner()
+    naming.set_prefix(layer_prefix)
+    if anchor not in ("location", "site"):
+        typer.secho("  --anchor takes 'location' or 'site'.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    if from_dir is None and not (address or "").strip():
+        typer.secho(
+            "  Give an address, or --from a folder of saved bundles.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(code=2)
+    if not (context or site or summary):
+        typer.secho(
+            "  Nothing to draw: every sheet is switched off.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(code=2)
+
+    where = from_dir if from_dir is not None else _site_out_dir(address or "", out)
+    typer.echo(f"  run folder: {where}")
+
+    connection: ArchicadConnection | None = None
+    geo: GeoLocation | None = None
+    if not fetch_only:
+        connection = _connect(port, timeout)
+        try:
+            geo = read_geo_location(connection)
+            typer.echo(f"  project location: {geo.describe()}")
+            if geo.looks_like_a_city_preset:
+                typer.secho(
+                    "  the project location is a city preset, not a surveyed site. With "
+                    "--anchor location the site lands where the preset says, which may be "
+                    "kilometres from the model; --anchor site puts it at the project origin.",
+                    fg=typer.colors.YELLOW,
+                )
+        except ArchicadError as error:
+            if anchor == "location":
+                typer.secho(
+                    f"  {error}\n  Set the project location, or use --anchor site.",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=2) from error
+            typer.secho(
+                f"  {error}; drawing north-up at the project origin.", fg=typer.colors.YELLOW
+            )
+
+    def fetch_or_load(
+        kind: str, wanted: bool, loader: Callable[[Path], Any], runner: Callable[[], Any]
+    ) -> Any:
+        if not wanted:
+            return None
+        if from_dir is not None:
+            path = from_dir / "data" / f"{kind}.json"
+            if not path.is_file():
+                typer.secho(f"  no saved {kind} bundle at {path}; skipped.", fg=typer.colors.YELLOW)
+                return None
+            typer.echo(f"  loaded {path}")
+            return loader(path)
+        try:
+            return runner()
+        except (ValueError, OSError) as error:
+            typer.secho(f"  {kind}: {error}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from error
+
+    say: Callable[[str], None] = typer.echo
+    context_bundle = fetch_or_load(
+        "context",
+        context,
+        site_pipeline.load_context,
+        lambda: site_pipeline.run_context(
+            address or "", scale=scale, out_dir=where, with_aerial=with_aerial, log=say
+        ),
+    )
+    site_bundle = fetch_or_load(
+        "site",
+        site,
+        site_pipeline.load_site,
+        lambda: site_pipeline.run_site(
+            address or "", scale=site_scale, out_dir=where, with_aerial=with_aerial, log=say
+        ),
+    )
+    summary_bundle = fetch_or_load(
+        "summary",
+        summary,
+        site_pipeline.load_summary,
+        lambda: site_pipeline.run_summary(address or "", out_dir=where, log=say),
+    )
+    for bundle in (context_bundle, site_bundle):
+        for warning in getattr(bundle, "warnings", ()):
+            typer.secho(f"  WARN {warning}", fg=typer.colors.YELLOW)
+
+    if connection is None:
+        typer.echo("  fetched only; nothing drawn.")
+        return
+
+    def frame_and_offset(bundle: Any) -> site_drawing.Frame:
+        frame = site_drawing.frame_for(geo, site_centre=bundle.centre_lonlat, anchor=anchor)
+        x, y = frame.project(*bundle.centre_lonlat)
+        distance = math.hypot(x, y)
+        typer.echo(
+            f"  site centre lands at ({x:,.1f}, {y:,.1f}) m in the project frame, "
+            f"{distance / 1000:.2f} km from the origin; MGA zone {frame.zone}, "
+            f"project +Y at bearing {frame.plus_y_bearing_deg:.2f}"
+        )
+        if distance > 5000.0:
+            typer.secho(
+                "  that is a long way from the model. If the project location is not this "
+                "site's, rerun with --anchor site.",
+                fg=typer.colors.YELLOW,
+            )
+        return frame
+
+    try:
+        if context_bundle is not None:
+            typer.echo("drawing the context analysis...")
+            report = site_drawing.draw_context(
+                connection, context_bundle, frame_and_offset(context_bundle), view=view
+            )
+            typer.echo(report.describe())
+        if site_bundle is not None:
+            typer.echo("drawing the site analysis...")
+            report = site_drawing.draw_site(
+                connection, site_bundle, frame_and_offset(site_bundle), view=view
+            )
+            typer.echo(report.describe())
+        if summary_bundle is not None:
+            typer.echo("drawing the development summary...")
+            report = site_drawing.draw_summary(connection, summary_bundle, view=view)
+            typer.echo(report.describe())
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+    typer.echo(
+        "  Archicad is left standing in the last worksheet drawn. Click a storey in the "
+        "Project Map before the next export, and save: a worksheet made through the API "
+        "does not survive an unsaved close."
+    )
+    for bundle in (context_bundle, site_bundle):
+        if bundle is not None and bundle.aerial is not None:
+            typer.echo(
+                f"  aerial tiles with world files in {bundle.aerial.folder}; place them with "
+                f"File > External Content > Place External Drawing."
+            )
 
 
 def main() -> None:

@@ -25,6 +25,11 @@ outputs/
 examples/
 sun-study-info.txt
 
+# The office's site-analysis generator, copied in as the reference the
+# ``site`` package was ported from. Its own README says it must stay private:
+# ``examples/`` holds real project sheets. Read here, never committed here.
+au-site-analysis-main/
+
 # Screenshots handed over to show a defect. They are pictures of a real
 # project's Archicad session -- its name, its file path, its layout book --
 # and they are read once and never wanted again.

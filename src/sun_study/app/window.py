@@ -108,6 +108,7 @@ PLANS_JOB = "apartment plans and sheets"
 COMMUNAL_JOB = "communal open space"
 SHADOW_JOB = "shadow diagram"
 SUN_EYE_JOB = "sun eye views"
+SITE_JOB = "site and context analysis"
 
 
 class Tooltip:
@@ -556,6 +557,7 @@ class Window:
     DIAGRAMS = "Solar diagrams"
     SHADOWS = "Shadow diagram"
     EYE = "Sun eye view"
+    SITE = "Site analysis"
 
     def _build(self) -> None:
         wheel_reaches_the_pointer(self.root)
@@ -658,6 +660,7 @@ class Window:
         self._diagrams(self._section(self.DIAGRAMS))
         self._shadows(self._section(self.SHADOWS))
         self._sun_eyes(self._section(self.EYE))
+        self._site(self._section(self.SITE))
 
     def _section(self, title: str) -> ttk.Frame:
         """One tab, and the frame its settings are built into.
@@ -1346,6 +1349,134 @@ class Window:
             "ruleset's and a set drawn at other hours is not the study.",
         )
 
+    def _site(self, frame: ttk.Frame) -> None:
+        """Site and context analysis from an address, drawn into worksheets.
+
+        The one section that reads nothing off the project: its input is a
+        street address, and everything else comes from NSW open data. What it
+        offers is which of the three sheets to make and where the site lands
+        in the project frame; the scale of the context sheet is the only
+        number, because the site sheet chooses its own to fit the site.
+        """
+        row = 0
+        self.do_site = tk.BooleanVar(value=False)
+        box = ttk.Checkbutton(
+            frame, text="Site analysis", variable=self.do_site, command=self._sync
+        )
+        box.grid(row=row, column=0, columnspan=2, sticky="w")
+        Tooltip(
+            box,
+            "Fetches the neighbourhood from NSW open data for the address below "
+            "and draws it into worksheets of the open project: the context "
+            "analysis, the site analysis and the development summary, each with "
+            "a view at its sheet's scale. Needs the Loriini add-on beside Tapir, "
+            "and an internet connection. NSW addresses only.",
+        )
+        row += 1
+        self._caption(
+            frame,
+            row,
+            "Type the address, tick the sheets, press Run. A few minutes: the "
+            "public data services are slow and are asked for everything at once.",
+        )
+        row += 1
+        self.site_address, row = self._entry(
+            frame,
+            row,
+            "Address",
+            "",
+            'Street address of the site, e.g. "26-30 Campsie St, Campsie NSW 2194".',
+            "Looked up in the NSW address register, so the spelling can be "
+            "loose but the suburb has to be right: a number that exists in "
+            "another suburb is refused rather than drawn. A unit number is "
+            "taken as its building; a ranged number as every lot in the range.",
+        )
+
+        self.do_site_context = tk.BooleanVar(value=True)
+        self.do_site_site = tk.BooleanVar(value=True)
+        self.do_site_summary = tk.BooleanVar(value=True)
+        self.do_site_aerial = tk.BooleanVar(value=False)
+        for variable, label, detail in (
+            (
+                self.do_site_context,
+                "Context analysis",
+                "Land use wash by LEP zone, schools and hospitals coloured by what "
+                "they are, heritage items, rail, bus stops and routes, stations, "
+                "5 and 10 minute walking catchments, place and street names, "
+                "and the site -- the DA 003 sheet, at the scale below.",
+            ),
+            (
+                self.do_site_site,
+                "Site analysis",
+                "The boundary with its dimensions and corner levels, the fall, "
+                "contours, neighbours with storeys and zone, trees, poles, "
+                "hydrants, driveways, kerbside parking, one-way streets, noise "
+                "sources, sun path and prevailing winds -- the DA 004 sheet, "
+                "at whichever of 1:200 to 1:750 fits the site.",
+            ),
+            (
+                self.do_site_summary,
+                "Development summary",
+                "The planning-controls table: zone, height of building, FSR and "
+                "the gross floor area it allows, minimum lot size, heritage, and "
+                "the ADG figures worked out for this site area. Council DCP rows "
+                "are ruled up empty; they are not open data.",
+            ),
+            (
+                self.do_site_aerial,
+                "Save the aerial photo",
+                "Also writes the NSW SIX orthophoto of each sheet's extent to the "
+                "run folder as JPEG tiles with world files on the MGA grid. Not "
+                "drawn: Archicad's API cannot place a picture, so it is there to "
+                "place by hand with File > External Content.",
+            ),
+        ):
+            tick = ttk.Checkbutton(frame, text=label, variable=variable, command=self._sync)
+            tick.grid(row=row, column=0, columnspan=2, sticky="w", padx=(18, 0))
+            Tooltip(tick, detail)
+            row += 1
+        self.site_ticks = [
+            self.do_site_context,
+            self.do_site_site,
+            self.do_site_summary,
+            self.do_site_aerial,
+        ]
+
+        self.site_scale, row = self._entry(
+            frame,
+            row,
+            "Context scale",
+            "3000",
+            "Denominator of the context sheet's scale. 1:3000 on the office's A1 sheets.",
+            "Sets how much neighbourhood is fetched: the A1 map field at this "
+            "scale, centred on the site. 1:2000 for a tight urban site, 1:4000 "
+            "where the station is a long way off. The site sheet ignores this "
+            "and picks the scale its boundary fits at.",
+        )
+        self.site_anchor, row = self._combo(
+            frame,
+            row,
+            "Site lands at",
+            "Where the site goes in the project's frame.",
+            "'Project location' trusts Options > Project Preferences > Project "
+            "Location: the site is placed where the project's own georeferencing "
+            "says it is, turned to the project's north, so it lines up with a "
+            "model that is already there. 'Project origin' puts the site's centre "
+            "at (0, 0) -- for a project that has nothing in it yet, or whose "
+            "location is still the Sydney preset.",
+        )
+        self.site_anchor.config(values=("Project location", "Project origin"), state="readonly")
+        self.site_anchor.set("Project location")
+        self.site_out, row = self._folder_row(
+            frame,
+            row,
+            "Run folder",
+            "Where what was fetched is saved. Blank is Documents\\Loriini\\site-analysis.",
+            "Every run writes the data it fetched as JSON here, and the aerial "
+            "if asked for. A saved run can be redrawn without the internet: "
+            "sun-study site-analysis --from <this folder>.",
+        )
+
     def _folder_row(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
     ) -> tuple[ttk.Entry, int]:
@@ -1677,6 +1808,7 @@ class Window:
             (COMMUNAL_JOB, self.do_communal, self.DIAGRAMS),
             (SHADOW_JOB, self.do_shadows, self.SHADOWS),
             (SUN_EYE_JOB, self.do_sun_eyes, self.EYE),
+            (SITE_JOB, self.do_site, self.SITE),
         ]
 
     def _open_section(self) -> str:
@@ -1789,6 +1921,10 @@ class Window:
             "eye_per_sheet": self.eye_per_sheet,
             "eye_title_block": self.eye_title_block,
             "eye_hours": self.eye_hours,
+            "site_address": self.site_address,
+            "site_scale": self.site_scale,
+            "site_anchor": self.site_anchor,
+            "site_out": self.site_out,
             "adg_subset": self.adg_subset,
             "layer_prefix": self.prefix,
             "archicad_wait_minutes": self.wait_min,
@@ -1805,6 +1941,11 @@ class Window:
             "study_shadows": self.do_shadows,
             "study_sun_eyes": self.do_sun_eyes,
             "study_hourly": self.do_hourly,
+            "study_site": self.do_site,
+            "site_context": self.do_site_context,
+            "site_site": self.do_site_site,
+            "site_summary": self.do_site_summary,
+            "site_aerial": self.do_site_aerial,
         }
 
     #: The section that was showing, saved under its own name. It is neither
@@ -2387,6 +2528,24 @@ class Window:
             args += ["--year", self.year.get().strip() or "2024"]
             made.append(Job(SUN_EYE_JOB, args))
 
+        if self.do_site.get() and self.site_address.get().strip():
+            args = ["site-analysis", self.site_address.get().strip(), *common]
+            args += ["--context" if self.do_site_context.get() else "--no-context"]
+            args += ["--site" if self.do_site_site.get() else "--no-site"]
+            args += ["--summary" if self.do_site_summary.get() else "--no-summary"]
+            if self.do_site_aerial.get():
+                args += ["--aerial"]
+            if self.site_scale.get().strip():
+                args += ["--scale", self.site_scale.get().strip()]
+            # The combobox says it in words; the command takes a keyword.
+            args += [
+                "--anchor",
+                "site" if "origin" in self.site_anchor.get().lower() else "location",
+            ]
+            if self.site_out.get().strip():
+                args += ["--out", self.site_out.get().strip()]
+            made.append(Job(SITE_JOB, args))
+
         return made
 
     def _start(self) -> None:
@@ -2397,6 +2556,9 @@ class Window:
             return
         if self.options.tapir_missing:
             self._write("The Tapir add-on is not installed in this Archicad.")
+            return
+        if self.do_site.get() and not self.site_address.get().strip():
+            self._write("Site analysis is ticked but has no address. Type one in its section.")
             return
         queued = self.jobs()
         if not queued:

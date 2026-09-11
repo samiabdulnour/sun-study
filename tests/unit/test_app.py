@@ -1476,3 +1476,31 @@ def test_the_sun_eye_settings_survive_a_save(hidden_window: Any) -> None:
     saved = hidden_window.settings()
     assert saved["eye_scale"] == "200"
     assert saved["study_sun_eyes"] is True
+
+
+def test_the_site_analysis_runs_from_an_address_and_names_its_sheets(hidden_window: Any) -> None:
+    """The one study that reads nothing off the project: an address in, the
+    sheets ticked, and the anchor said in words on the page and as a keyword
+    on the command line."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_site.set(True)
+    hidden_window.site_address.insert(0, "26-30 Campsie St, Campsie NSW 2194")
+    hidden_window.do_site_summary.set(False)
+    hidden_window.site_anchor.set("Project origin")
+    (site,) = hidden_window.jobs()
+    assert site.label == window.SITE_JOB
+    assert site.args[:2] == ["site-analysis", "26-30 Campsie St, Campsie NSW 2194"]
+    assert "--context" in site.args and "--site" in site.args and "--no-summary" in site.args
+    assert flag(site.args, "--anchor") == ["site"]
+    assert flag(site.args, "--scale") == ["3000"]
+    assert flag(site.args, "--port") == ["19723"]
+    assert "--aerial" not in site.args
+
+
+def test_the_site_analysis_waits_for_an_address(hidden_window: Any) -> None:
+    """Ticked with nothing typed, there is no job: the address is the study."""
+    hidden_window.do_facade.set(False)
+    hidden_window.do_site.set(True)
+    assert hidden_window.jobs() == []
+    assert "study_site" in hidden_window.settings()
+    assert hidden_window.settings()["site_anchor"] == "Project location"

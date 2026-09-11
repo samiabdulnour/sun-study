@@ -150,6 +150,33 @@ add the folder in Options > Add-On Manager.
 [`docs/addon.md`](docs/addon.md) records what was verified, how the two missing
 commands were confirmed missing, and the one convention that is still open.
 
+## Site and context analysis
+
+The other end of a DA: the sheets an office draws before there is a building.
+Give it a NSW street address and it draws the **context analysis**, the **site
+analysis** and the **development summary** into worksheets of the open
+project, from open data -- NSW cadastre, ePlanning, topography and elevation,
+Transport for NSW, OpenStreetMap and Valhalla -- as native fills in the
+legend's own colours, polylines and texts, at true ground scale in the
+project's own frame, with a view of each at its sheet's scale.
+
+```bash
+uv run sun-study site-analysis "26-30 Campsie St, Campsie NSW 2194" --port 19723
+```
+
+Or the **Site analysis** tab of the window: an address, three ticks, Run. The
+fetched data is saved beside the run so a sheet can be redrawn without the
+internet (`--from <folder>`), and `--anchor site` puts the site at the project
+origin for a project whose location is not set yet. Needs the Loriini add-on:
+a worksheet can only be drawn into in the session that made it through the
+add-on's own command.
+
+Ported from the office's own `au-site-analysis` generator, endpoint for
+endpoint, so the two agree about where every line comes from. **Not yet run
+against a live Archicad**; [`docs/site-analysis.md`](docs/site-analysis.md)
+lists what to check first, and what comes next: a massing of the neighbours
+from the building footprints the site bundle already carries.
+
 ## Rules are data
 
 Thresholds live in [`src/sun_study/rules/rulesets/nsw_adg.yaml`](src/sun_study/rules/rulesets/nsw_adg.yaml)
