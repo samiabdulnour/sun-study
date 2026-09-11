@@ -246,6 +246,31 @@ def _on_the_floor_plan(connection: ArchicadConnection) -> None:
         )
 
 
+def _datum_storey(connection: ArchicadConnection) -> tuple[int, float]:
+    """The storey nearest level zero, and its level: ``(index, level)``.
+
+    Absolute heights go in relative to it. ``(0, 0.0)`` when the storeys
+    cannot be read, which is right for a project whose first storey is the
+    datum, as the office's are.
+    """
+    try:
+        response = connection.run_tapir("GetStories", {})
+    except ArchicadError:
+        return 0, 0.0
+    stories = response.get("stories") if isinstance(response, dict) else None
+    best: tuple[int, float] | None = None
+    for story in stories if isinstance(stories, list) else []:
+        if not isinstance(story, dict):
+            continue
+        try:
+            index, level = int(story["index"]), float(story.get("level", 0.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if best is None or abs(level) < abs(best[1]):
+            best = (index, level)
+    return best or (0, 0.0)
+
+
 def _terrain(
     connection: ArchicadConnection,
     bundle: SiteBundle,
@@ -254,14 +279,19 @@ def _terrain(
     layer_index: int,
 ) -> list[dict[str, Any]]:
     """One Mesh: the extent at ground level, with every contour as a level line."""
+    # A mesh's levels are relative to its home storey, and the Mesh tool's
+    # default storey was 39 on the Kogarah study, which put the terrain a
+    # hundred metres in the air. Home it on the storey nearest level zero
+    # and give every point its height above that.
+    floor_index, floor_level = _datum_storey(connection)
     corners = _map_rectangle(bundle, frame)
-    outline = [{"x": x, "y": y, "z": _ground((x, y), contours)} for x, y in corners]
+    outline = [{"x": x, "y": y, "z": _ground((x, y), contours) - floor_level} for x, y in corners]
     sublines: list[dict[str, Any]] = []
     for elevation, points in contours:
         run: list[dict[str, float]] = []
         for x, y in points:
             if point_in_ring(x, y, corners):
-                run.append({"x": x, "y": y, "z": elevation})
+                run.append({"x": x, "y": y, "z": elevation - floor_level})
             elif len(run) >= 2:
                 sublines.append({"coordinates": run})
                 run = []
@@ -282,6 +312,7 @@ def _terrain(
                 "skirt": "solid",
                 "skirtLevel": lowest - SKIRT_M,
                 "layerIndex": layer_index,
+                "floorIndex": floor_index,
                 "elementId": "SA TERRAIN",
             },
         )

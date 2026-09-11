@@ -730,6 +730,7 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
             "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
             "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
             "GetElementsByType": {"elements": []},
+            "GetStories": {"stories": [{"index": 0, "level": 0.0}, {"index": 5, "level": 4.6}]},
             "SetPropertyValuesOfElements": {"executionResults": [{"success": True}]},
             "GetAllProperties": {"properties": []},
             "GetPropertyValuesOfElements": {"propertyValuesForElements": []},
@@ -742,6 +743,7 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
     assert all("z" in p for p in mesh["outline"])
     assert mesh["layerIndex"] == 9 and mesh["elementId"] == "SA TERRAIN"
     assert len(mesh["levelLines"]) == 2, "both contours lie inside the extent"
+    assert mesh["floorIndex"] == 0, "homed on the storey at level zero"
     slabs = transport_.parameters_for("CreateSlabs")["slabsData"]
     # The one footprint in the fixture sits 30 m east of the site, two storeys
     # by OSM, standing on the ground the contours give.
