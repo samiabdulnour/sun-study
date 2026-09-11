@@ -154,14 +154,14 @@ commands were confirmed missing, and the one convention that is still open.
 
 The other end of a DA: the sheets an office draws before there is a building.
 Give it a NSW street address and it draws the **context analysis**, the **site
-analysis** and the **development summary** into worksheets of the open
+analysis** and the **summary of controls** into worksheets of the open
 project, from open data -- NSW cadastre, ePlanning, topography and elevation,
 Transport for NSW, OpenStreetMap and Valhalla -- as native fills in the
 legend's own colours, polylines and texts, at true ground scale in the
 project's own frame, with a view of each at its sheet's scale.
 
 ```bash
-uv run sun-study site-analysis "26-30 Campsie St, Campsie NSW 2194" --port 19723
+uv run sun-study site "26-30 Campsie St, Campsie NSW 2194" --port 19723
 ```
 
 Or the **Site analysis** tab of the window: an address, three ticks, Run. The

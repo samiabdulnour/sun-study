@@ -2,7 +2,7 @@
 
 Give it a NSW street address; it draws the three sheets an office prepares
 when a DA starts -- the **context analysis**, the **site analysis** and the
-**development summary** -- into worksheets of the open Archicad project, as
+**summary of controls** -- into worksheets of the open Archicad project, as
 native fills, polylines and texts, from open data. No site visit, no
 screenshots, nothing traced.
 
@@ -22,8 +22,8 @@ be found, switched off or purged as a group.
 |---|---|
 | `14 \| Context Analysis` worksheet | LEP zoning wash coloured by the office's categories; schools, hospitals, child care and retail coloured by what they are and labelled by name; heritage items; the rail corridor; cadastre; roads with names on a double-headed arrow (a lane gets a plain label); railway, tram and bus routes; `T`, `L` and `B` roundels for stations and stops; 5 and 10 minute walking catchments; the site on top; a legend of what is on the map |
 | `14 \| Site Analysis` worksheet | the boundary with a circle at each survey corner, `SB` dimensions per edge and `RL` levels per corner from the 1 m contours; the fall arrow, `FALL` and `AREA`; contours with their levels; neighbours as number, storeys and zone; trees, poles, lamps, hydrants; driveways as access triangles; kerbside parking bands; one-way and lane arrows; noise zigzags along main roads and rail; utilities where OSM has them; OSM building footprints; the sun path with winter and summer discs; prevailing wind banners; a legend |
-| `14 \| Development Summary` worksheet | the planning-controls table: address, lots, cadastral area; LEP zone, height, FSR and the GFA it allows, minimum lot size, heritage; council DCP rows ruled up empty; the ADG figures worked for this site area |
-| `14 \| Context Analysis.*`, `14 \| Site Analysis.*`, `14 \| Development Summary.*` layers | one per data class, so a reader can switch off what they do not want |
+| `14 \| Summary of Controls` worksheet | the planning-controls table: address, lots, cadastral area; LEP zone, height, FSR and the GFA it allows, minimum lot size, heritage; council DCP rows ruled up empty; the ADG figures worked for this site area |
+| `14 \| Context Analysis.*`, `14 \| Site Analysis.*`, `14 \| Summary of Controls.*` layers | one per data class, so a reader can switch off what they do not want |
 | `14 \| Site Analysis` view folder | a view of each worksheet at its sheet's scale -- 1:3000 for the context sheet, whichever of 1:200 to 1:750 fits the site for the site sheet -- with a layer combination showing that drawing's layers |
 | `<run folder>/data/*.json` | everything fetched, so the sheets can be redrawn without the internet, or into another project |
 
@@ -38,7 +38,7 @@ From the window: the **Site analysis** tab, an address, the three sheets
 ticked, Run. From the command line:
 
 ```
-sun-study site-analysis "26-30 Campsie St, Campsie NSW 2194" --port 19723
+sun-study site "26-30 Campsie St, Campsie NSW 2194" --port 19723
 ```
 
 Options worth knowing:
@@ -97,7 +97,7 @@ studies read them:
 2. the project origin's own grid position is subtracted, so the origin is at
    `(0, 0)`;
 3. the result is turned so true north sits where the project's north angle
-   says it does -- the same turn the sun eye views make in the other
+   says it does -- the same turn the sun views make in the other
    direction, checked against the same hand-worked figure in the tests.
 
 So a site drawn into a project that is already georeferenced lands under the
@@ -190,7 +190,7 @@ No Overrides.
 ## The context model
 
 `--model` (the **3D model** tick in the window) builds the neighbourhood the
-shadow diagrams and sun eye views cast against, in the floor plan, every
+shadow diagrams and sun views cast against, in the floor plan, every
 element on the `LORIINI` layer with an `SA ...` element ID:
 
 - **Terrain**: one mesh from the 2 m contours, through the add-on's own

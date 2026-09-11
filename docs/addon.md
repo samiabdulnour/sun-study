@@ -279,7 +279,7 @@ in an attribute header, and `ACAPI_Attribute_Modify` sets them without
 recreating the layer. Only the bits the caller names are touched, which the
 overwrite approach could not manage.
 
-## What the office's own sun eye views are already set to
+## What the office's own sun views are already set to
 
 Read off a live project that has the whole workflow built by hand: nine saved
 Axonometry views named `JUNE 21 - 9AM` through `DECEMBER 21 - 3PM`, and a 3D
@@ -403,11 +403,11 @@ carries its own projection *and* its own sun date, and every other setting on
 it is Tapir's to write.
 
 **A 3D Document keeps it too.** `CreateDocumentFrom3D` for 12:00, once out of
-the undo scope, made a document that opened as a noon sun eye view, confirmed
+the undo scope, made a document that opened as a noon sun view, confirmed
 by eye. It appears in the Project Map like any other, and a view of it takes
 the same settings as the office's own.
 
-**The settings a sun eye view wants** are not the shadow diagrams'. Read off
+**The settings a sun view wants** are not the shadow diagrams'. Read off
 the office's Solar Penetration Diagrams, and corrected by the practice:
 
 | | |
