@@ -154,8 +154,8 @@ commands were confirmed missing, and the one convention that is still open.
 
 The other end of a DA: the sheets an office draws before there is a building.
 Give it a NSW street address and it draws the **context analysis**, the **site
-analysis** and the **summary of controls** into worksheets of the open
-project, from open data -- NSW cadastre, ePlanning, topography and elevation,
+analysis** into worksheets and the **summary of controls** onto a layout of
+the open project, from open data -- NSW cadastre, ePlanning, topography and elevation,
 Transport for NSW, OpenStreetMap and Valhalla -- as native fills in the
 legend's own colours, polylines and texts, at true ground scale in the
 project's own frame, with a view of each at its sheet's scale.
@@ -164,7 +164,7 @@ project's own frame, with a view of each at its sheet's scale.
 uv run sun-study site "26-30 Campsie St, Campsie NSW 2194" --port 19723
 ```
 
-Or the **Site analysis** tab of the window: an address, three ticks, Run. The
+Or the **Site tools** tab of the window: an address, four ticks, Run. The
 fetched data is saved beside the run so a sheet can be redrawn without the
 internet (`--from <folder>`), and `--anchor site` puts the site at the project
 origin for a project whose location is not set yet. Needs the Loriini add-on:

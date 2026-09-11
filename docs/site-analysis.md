@@ -1,10 +1,13 @@
 # Site and context analysis
 
-Give it a NSW street address; it draws the three sheets an office prepares
-when a DA starts -- the **context analysis**, the **site analysis** and the
-**summary of controls** -- into worksheets of the open Archicad project, as
-native fills, polylines and texts, from open data. No site visit, no
-screenshots, nothing traced.
+Give it a NSW street address; it makes what an office prepares when a DA
+starts -- the **Context Analysis** and **Site Analysis** sheets as worksheets
+with views and layouts, the **Summary of Controls** straight onto a layout,
+and the **Context Model** in 3D -- in the open Archicad project, as native
+fills, polylines, texts, meshes and slabs, from open data. No site visit, no
+screenshots, nothing traced. These are the **Site tools**; the **Solar tools**
+(solar analysis, shadow diagram, sun views) are the other half of the program,
+see `docs/restructure.md`.
 
 Ported from the office's `au-site-analysis` generator, endpoint for endpoint
 and rule for rule, so the two agree about where every line comes from. That
@@ -22,8 +25,8 @@ be found, switched off or purged as a group.
 |---|---|
 | `14 \| Context Analysis` worksheet | LEP zoning wash coloured by the office's categories; schools, hospitals, child care and retail coloured by what they are and labelled by name; heritage items; the rail corridor; cadastre; roads with names on a double-headed arrow (a lane gets a plain label); railway, tram and bus routes; `T`, `L` and `B` roundels for stations and stops; 5 and 10 minute walking catchments; the site on top; a legend of what is on the map |
 | `14 \| Site Analysis` worksheet | the boundary with a circle at each survey corner, `SB` dimensions per edge and `RL` levels per corner from the 1 m contours; the fall arrow, `FALL` and `AREA`; contours with their levels; neighbours as number, storeys and zone; trees, poles, lamps, hydrants; driveways as access triangles; kerbside parking bands; one-way and lane arrows; noise zigzags along main roads and rail; utilities where OSM has them; OSM building footprints; the sun path with winter and summer discs; prevailing wind banners; a legend |
-| `14 \| Summary of Controls` worksheet | the planning-controls table: address, lots, cadastral area; LEP zone, height, FSR and the GFA it allows, minimum lot size, heritage; council DCP rows ruled up empty; the ADG figures worked for this site area |
-| `14 \| Context Analysis.*`, `14 \| Site Analysis.*`, `14 \| Summary of Controls.*` layers | one per data class, so a reader can switch off what they do not want |
+| `14 \| Summary of Controls` **layout** | the planning-controls table, drawn straight onto a sheet of its own on the A1 master: address, lots, cadastral area; LEP zone, height, FSR and the GFA it allows, minimum lot size, heritage; council DCP rows ruled up empty; the ADG figures worked for this site area. No worksheet, no view, no layer of its own |
+| `14 \| Context Analysis.*`, `14 \| Site Analysis.*` layers | five per sheet (aerial, fills, lines, labels, sheet), every fill with an element ID naming its legend entry |
 | `14 \| Site Analysis` view folder | a view of each worksheet at its sheet's scale -- 1:3000 for the context sheet, whichever of 1:200 to 1:750 fits the site for the site sheet -- with a layer combination showing that drawing's layers |
 | `<run folder>/data/*.json` | everything fetched, so the sheets can be redrawn without the internet, or into another project |
 

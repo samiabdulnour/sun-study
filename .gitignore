@@ -70,3 +70,6 @@ build/
 
 # The API Development Kit and the add-on build, both fetched or generated.
 archicad-addon/Build/
+
+# The one spec that builds Loriini.exe is tracked; PyInstaller scratch specs are not.
+!Loriini.spec

@@ -2667,3 +2667,51 @@ the model's square) is a mesh 150 mm above the terrain, and the roads are
 the terrain between them. Same picture, no holes, no boolean. 119 blocks
 at Kogarah in a minute and a half, three drawn lot by lot where the
 dissolve found three edges at a point.
+
+### D87 — The summary of controls is drawn on a layout; a session-made layout can be entered
+
+Measured 11 September 2026 while looking for a way round D84 for the
+third sheet. Loriini's `SetCurrentDatabase` with `windowType: Layout`
+enters a layout made moments earlier by `CreateLayout` -- the one thing a
+worksheet refuses -- and `CreateTexts`, `CreatePolylines` and
+`CreateFills` then draw into it. A layout element will not take an
+element ID; nothing else differs. Layout coordinates are metres, upward
+from the bottom-left (`docs/addon.md`).
+
+A table is paper, not model: it has no scale to keep and nothing to sit
+over. So the Summary of Controls skips the worksheet, the view, the
+drawing and the five layers, and goes on its sheet as 31 rules and 54
+texts hung 15 mm inside the usable corner of the A1 master. Half a second
+against thirty for the same table through a worksheet, and nobody has to
+open anything.
+
+One rule came out of it: **never delete the layout that is the current
+database**. The second run of the summary did, to remake the sheet, and
+Archicad went away mid-call (its recovery dialog blamed memory). The
+layout is left for the floor plan first; unlike a worksheet it can be
+entered again after.
+
+### D88 — One program, two toolsets
+
+Asked 11 September 2026: "we need to restructure the whole selection
+program ... 2 different toolsets ... unite them under one add-on program".
+`docs/restructure.md` is the plan; this records what changed and why.
+
+The window had six tabs, one per output, and the same question in three
+of them. It has three: General (what every sheet needs), Site tools (an
+address and four outputs) and Solar tools (four tabs of its own: the model
+the three solar tools export, then a tool each). The title-block width
+moved from the sun views' tab to General, because every tool places a
+sheet; the export layer state moved from General to Solar tools, because
+only the solar tools export. The words follow the plan -- Context
+Analysis, Site Analysis, Summary of Controls, Context Model; Solar
+Analysis, Shadow Diagram, Sun Views -- in the window, the commands
+(`site`, `sun-views`, the old names hidden), the Archicad navigator and
+the docs. The product is Loriini; the property group stays `Sun Study`
+(D-something earlier: renaming it orphans written values).
+
+The neighbours go through the add-on's own `CreateSlabs` -- layer, storey
+and ID with the outline, holes allowed -- in one pass where Tapir needed
+three; 480 slabs in 19 s against 100. `CreateMesh` takes holes now too.
+And the IFC reader loads on first use instead of with every command and
+the window: 0.2 s to start rather than the geometry kernel's several.
