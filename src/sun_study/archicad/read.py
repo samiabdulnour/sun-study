@@ -42,8 +42,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-import ifcopenshell.guid
-
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError, CommandFailedError
 from sun_study.core.orientation import SiteOrientation
 from sun_study.ingest.ifc import IfcModel
@@ -700,6 +698,10 @@ def expanded_ifc_guid(ifc_id: str) -> str | None:
     if len(ifc_id) != 22:
         return None
     try:
+        # Imported here: the package loads its geometry kernel on import,
+        # and a GUID expansion does not need one.
+        import ifcopenshell.guid
+
         expanded = ifcopenshell.guid.expand(ifc_id)
     except Exception:  # a malformed identifier is simply not one
         return None

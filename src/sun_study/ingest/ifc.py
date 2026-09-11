@@ -31,19 +31,36 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import ifcopenshell
-import ifcopenshell.geom
-import ifcopenshell.util.element
-import ifcopenshell.util.geolocation
-import ifcopenshell.util.shape
-import ifcopenshell.util.unit
 import numpy as np
 import numpy.typing as npt
 
+if TYPE_CHECKING:
+    import ifcopenshell
+
+
 from sun_study.core.geometry import TriangleMesh
 from sun_study.core.orientation import SiteOrientation
+
+
+def _ios() -> Any:
+    """``ifcopenshell``, imported on first use rather than with this module.
+
+    The library is a 100 MB geometry kernel, and importing this module
+    used to load it for every command -- the site tools, the sun views, a
+    port scan -- and for the window, which never reads an IFC at all. Only
+    ``read_ifc`` and its helpers need it, so they ask here.
+    """
+    import ifcopenshell
+    import ifcopenshell.geom
+    import ifcopenshell.util.element
+    import ifcopenshell.util.geolocation
+    import ifcopenshell.util.shape
+    import ifcopenshell.util.unit
+
+    return ifcopenshell
+
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -279,9 +296,7 @@ def _resolve_true_north(model: ifcopenshell.file) -> float:
                     f"IfcGeometricRepresentationContext TrueNorth has {len(ratios)} "
                     f"direction ratios; two are needed to define a bearing."
                 )
-            return float(
-                ifcopenshell.util.geolocation.yaxis2angle(float(ratios[0]), float(ratios[1]))
-            )
+            return float(_ios().util.geolocation.yaxis2angle(float(ratios[0]), float(ratios[1])))
 
     raise GeoreferencingError(
         "No TrueNorth on any IfcGeometricRepresentationContext. Set the North "
@@ -340,8 +355,8 @@ def _resolve_location(model: ifcopenshell.file, unit_scale: float) -> tuple[floa
         )
 
     site = located[0]
-    latitude = ifcopenshell.util.geolocation.dms2dd(*site.RefLatitude)
-    longitude = ifcopenshell.util.geolocation.dms2dd(*site.RefLongitude)
+    latitude = _ios().util.geolocation.dms2dd(*site.RefLatitude)
+    longitude = _ios().util.geolocation.dms2dd(*site.RefLongitude)
 
     # RefElevation is an IfcLengthMeasure, so it is in project units and needs
     # the scale that geometry has already had applied to it.
@@ -350,7 +365,7 @@ def _resolve_location(model: ifcopenshell.file, unit_scale: float) -> tuple[floa
 
 
 def _storey_name(product: Any) -> str | None:
-    container = ifcopenshell.util.element.get_container(product)
+    container = _ios().util.element.get_container(product)
     if container is None:
         return None
     name = getattr(container, "Name", None)
@@ -361,7 +376,7 @@ def _iterate_shapes(
     model: ifcopenshell.file, include: Sequence[str] | None
 ) -> Iterator[tuple[Any, TriangleMesh]]:
     """Triangulated geometry per product, in world coordinates and metres."""
-    settings = ifcopenshell.geom.settings()
+    settings = _ios().geom.settings()
     # World coordinates: placements are baked into the vertices, so downstream
     # code never has to walk an IfcLocalPlacement chain.
     settings.set("use-world-coords", True)
@@ -369,18 +384,14 @@ def _iterate_shapes(
     # would return project units and silently break every distance.
     settings.set("convert-back-units", False)
 
-    iterator = ifcopenshell.geom.iterator(
-        settings, model, 1, include=list(include) if include else None
-    )
+    iterator = _ios().geom.iterator(settings, model, 1, include=list(include) if include else None)
     if not iterator.initialize():
         return
 
     while True:
         shape = iterator.get()
-        vertices = np.asarray(
-            ifcopenshell.util.shape.get_vertices(shape.geometry), dtype=np.float64
-        )
-        faces = np.asarray(ifcopenshell.util.shape.get_faces(shape.geometry), dtype=np.int64)
+        vertices = np.asarray(_ios().util.shape.get_vertices(shape.geometry), dtype=np.float64)
+        faces = np.asarray(_ios().util.shape.get_faces(shape.geometry), dtype=np.int64)
         if len(faces):
             yield model.by_guid(shape.guid), TriangleMesh(vertices, faces)
         if not iterator.next():
@@ -458,8 +469,8 @@ def read_ifc(path: str | Path, *, include: Sequence[str] | None = None) -> IfcMo
     if not path.is_file():
         raise FileNotFoundError(f"No IFC file at {path}")
 
-    model = ifcopenshell.open(str(path))
-    unit_scale = float(ifcopenshell.util.unit.calculate_unit_scale(model))
+    model = _ios().open(str(path))
+    unit_scale = float(_ios().util.unit.calculate_unit_scale(model))
 
     bearing = _resolve_true_north(model)
     latitude, longitude, elevation = _resolve_location(model, unit_scale)
