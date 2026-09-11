@@ -426,7 +426,9 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
         {"red": 0xF7 / 255, "green": 0xC1 / 255, "blue": 0xBD / 255}
     )
     assert zone["fillIndex"] == 1
-    assert len(zone["contours"]) == 1 and len(zone["contours"][0]["points"]) == 5
+    assert len(zone["contours"]) == 1 and len(zone["contours"][0]["points"]) == 4, (
+        "no closing point"
+    )
 
     lines = [
         line
@@ -577,3 +579,23 @@ def test_texts_fall_back_to_tapir_and_a_move_when_the_add_on_is_older() -> None:
     calls = transport_.all_parameters_for("CreateTexts")
     assert "texts" in calls[0] and "textsData" in calls[1]
     assert calls[1]["textsData"][0]["coordinate"] == {"x": 1.0, "y": 2.0, "z": 0.0}
+
+
+def test_a_multipolygon_becomes_one_fill_per_part_with_its_own_holes() -> None:
+    """Esri hands every ring of a feature in one list. Two parts and a hole
+    in the first must not become one fill with two 'holes', which Archicad
+    refuses; the closing point is dropped, since the add-on adds its own."""
+    from sun_study.archicad.site_analysis import Drawing, _polygons
+
+    big = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0), (0.0, 0.0)]
+    hole = [(40.0, 40.0), (60.0, 40.0), (60.0, 60.0), (40.0, 60.0), (40.0, 40.0)]
+    other = [(200.0, 0.0), (250.0, 0.0), (250.0, 50.0), (200.0, 50.0), (200.0, 0.0)]
+    island = [(48.0, 48.0), (52.0, 48.0), (52.0, 52.0), (48.0, 52.0), (48.0, 48.0)]
+    polygons = _polygons([hole, other, big, island])
+    assert [(len(outer), len(holes)) for outer, holes in polygons] == [(4, 1), (4, 0), (4, 0)]
+    assert polygons[0][1][0][0] == (40.0, 40.0)
+
+    drawing = Drawing(3000.0, "Context Analysis")
+    drawing.fill("Zoning", [big, hole, other], "#f7c1bd")
+    assert len(drawing.fills) == 2
+    assert drawing.fills[0].rings[0][-1] != drawing.fills[0].rings[0][0]

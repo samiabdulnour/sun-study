@@ -206,6 +206,55 @@ def frame_for(
 # -- what gets drawn -----------------------------------------------------------
 
 
+def _clean_ring(ring: Sequence[Point]) -> list[Point]:
+    """The ring without its closing point or any repeated vertex.
+
+    The add-on appends the closing point itself, and a polygon handed to
+    Archicad with a zero-length edge is refused rather than repaired.
+    """
+    out: list[Point] = []
+    for point in ring:
+        if not out or math.hypot(point[0] - out[-1][0], point[1] - out[-1][1]) > 1e-6:
+            out.append((float(point[0]), float(point[1])))
+    if len(out) > 1 and math.hypot(out[0][0] - out[-1][0], out[0][1] - out[-1][1]) <= 1e-6:
+        out.pop()
+    return out
+
+
+def _polygons(rings: Sequence[Sequence[Point]]) -> list[tuple[list[Point], list[list[Point]]]]:
+    """Sort a feature's rings into polygons: ``(outer, holes)`` each.
+
+    A cadastral or zoning feature arrives as every ring of a multipolygon in
+    one list, outers and holes together, and a fill given a "hole" that lies
+    outside its outer contour is refused (``APIERR_CANCEL`` on the Kogarah
+    run, for the first zoning polygon with two parts). So the rings are
+    placed by containment, largest first: a ring inside an outer is that
+    outer's hole, unless it sits inside one of its holes already, in which
+    case it is an island and an outer of its own.
+    """
+    cleaned = [
+        ring
+        for ring in (_clean_ring(r) for r in rings)
+        if len(ring) >= 3 and abs(ring_area(ring)) > 1e-4
+    ]
+    cleaned.sort(key=lambda ring: -abs(ring_area(ring)))
+    polygons: list[tuple[list[Point], list[list[Point]]]] = []
+    for ring in cleaned:
+        probe = ring_centroid(ring) if point_in_ring(*ring_centroid(ring), ring) else ring[0]
+        placed = False
+        for outer, holes in polygons:
+            if not point_in_ring(probe[0], probe[1], outer):
+                continue
+            if any(point_in_ring(probe[0], probe[1], hole) for hole in holes):
+                continue
+            holes.append(ring)
+            placed = True
+            break
+        if not placed:
+            polygons.append((ring, []))
+    return polygons
+
+
 @dataclass
 class Fill:
     layer: str
@@ -264,9 +313,8 @@ class Drawing:
         contour: str | None = None,
         element_id: str = "",
     ) -> None:
-        kept = [list(ring) for ring in rings if len(ring) >= 3]
-        if kept:
-            self.fills.append(Fill(self.layer(part), kept, colour, contour, element_id))
+        for outer, holes in _polygons(rings):
+            self.fills.append(Fill(self.layer(part), [outer, *holes], colour, contour, element_id))
 
     def line(
         self,
@@ -1904,10 +1952,10 @@ def _texts(
 
 def _flush(
     connection: ArchicadConnection, drawing: Drawing, attributes: _Attributes
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int]:
     """Create every element of the drawing in the current database.
 
-    Returns ``(fills, lines, texts, texts on their layer)``.
+    Returns ``(fills, lines, texts, texts on their layer, fills refused)``.
     """
     indices = {name: ensure_layer(connection, name).index for name in drawing.layers}
 
@@ -1930,8 +1978,19 @@ def _flush(
         if fill.element_id:
             data["elementId"] = fill.element_id[:255]
         fills.append(data)
+    refused = 0
     for batch in _batched(fills, 300):
-        _created(connection.run_loriini("CreateFills", {"fills": batch}), "CreateFills")
+        try:
+            _created(connection.run_loriini("CreateFills", {"fills": batch}), "CreateFills")
+        except ArchicadError:
+            # The whole batch rolls back on one refusal, so it goes again one
+            # fill at a time and the refused ones are counted rather than
+            # costing the sheet.
+            for one in batch:
+                try:
+                    _created(connection.run_loriini("CreateFills", {"fills": [one]}), "CreateFills")
+                except ArchicadError:
+                    refused += 1
 
     lines: list[dict[str, Any]] = []
     for line in drawing.lines:
@@ -1954,7 +2013,7 @@ def _flush(
 
     on_layer = _texts(connection, drawing.texts, indices, attributes)
 
-    return len(fills), len(lines), len(drawing.texts), on_layer
+    return len(fills) - refused, len(lines), len(drawing.texts), on_layer, refused
 
 
 def _view_of(connection: ArchicadConnection, navigator_id: str, name: str, drawing: Drawing) -> str:
@@ -1971,7 +2030,56 @@ def _view_of(connection: ArchicadConnection, navigator_id: str, name: str, drawi
         folder=naming.named(FOLDER_WORD),
         drawing_scale=drawing.scale,
     )
-    return views[0].name if views else ""
+    if not views:
+        return ""
+    # The sheet's own colours, not the project's: a graphic override
+    # combination in force on the window greys every 2D element, which is
+    # how the first live site sheet came out in one grey. And the office's
+    # pen table for these sheets, when it has one.
+    settings: dict[str, Any] = {"graphicOverrideCombination": NO_OVERRIDES}
+    pen_set = _site_pen_set(connection)
+    if pen_set:
+        settings["penSetName"] = pen_set
+    for attempt in (
+        settings,
+        {k: v for k, v in settings.items() if k != "graphicOverrideCombination"},
+    ):
+        if not attempt:
+            break
+        try:
+            connection.run_tapir(
+                "SetViewSettings",
+                {
+                    "navigatorItemIdsWithViewSettings": [
+                        {
+                            "navigatorItemId": {"guid": views[0].navigator_id},
+                            "viewSettings": attempt,
+                        }
+                    ]
+                },
+            )
+            break
+        except ArchicadError:
+            continue
+    return views[0].name
+
+
+#: Archicad's built-in graphic override combination that overrides nothing.
+NO_OVERRIDES = "No Overrides"
+
+
+def _site_pen_set(connection: ArchicadConnection) -> str | None:
+    """The pen table the office keeps for site analysis, if it has one."""
+    try:
+        response = connection.run_tapir("GetAttributesByType", {"attributeType": "PenTable"})
+    except ArchicadError:
+        return None
+    attributes = response.get("attributes") if isinstance(response, dict) else None
+    for attribute in attributes if isinstance(attributes, list) else []:
+        name = str((attribute or {}).get("name", "")) if isinstance(attribute, dict) else ""
+        if "site analysis" in name.casefold():
+            return name
+    return None
 
 
 def _draw(
@@ -2002,7 +2110,9 @@ def _draw(
             notes.append(
                 f"{left} elements from the last run could not be deleted and are still there."
             )
-    fills, lines, texts, on_layer = _flush(connection, drawing, attributes)
+    fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
+    if refused:
+        notes.append(f"Archicad refused {refused} fills; they are left out of the sheet.")
     view_name = ""
     if view:
         try:
