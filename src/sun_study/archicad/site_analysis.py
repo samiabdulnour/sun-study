@@ -102,8 +102,13 @@ FOLDER_WORD = "Site Analysis"
 # view, so these are what the sheet prints at whatever scale it is placed.
 TITLE_MM = 7.0
 LEGEND_MM = 3.2
-STREET_MM = 3.5
-LABEL_MM = 4.0
+STREET_MM = 4.0
+LABEL_MM = 5.0
+#: A stop or station roundel: radius, and the letter in it.
+ROUNDEL_MM = 4.0
+ROUNDEL_TEXT_MM = 4.5
+#: The white double-headed band a street name sits in.
+BAND_MM = 7.0
 SMALL_MM = 2.6
 NEIGHBOUR_MM = 3.0
 SUN_MM = 8.8
@@ -267,6 +272,10 @@ class Fill:
     wash: bool = False
     """A percentage fill with a clear background, so what is under it shows
     through -- the zoning over the aerial, as the office's sheets have it."""
+    hatch: bool = False
+    """A diagonal hatch with a clear background: the heritage items."""
+    weight_mm: float | None = None
+    """The contour's pen weight."""
 
 
 @dataclass
@@ -300,6 +309,7 @@ class Text:
     height_mm: float
     angle_rad: float = 0.0
     justification: str = "Center"
+    colour: str = INK
 
 
 @dataclass
@@ -333,10 +343,21 @@ class Drawing:
         contour: str | None = None,
         element_id: str = "",
         wash: bool = False,
+        hatch: bool = False,
+        weight_mm: float | None = None,
     ) -> None:
         for outer, holes in _polygons(rings):
             self.fills.append(
-                Fill(self.layer(part), [outer, *holes], colour, contour, element_id, wash)
+                Fill(
+                    self.layer(part),
+                    [outer, *holes],
+                    colour,
+                    contour,
+                    element_id,
+                    wash,
+                    hatch,
+                    weight_mm,
+                )
             )
 
     def figure(
@@ -380,9 +401,12 @@ class Drawing:
         height_mm: float,
         angle_rad: float = 0.0,
         justification: str = "Center",
+        colour: str = INK,
     ) -> None:
         if text:
-            self.texts.append(Text(self.layer(part), text, at, height_mm, angle_rad, justification))
+            self.texts.append(
+                Text(self.layer(part), text, at, height_mm, angle_rad, justification, colour)
+            )
 
     def circle(
         self,
@@ -394,6 +418,7 @@ class Drawing:
         fill: str | None = None,
         dashed: bool = False,
         segments: int = 24,
+        weight_mm: float | None = None,
     ) -> None:
         ring = [
             (
@@ -403,9 +428,9 @@ class Drawing:
             for i in range(segments)
         ]
         if fill is not None:
-            self.fill(part, [ring], fill, contour=colour)
+            self.fill(part, [ring], fill, contour=colour, weight_mm=weight_mm)
         else:
-            self.line(part, ring, colour=colour, dashed=dashed, closed=True)
+            self.line(part, ring, colour=colour, dashed=dashed, closed=True, weight_mm=weight_mm)
 
     @property
     def layers(self) -> list[str]:
@@ -467,7 +492,59 @@ class Placer:
 
 
 def _text_width_m(drawing: Drawing, text: str, height_mm: float) -> float:
-    return drawing.mm(len(text) * height_mm * 0.6)
+    longest = max((len(line) for line in text.split("\n")), default=0)
+    return drawing.mm(longest * height_mm * 0.6)
+
+
+def _text_height_m(drawing: Drawing, text: str, height_mm: float) -> float:
+    return drawing.mm(height_mm * 1.5) * max(1, text.count("\n") + 1)
+
+
+def _wrapped(label: str, width: int = 14) -> str:
+    """A place name on two or three lines, as the office sets it: ``ST GEORGE
+    / HOSPITAL`` rather than one long line across the parcel."""
+    words = label.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+
+def _roundel(drawing: Drawing, part: str, at: Point, letter: str, colour: str) -> None:
+    """A letter in a thin circle on white: the office's stop and station symbol."""
+    drawing.circle(part, at, drawing.mm(ROUNDEL_MM), colour=colour, fill="#ffffff", weight_mm=0.35)
+    drawing.text(part, letter, at, height_mm=ROUNDEL_TEXT_MM, colour=colour)
+
+
+def _band(
+    drawing: Drawing, part: str, centre: Point, angle: float, length_m: float, height_m: float
+) -> None:
+    """The white double-headed arrow a street name is set in."""
+    dx, dy = math.cos(angle), math.sin(angle)
+    nx, ny = -dy, dx
+    half, head, hh = length_m / 2, height_m * 0.9, height_m / 2
+    cx, cy = centre
+    tip_l = (cx - dx * half, cy - dy * half)
+    tip_r = (cx + dx * half, cy + dy * half)
+    body_l = (cx - dx * (half - head), cy - dy * (half - head))
+    body_r = (cx + dx * (half - head), cy + dy * (half - head))
+    ring = [
+        tip_l,
+        (body_l[0] + nx * hh, body_l[1] + ny * hh),
+        (body_r[0] + nx * hh, body_r[1] + ny * hh),
+        tip_r,
+        (body_r[0] - nx * hh, body_r[1] - ny * hh),
+        (body_l[0] - nx * hh, body_l[1] - ny * hh),
+    ]
+    drawing.fill(part, [ring], "#ffffff", contour="#555555", weight_mm=0.2)
 
 
 def _along(points: Sequence[Point]) -> float:
@@ -542,47 +619,26 @@ def _street_labels(
     for name, (length, points, hierarchy, lanes) in best.items():
         label = curate.short_street_name(name)
         width = _text_width_m(drawing, label, height_mm)
-        if length < width * 0.9:
+        banded = arrows and not curate.is_laneway(hierarchy, lanes, name)
+        band_length = width + drawing.mm(BAND_MM * 2.6)
+        if length < (band_length if banded else width) * 0.9:
             continue
         angle = _along(points)
         mx, my = _midpoint(points)
         spot = placer.place(
             mx,
             my,
-            width,
-            drawing.mm(height_mm * 1.6),
+            band_length if banded else width,
+            drawing.mm(BAND_MM if banded else height_mm * 1.5),
             step=drawing.mm(4),
             max_radius=drawing.mm(12),
             angle=angle,
         )
         if spot is None:
             continue
+        if banded:
+            _band(drawing, part, spot, angle, band_length, drawing.mm(BAND_MM))
         drawing.text(part, label, spot, height_mm=height_mm, angle_rad=angle)
-        if arrows and not curate.is_laneway(hierarchy, lanes, name):
-            half = min(length * 0.42, width / 2 + drawing.mm(10))
-            dx, dy = math.cos(angle), math.sin(angle)
-            below = drawing.mm(height_mm * 1.1)
-            cx, cy = spot[0] + dy * below, spot[1] - dx * below
-            a = (cx - dx * half, cy - dy * half)
-            b = (cx + dx * half, cy + dy * half)
-            head = drawing.mm(3)
-            drawing.line(part, [a, b], colour=INK)
-            for tip, sign in ((a, 1), (b, -1)):
-                drawing.line(
-                    part,
-                    [
-                        (
-                            tip[0] + sign * dx * head - dy * head * 0.6,
-                            tip[1] + sign * dy * head + dx * head * 0.6,
-                        ),
-                        tip,
-                        (
-                            tip[0] + sign * dx * head + dy * head * 0.6,
-                            tip[1] + sign * dy * head - dx * head * 0.6,
-                        ),
-                    ],
-                    colour=INK,
-                )
 
 
 def _legend(
@@ -713,6 +769,12 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
     # The photo under everything; over it the zoning is a wash rather than a
     # coat, as on the office's sheets, so the streets stay visible through it.
     wash = _aerial(drawing, bundle, frame)
+    if wash:
+        # Washed back with white, as the office's sheets have it, so the
+        # overlays read and the photo stays a ground rather than a picture.
+        drawing.fill(
+            "Aerial", [_map_rectangle(bundle, frame)], "#ffffff", contour="#ffffff", wash=True
+        )
 
     # Zoning first, so everything else sits over it.
     for feature in bundle.zoning["features"]:
@@ -757,22 +819,26 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
         rings = [frame.ring(r) for r in rings_of(feature.get("geometry"))]
         if rings:
             present["heritage"] = heritage
-            drawing.fill("Heritage", rings, heritage.fill, contour="#a97b3f")
+            drawing.fill(
+                "Heritage", rings, "#a97b3f", contour="#a97b3f", hatch=True, weight_mm=0.25
+            )
 
     for feature in bundle.all_lots["features"]:
         for ring in rings_of(feature.get("geometry")):
-            drawing.line("Cadastre", frame.ring(ring), colour=CADASTRE_GREY, closed=True)
+            drawing.line(
+                "Cadastre", frame.ring(ring), colour=CADASTRE_GREY, closed=True, weight_mm=0.13
+            )
 
     for road in bundle.roads:
-        drawing.line("Roads", frame.ring(road.coords), colour=ROAD_GREY)
+        drawing.line("Roads", frame.ring(road.coords), colour=ROAD_GREY, weight_mm=0.18)
     for line in bundle.rail_lines.train:
         drawing.line("Railway", frame.ring(line), colour=RAIL_BLACK, weight_mm=0.5)
     for line in bundle.rail_lines.tram:
         drawing.line("Railway", frame.ring(line), colour=TRAM_PINK, dashed=True, weight_mm=0.5)
     for line in bundle.bus.routes:
-        drawing.line("Bus routes", frame.ring(line), colour=BUS_BLUE, dashed=True)
+        drawing.line("Bus routes", frame.ring(line), colour=BUS_BLUE, dashed=True, weight_mm=0.3)
     for line in bundle.bus.tram_routes:
-        drawing.line("Bus routes", frame.ring(line), colour=TRAM_PINK, dashed=True)
+        drawing.line("Bus routes", frame.ring(line), colour=TRAM_PINK, dashed=True, weight_mm=0.3)
 
     catchments = {5: ("400m (5-MIN WALK)", WALK_5), 10: ("800m (10-MIN WALK)", WALK_10)}
     for isochrone in bundle.isochrones:
@@ -789,33 +855,26 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
                 "Walking catchment", label, (top[0], top[1] + drawing.mm(3)), height_mm=STREET_MM
             )
 
-    # Stops and stations: a letter in a circle, the office's own symbol.
-    radius = drawing.mm(4)
+    # Stops and stations: a letter in a thin circle, the office's own symbol.
+    radius = drawing.mm(ROUNDEL_MM)
     for stop in bundle.bus.stops:
         at = frame.project(stop.lon, stop.lat)
-        drawing.circle("Bus stops", at, radius, colour=BUS_BLUE, fill="#ffffff")
-        drawing.text("Bus stops", "B", (at[0], at[1] - drawing.mm(1.6)), height_mm=LABEL_MM)
+        _roundel(drawing, "Bus stops", at, "B", BUS_BLUE)
         placer.reserve(at[0], at[1], radius * 2, radius * 2)
     for stop in bundle.bus.tram_stops:
         at = frame.project(stop.lon, stop.lat)
-        drawing.circle("Stations", at, radius, colour=TRAM_PINK, fill="#ffffff")
-        drawing.text("Stations", "L", (at[0], at[1] - drawing.mm(1.6)), height_mm=LABEL_MM)
+        _roundel(drawing, "Stations", at, "L", TRAM_PINK)
     for station in bundle.stations:
         at = frame.project(station.lon, station.lat)
         tram = "LIGHT RAIL" in station.name.upper() or "TRAM" in station.name.upper()
-        drawing.circle(
-            "Stations", at, radius, colour=TRAM_PINK if tram else SITE_RED, fill="#ffffff"
-        )
-        drawing.text(
-            "Stations", "L" if tram else "T", (at[0], at[1] - drawing.mm(1.6)), height_mm=LABEL_MM
-        )
+        _roundel(drawing, "Stations", at, "L" if tram else "T", TRAM_PINK if tram else SITE_RED)
         placer.reserve(at[0], at[1], radius * 2, radius * 2)
-        name = station.name.upper()
+        name = _wrapped(station.name.upper())
         spot = placer.place(
             at[0],
             at[1] + drawing.mm(10),
             _text_width_m(drawing, name, LABEL_MM),
-            drawing.mm(LABEL_MM * 1.5),
+            _text_height_m(drawing, name, LABEL_MM),
             step=drawing.mm(4),
             max_radius=drawing.mm(20),
         )
@@ -837,16 +896,17 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
         if label in seen:
             continue
         seen.add(label)
+        text = _wrapped(label)
         spot = placer.place(
             at[0],
             at[1],
-            _text_width_m(drawing, label, LABEL_MM),
-            drawing.mm(LABEL_MM * 1.5),
+            _text_width_m(drawing, text, LABEL_MM),
+            _text_height_m(drawing, text, LABEL_MM),
             step=drawing.mm(4),
             max_radius=drawing.mm(16),
         )
         if spot:
-            drawing.text("Labels", label, spot, height_mm=LABEL_MM)
+            drawing.text("Labels", text, spot, height_mm=LABEL_MM)
 
     _street_labels(
         drawing, frame, bundle.roads, placer, part="Road names", height_mm=STREET_MM, arrows=True
@@ -857,10 +917,10 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
     for feature in bundle.site_lots["features"]:
         for ring in rings_of(feature.get("geometry")):
             points = frame.ring(ring)
+            # A red wash with a heavy dashed edge, and no word on it: the
+            # legend says what red is.
+            drawing.fill("Site", [points], site.fill, contour=SITE_RED, wash=True)
             drawing.line("Site", points, colour=SITE_RED, dashed=True, weight_mm=0.9, closed=True)
-    if bundle.site_lots["features"]:
-        centre = frame.project(*bundle.centre_lonlat)
-        drawing.text("Site", "SITE", centre, height_mm=LABEL_MM)
 
     legend_at = _furniture_of_sheet(drawing, bundle, frame, title="CONTEXT ANALYSIS")
     rows: list[tuple[str, str, str | None, str]] = [
@@ -1689,6 +1749,8 @@ class _Attributes:
     pens: tuple[Pen, ...]
     wash_fill: int | None = None
     """A percentage fill, for a wash the photo shows through."""
+    hatch_fill: int | None = None
+    """A diagonal hatch, for the heritage items."""
 
     def pen(self, colour: str) -> int | None:
         if not self.pens:
@@ -1734,6 +1796,9 @@ def _attributes(connection: ArchicadConnection) -> _Attributes:
         dashed=_attribute_index(connection, "Line", ("Dashed", "Dashed Line", "Dash")),
         wash_fill=_attribute_index(
             connection, "Fill", ("50%", "50 %", "Percent 50", "Percentage 50")
+        ),
+        hatch_fill=_attribute_index(
+            connection, "Fill", ("Grid Diagonal", "Hatch 45", "Diagonal", "45 Hatch", "Hatch")
         ),
         pens=pens,
     )
@@ -1934,9 +1999,9 @@ def _texts(
     add-on too old to have it.
     """
     on_layer = 0
-    pen = attributes.pen(INK)
     by_layer: dict[str, list[dict[str, Any]]] = {}
     for text in texts:
+        pen = attributes.pen(text.colour)
         one: dict[str, Any] = {
             "coordinate": {"x": text.at[0], "y": text.at[1], "z": 0.0},
             "text": text.text,
@@ -2024,7 +2089,11 @@ def _flush(
             "foregroundColour": {"red": r, "green": g, "blue": b},
             "backgroundColour": {"red": r, "green": g, "blue": b},
         }
-        if fill.wash and attributes.wash_fill is not None:
+        if fill.hatch and attributes.hatch_fill is not None:
+            data["fillIndex"] = attributes.hatch_fill
+            data["backgroundPen"] = 0
+            del data["backgroundColour"]
+        elif fill.wash and attributes.wash_fill is not None:
             data["fillIndex"] = attributes.wash_fill
             data["backgroundPen"] = 0
             del data["backgroundColour"]
@@ -2033,6 +2102,8 @@ def _flush(
         contour_pen = attributes.pen(fill.contour or fill.colour)
         if contour_pen is not None:
             data["contourPen"] = contour_pen
+        if fill.weight_mm is not None:
+            data["penWeight"] = fill.weight_mm
         if fill.element_id:
             data["elementId"] = fill.element_id[:255]
         fills.append(data)

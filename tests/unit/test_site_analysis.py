@@ -169,15 +169,22 @@ def test_the_context_drawing_carries_the_legends_colours_and_the_site_on_top() -
         "BACK LN",
         "KOGARAH",
         "JUBILEE OVAL",
-        "ST GEORGE HOSPITAL",
-        "SITE",
+        "ST GEORGE\nHOSPITAL",
         "B",
         "T",
     } <= labels
+    assert "SITE" not in labels, "the legend says what red is"
     assert any(t.text.startswith("400m") for t in drawing.texts)
-    # A street gets its arrow, a lane does not: one double-headed arrow.
-    road_lines = [line for line in drawing.lines if line.layer.endswith(".Road names")]
-    assert len(road_lines) == 3
+    # A street gets its white band, a lane does not: one band.
+    bands = [f for f in drawing.fills if f.layer.endswith(".Road names")]
+    assert len(bands) == 1 and bands[0].colour == "#ffffff" and len(bands[0].rings[0]) == 6
+    # The stop's letter sits on the roundel's centre, in the roundel's colour.
+    letter = next(t for t in drawing.texts if t.text == "B")
+    roundel = next(f for f in drawing.fills if f.layer.endswith(".Bus stops"))
+    centre = (sum(x for x, _ in roundel.rings[0]) / 24, sum(y for _, y in roundel.rings[0]) / 24)
+    assert letter.at == pytest.approx(centre, abs=1e-6) and letter.colour == "#2f7fd6"
+    assert any(f.hatch for f in drawing.fills if f.layer.endswith(".Heritage"))
+    assert any(f.wash for f in drawing.fills if f.layer.endswith(".Site"))
     # Legend rows only for what is on the map.
     legend = [t.text for t in drawing.texts if t.layer.endswith(".Legend")]
     assert "R3 MEDIUM DENSITY RESIDENTIAL" in legend and "MEDICAL" in legend
@@ -439,7 +446,7 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
     site_line = next(line for line in lines if line.get("penWeightMm") == 0.9)
     assert site_line["linePenIndex"] == 5, "the site's red takes the nearest pen"
     texts = [t for call in transport_.all_parameters_for("CreateTexts") for t in call["texts"]]
-    site_text = next(t for t in texts if t["text"] == "SITE")
+    site_text = next(t for t in texts if t["text"] == "KOGARAH")
     assert site_text["justification"] == "Center" and site_text["anchor"] == "MiddleMiddle"
     assert all("layerIndex" in t for t in texts), "the add-on's texts take their layer at creation"
     assert "SetDetailsOfElements" not in commands, "so nothing has to be moved afterwards"
@@ -634,3 +641,23 @@ def test_the_aerial_lands_under_the_cadastre_as_a_turned_figure(tmp_path: Path) 
     )
     assert request["box"]["xMax"] - request["box"]["xMin"] == pytest.approx(2070.0, rel=0.01)
     assert request["data"].startswith("/9g")
+
+
+def test_place_names_wrap_the_way_the_office_sets_them() -> None:
+    from sun_study.archicad.site_analysis import _wrapped
+
+    assert _wrapped("ST GEORGE HOSPITAL") == "ST GEORGE\nHOSPITAL"
+    assert _wrapped("KOGARAH") == "KOGARAH"
+    assert _wrapped("GREEK ORTHODOX PARISH AND COMMUNITY OF KOGARAH") == (
+        "GREEK ORTHODOX\nPARISH AND\nCOMMUNITY OF\nKOGARAH"
+    )
+
+
+def test_one_roundel_per_stop_not_one_per_kerb() -> None:
+    from sun_study.site.osm import Stop, cluster_stops
+
+    here = Stop(151.13, -33.96, "Princes Hwy")
+    across = Stop(151.13 + 12.0 / (111_320.0 * 0.83), -33.96, "Princes Hwy")
+    far = Stop(151.13 + 200.0 / (111_320.0 * 0.83), -33.96, "Next stop")
+    merged = cluster_stops([here, across, far])
+    assert len(merged) == 2 and merged[0].name == "Princes Hwy"

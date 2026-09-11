@@ -17,7 +17,7 @@ from typing import Any
 
 from sun_study.site.geo import Extent, Point, mercator_to_lonlat
 from sun_study.site.http import fetch, get_json
-from sun_study.site.osm import Stop
+from sun_study.site.osm import Stop, cluster_stops
 
 __all__ = ["Isochrone", "bus_stops_tfnsw", "isochrones", "tfnsw_key"]
 
@@ -68,31 +68,7 @@ def bus_stops_tfnsw(extent: Extent, key: str) -> list[Stop]:
                 stop_lon, stop_lat, location.get("name")
             )
 
-    stops = list(by_id.values())
-    used = [False] * len(stops)
-    clustered: list[Stop] = []
-    metres_per_degree = 111_320.0
-    for i, stop in enumerate(stops):
-        if used[i]:
-            continue
-        group = [stop]
-        used[i] = True
-        for j in range(i + 1, len(stops)):
-            if used[j]:
-                continue
-            dx = (stops[j].lon - stop.lon) * metres_per_degree * math.cos(math.radians(stop.lat))
-            dy = (stops[j].lat - stop.lat) * metres_per_degree
-            if math.hypot(dx, dy) < 30.0:
-                group.append(stops[j])
-                used[j] = True
-        clustered.append(
-            Stop(
-                sum(s.lon for s in group) / len(group),
-                sum(s.lat for s in group) / len(group),
-                group[0].name,
-            )
-        )
-    return clustered
+    return cluster_stops(list(by_id.values()))
 
 
 @dataclass(frozen=True)

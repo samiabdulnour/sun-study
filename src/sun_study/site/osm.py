@@ -10,13 +10,24 @@ what the next step -- a massing of the neighbours in the model -- will read.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from sun_study.site.geo import Extent, Point
 from sun_study.site.http import Log, overpass
 
-__all__ = ["Building", "BusData", "Furniture", "Stop", "Utility", "bus_data", "furniture"]
+__all__ = [
+    "Building",
+    "BusData",
+    "Furniture",
+    "Stop",
+    "Utility",
+    "bus_data",
+    "cluster_stops",
+    "furniture",
+]
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,39 @@ class Stop:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Stop:
         return cls(float(data["lon"]), float(data["lat"]), data.get("name"))
+
+
+def cluster_stops(stops: Sequence[Stop], within_m: float = 30.0) -> list[Stop]:
+    """Stands, platforms and the two kerbs of one stop, as one symbol.
+
+    Greedy, in metres: a stop within ``within_m`` of one already taken joins
+    it, and the symbol sits at their mean. The office's sheets draw one
+    roundel per stop; OSM records one node per kerb.
+    """
+    used = [False] * len(stops)
+    clustered: list[Stop] = []
+    metres_per_degree = 111_320.0
+    for i, stop in enumerate(stops):
+        if used[i]:
+            continue
+        group = [stop]
+        used[i] = True
+        for j in range(i + 1, len(stops)):
+            if used[j]:
+                continue
+            dx = (stops[j].lon - stop.lon) * metres_per_degree * math.cos(math.radians(stop.lat))
+            dy = (stops[j].lat - stop.lat) * metres_per_degree
+            if math.hypot(dx, dy) < within_m:
+                group.append(stops[j])
+                used[j] = True
+        clustered.append(
+            Stop(
+                sum(s.lon for s in group) / len(group),
+                sum(s.lat for s in group) / len(group),
+                group[0].name,
+            )
+        )
+    return clustered
 
 
 Line = tuple[Point, ...]
@@ -110,7 +154,12 @@ out geom;"""
                     continue
                 seen.add(member["ref"])
                 target.append(tuple((float(g["lon"]), float(g["lat"])) for g in member["geometry"]))
-    return BusData(tuple(stops), tuple(routes), tuple(tram_stops), tuple(tram_routes))
+    return BusData(
+        tuple(cluster_stops(stops)),
+        tuple(routes),
+        tuple(cluster_stops(tram_stops)),
+        tuple(tram_routes),
+    )
 
 
 @dataclass(frozen=True)
