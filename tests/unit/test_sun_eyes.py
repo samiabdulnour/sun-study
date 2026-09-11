@@ -87,7 +87,7 @@ def test_the_sun_is_handed_to_archicad_as_a_date() -> None:
 
 def test_view_settings_differ_between_window_and_document() -> None:
     settings = SunEyeSettings(
-        layer_combination=f"{SS} Sun Eye Views",
+        layer_combination=f"{SS} Sun Views",
         renovation_filter_guid="38FD3426-70C5-9C4D-ACA5-877D4A623A36",
         pen_set="00 FA Pens",
     )
@@ -136,13 +136,13 @@ def test_each_view_is_aimed_before_it_is_saved() -> None:
         }
     }
     eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=[9, 15], timezone="Australia/Sydney")
-    settings = SunEyeSettings(layer_combination=f"{SS} Sun Eye Views")
+    settings = SunEyeSettings(layer_combination=f"{SS} Sun Views")
 
     made = make_sun_eye_views(connection, eyes, settings=settings)
 
     assert [view.name for _, view, _ in made] == [
-        f"{SS} Sun Eye 21 Jun 09:00",
-        f"{SS} Sun Eye 21 Jun 15:00",
+        f"{SS} Sun View 21 Jun 09:00",
+        f"{SS} Sun View 21 Jun 15:00",
     ]
     assert [reused for _, _, reused in made] == [False, False]
 
@@ -171,8 +171,8 @@ def test_seven_documents_become_a_morning_sheet_and_an_afternoon_sheet() -> None
     groups = sheet_groups(made, per_sheet=4)
 
     assert [name for name, _ in groups] == [
-        f"{SS} Sun Eye Views 09:00-12:00",
-        f"{SS} Sun Eye Views 13:00-15:00",
+        f"{SS} Sun Views 09:00-12:00",
+        f"{SS} Sun Views 13:00-15:00",
     ]
     assert [[i for i, _ in views] for _, views in groups] == [
         ["ID0900", "ID1000", "ID1100", "ID1200"],
@@ -183,7 +183,7 @@ def test_seven_documents_become_a_morning_sheet_and_an_afternoon_sheet() -> None
 def test_a_set_that_fits_one_sheet_keeps_the_plain_name() -> None:
     eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=[9, 12], timezone="Australia/Sydney")
     made = [(eye, StoreyView(0, "doc", f"ID{eye.stamp}"), False) for eye in eyes]
-    assert [name for name, _ in sheet_groups(made, per_sheet=4)] == [f"{SS} Sun Eye Views"]
+    assert [name for name, _ in sheet_groups(made, per_sheet=4)] == [f"{SS} Sun Views"]
 
 
 B1 = LayoutSheet(width_mm=1000.0, height_mm=707.0)

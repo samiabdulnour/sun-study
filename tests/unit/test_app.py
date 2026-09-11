@@ -1459,7 +1459,7 @@ def test_the_sun_eye_run_sends_what_is_filled_in_and_nothing_else(hidden_window:
     hidden_window.eye_pen_set.insert(0, "00 FA Pens")
     (job,) = hidden_window.jobs()
     assert job.label == window.SUN_EYE_JOB
-    assert job.args[:3] == ["sun-eyes", "--timezone", "Australia/Sydney"]
+    assert job.args[:3] == ["sun-views", "--timezone", "Australia/Sydney"]
     assert job.args[job.args.index("--port") + 1] == "19723"
     assert job.args[job.args.index("--pen-set") + 1] == "00 FA Pens"
     assert job.args[job.args.index("--scale") + 1] == "500"
@@ -1489,7 +1489,7 @@ def test_the_site_analysis_runs_from_an_address_and_names_its_sheets(hidden_wind
     hidden_window.site_anchor.set("Project origin")
     (site,) = hidden_window.jobs()
     assert site.label == window.SITE_JOB
-    assert site.args[:2] == ["site-analysis", "26-30 Campsie St, Campsie NSW 2194"]
+    assert site.args[:2] == ["site", "26-30 Campsie St, Campsie NSW 2194"]
     assert "--context" in site.args and "--site" in site.args and "--no-summary" in site.args
     assert flag(site.args, "--anchor") == ["site"]
     assert flag(site.args, "--scale") == ["3000"]

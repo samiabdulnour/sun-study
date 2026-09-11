@@ -290,7 +290,7 @@ def test_the_summary_table_fills_what_is_published_and_rules_up_the_rest() -> No
     assert any(label == "GEORGES RIVER LEP 2021" for kind, label, _ in rows if kind == "section")
 
     drawing = summary_drawing(bundle)
-    assert "DEVELOPMENT SUMMARY" in [t.text for t in drawing.texts]
+    assert "SUMMARY OF CONTROLS" in [t.text for t in drawing.texts]
     assert len(drawing.lines) == len(rows) + 1, "a rule under every row and one above"
 
 
@@ -473,7 +473,7 @@ def test_the_summary_of_controls_is_drawn_straight_onto_a_layout_of_its_own() ->
                 {
                     "navigatorItem": {
                         "type": "LayoutItem",
-                        "name": f"{SS} Development Summary",
+                        "name": f"{SS} Summary of Controls",
                         "navigatorItemId": {"guid": "OLD"},
                         "children": [],
                     }
@@ -531,7 +531,7 @@ def test_the_summary_of_controls_is_drawn_straight_onto_a_layout_of_its_own() ->
     # Paper metres, hanging from the usable top-left corner 15 mm in: the
     # title sits near x = 0.026 m, y just under 0.569 m, on an A1 landscape.
     texts = transport_.parameters_for("CreateTexts")["texts"]
-    title = next(t for t in texts if t["text"] == "DEVELOPMENT SUMMARY")
+    title = next(t for t in texts if t["text"] == "SUMMARY OF CONTROLS")
     assert 0.02 < title["coordinate"]["x"] < 0.03
     assert 0.55 < title["coordinate"]["y"] < 0.58
     assert title["height"] == pytest.approx(8.2), "paper millimetres, as on the worksheet"
@@ -868,13 +868,17 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
     assert mesh["layerIndex"] == 9 and mesh["elementId"] == "SA TERRAIN"
     assert len(mesh["levelLines"]) == 2, "both contours lie inside the extent"
     assert mesh["floorIndex"] == 0, "homed on the storey at level zero"
-    slabs = transport_.parameters_for("CreateSlabs")["slabsData"]
+    slabs = transport_.parameters_for("CreateSlabs")["slabs"]
     # The one footprint in the fixture sits 30 m east of the site, two storeys
-    # by OSM, standing on the ground the contours give.
+    # by OSM, standing on the ground the contours give -- through the add-on's
+    # own command, with its layer, storey and ID in the one call.
     assert len(slabs) == 1 and report.on_site == 0
     assert slabs[0]["thickness"] == pytest.approx(2 * 3.1)
-    assert slabs[0]["referencePlaneLocation"] == "Bottom"
+    assert slabs[0]["referencePlane"] == "bottom"
     assert 24.0 < slabs[0]["level"] < 28.0
+    assert slabs[0]["layerIndex"] == 9 and slabs[0]["floorIndex"] == 0
+    assert slabs[0]["elementId"] == "SA NEIGHBOUR 2 STOREY (OSM)"
+    assert len(slabs[0]["contours"][0]["points"]) >= 3
     assert report.blocks == 0, "no cadastre in the site bundle, so no blocks"
     assert "blocks: 0 meshes" in report.describe()
 

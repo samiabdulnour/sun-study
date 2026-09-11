@@ -6180,7 +6180,8 @@ def _shadow_report(
         raise typer.Exit(code=1) from error
 
 
-@app.command("sun-eyes")
+@app.command("sun-views")
+@app.command("sun-eyes", hidden=True)
 def sun_eye_views(
     port: Annotated[int, typer.Option("--port", help="Which Archicad to talk to.")] = DEFAULT_PORT,
     timeout: Annotated[
@@ -6359,7 +6360,7 @@ def sun_eye_views(
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
-    typer.echo(f"  views of the 3D window, in {naming.named('Sun Eye Views')!r}:")
+    typer.echo(f"  views of the 3D window, in {naming.named('Sun Views')!r}:")
     for _eye, view, reused in views:
         typer.echo(f"    {view.name}" + ("  (already there, left as aimed)" if reused else ""))
 
@@ -6371,7 +6372,7 @@ def sun_eye_views(
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
-    typer.echo(f"  3D Documents, with views in {naming.named('Sun Eye Documents')!r}:")
+    typer.echo(f"  3D Documents, with views in {naming.named('Sun View Documents')!r}:")
     for _eye, view, reused in made:
         typer.echo(f"    {view.name}" + ("  (document already there, kept)" if reused else ""))
 
@@ -6412,7 +6413,8 @@ def _site_out_dir(address: str, out: Path | None) -> Path:
     return root / "Loriini" / "site-analysis" / site_pipeline.slug(address)
 
 
-@app.command("site-analysis")
+@app.command("site")
+@app.command("site-analysis", hidden=True)
 def site_analysis(
     address: Annotated[
         str | None,

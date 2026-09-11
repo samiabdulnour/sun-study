@@ -107,7 +107,9 @@ CELL_GAP_MM = 20.0
 TITLE_BLOCK_MM = 100.0
 
 #: The name a run gives its things, after the tool's prefix.
-WORD = "Sun Eye"
+WORD = "Sun View"
+#: The folder and the sheets: the views as a set.
+SET_WORD = "Sun Views"
 
 
 @dataclass(frozen=True)
@@ -261,7 +263,7 @@ def sun_eye_layer_combination(
     )
     hidden = sorted(layer for layer in counted if layer)
     combination = ensure_layer_combination(
-        connection, name or naming.named(f"{WORD} Views"), show=[], hide=hidden, base=base
+        connection, name or naming.named(SET_WORD), show=[], hide=hidden, base=base
     )
     return combination, hidden
 
@@ -340,7 +342,7 @@ def make_sun_eye_views(
     """
     if not eyes:
         return []
-    home = folder or naming.named(f"{WORD} Views")
+    home = folder or naming.named(SET_WORD)
     live = next((s for s in three_d_sources(connection) if s.kind == "AxonometryItem"), None)
     if live is None:
         raise ArchicadError("The Project Map has no 3D window item to save a view of.")
@@ -477,7 +479,7 @@ def sheet_groups(
     """
     if per_sheet <= 0:
         raise ValueError(f"per_sheet must be positive, not {per_sheet}")
-    stem = stem or naming.named(f"{WORD} Views")
+    stem = stem or naming.named(SET_WORD)
     groups: list[tuple[str, list[tuple[str, str]]]] = []
     for start in range(0, len(made), per_sheet):
         chunk = made[start : start + per_sheet]
@@ -612,7 +614,7 @@ def make_sun_eye_sheets(
     """
     groups = sheet_groups(made, per_sheet=per_sheet)
     wanted = {name for name, _ in groups}
-    stem = naming.named(f"{WORD} Views")
+    stem = naming.named(SET_WORD)
 
     removed: list[str] = []
     response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})

@@ -103,12 +103,12 @@ STOREY_HEADROOM_M = 15.0
 #: prints when that study starts, and the tab that marks itself. A study
 #: named one thing before it runs and another while it runs is a study
 #: somebody cannot follow.
-FACADE_JOB = "facade skin"
-PLANS_JOB = "apartment plans and sheets"
-COMMUNAL_JOB = "communal open space"
+FACADE_JOB = "solar analysis: facade"
+PLANS_JOB = "solar analysis: apartments"
+COMMUNAL_JOB = "solar analysis: communal open space"
 SHADOW_JOB = "shadow diagram"
-SUN_EYE_JOB = "sun eye views"
-SITE_JOB = "site and context analysis"
+SUN_EYE_JOB = "sun views"
+SITE_JOB = "site tools"
 
 
 class Tooltip:
@@ -500,7 +500,7 @@ class Job:
 class Window:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Solar Analysis")
+        self.root.title(PRODUCT)
         # Never taller than the screen. A window opened past the bottom edge
         # cannot be dragged back by its title bar, so everything below the
         # fold -- Run included -- is out of reach, which is the fault this
@@ -553,11 +553,16 @@ class Window:
     #: section is nearest. Each says plainly that it does nothing yet, and
     #: neither carries a tick, so there is nothing to switch on and wait for.
     GENERAL = "General"
-    FACADE = "Facade skin"
-    DIAGRAMS = "Solar diagrams"
+    SITE = "Site tools"
+    SOLAR = "Solar tools"
+    #: The solar toolset's own tabs, inside the Solar tools tab.
+    MODEL = "Model"
+    DIAGRAMS = "Solar analysis"
     SHADOWS = "Shadow diagram"
-    EYE = "Sun eye view"
-    SITE = "Site analysis"
+    EYE = "Sun views"
+    #: The facade study lives in the Solar analysis section now; the name
+    #: stays for the settings files and tests that knew it as a tab.
+    FACADE = DIAGRAMS
 
     def _build(self) -> None:
         wheel_reaches_the_pointer(self.root)
@@ -656,11 +661,22 @@ class Window:
         self.panes: list[Scroller] = []
 
         self._general(self._section(self.GENERAL))
-        self._facade(self._section(self.FACADE))
-        self._diagrams(self._section(self.DIAGRAMS))
-        self._shadows(self._section(self.SHADOWS))
-        self._sun_eyes(self._section(self.EYE))
         self._site(self._section(self.SITE))
+
+        # The solar tools share a model export and are used together at
+        # another stage of a job than the site tools, so they are one tab
+        # outside and four inside: what the export starts from, then a tool
+        # per tab.
+        holder = ttk.Frame(self.tabs)
+        self.tabs.add(holder, text=self.SOLAR)
+        self.titles.append(self.SOLAR)
+        self.solar_tabs = ttk.Notebook(holder)
+        self.solar_tabs.pack(fill="both", expand=True)
+        self.solar_titles: list[str] = []
+        self._model(self._solar_section(self.MODEL))
+        self._diagrams(self._solar_section(self.DIAGRAMS))
+        self._shadows(self._solar_section(self.SHADOWS))
+        self._sun_eyes(self._solar_section(self.EYE))
 
     def _section(self, title: str) -> ttk.Frame:
         """One tab, and the frame its settings are built into.
@@ -681,15 +697,27 @@ class Window:
         frame.columnconfigure(1, weight=1)
         return frame
 
-    def _general(self, frame: ttk.Frame) -> None:
-        """What every output is drawn on, and what none of them chooses.
+    def _solar_section(self, title: str) -> ttk.Frame:
+        """One of the Solar tools' own tabs; the same shape one level down."""
+        pane = Scroller(self.solar_tabs)
+        self.solar_tabs.add(pane, text=title)
+        self.solar_titles.append(title)
+        self.panes.append(pane)
+        frame = ttk.Frame(pane.content, padding=PAD)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(1, weight=1)
+        return frame
 
-        Set once when a project is set up and left alone afterwards, which is
-        what used to make most of these "advanced". They are not advanced,
-        they are shared: the year, the title block, the layer state the
-        export starts from and the numbering the results file themselves
-        under are the same for the facade skin and for every diagram, and a
-        copy of each in three sections is three chances to disagree.
+    def _general(self, frame: ttk.Frame) -> None:
+        """What every tool that makes a sheet needs, asked once.
+
+        The master, the title block, the numbering the results file
+        themselves under, the year and how long Archicad is waited on are
+        the same for a site sheet as for a shadow sheet. The title-block
+        width lived in the sun views' tab and the export settings lived
+        here; both are now where every tool that reads them can find them
+        -- the export settings under Solar tools, because only the solar
+        tools export a model.
         """
         row = 0
         self.master, row = self._combo(
@@ -703,6 +731,18 @@ class Window:
             "master it was made on — nothing in the add-on can change it — so "
             "delete old study sheets before changing this.",
         )
+        self.eye_title_block, row = self._entry(
+            frame,
+            row,
+            "Title block width (mm)",
+            "100",
+            "Millimetres kept clear down the right of every sheet the tools make.",
+            "Archicad reports a layout's margins and nothing about its "
+            "master, so drawings would otherwise tile under the title block. "
+            "About 100 mm on the DA masters. Every tool that places a sheet "
+            "keeps this strip clear: the site sheets, the sun views, the "
+            "shadow and solar diagrams.",
+        )
         self.year, row = self._entry(
             frame,
             row,
@@ -714,6 +754,50 @@ class Window:
             "the sun positions slightly; it is here so a study can be repeated "
             "against the same day as an earlier report.",
         )
+
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        row += 1
+
+        self.prefix, row = self._entry(
+            frame,
+            row,
+            "Layer prefix",
+            naming.DEFAULT_PREFIX,
+            "Leads the name of every layer, view and sheet the tools create.",
+            "So the output files itself inside the office's own numbering: on "
+            "a project whose layer groups run 00 to 13, '14 |' gives "
+            "'14 | Solar Analysis.Results' and it sorts where a reader expects. "
+            "It is also how a rerun finds its own sheets to replace, so changing "
+            "it leaves the last run's behind to be deleted by hand, and it "
+            "cannot be emptied — an empty prefix matches every layout in the "
+            "project.",
+        )
+        self.wait_min, row = self._entry(
+            frame,
+            row,
+            "Archicad wait (min)",
+            "30",
+            "How long to let Archicad think about one command before giving up.",
+            "Only the IFC export comes anywhere near it, and on a big project "
+            "that export is minutes rather than seconds -- 455 MB on one "
+            "mixed-use job. Too short and the run stops partway with 'Archicad "
+            "did not answer', having already done the slow part, and leaves "
+            "the project holding the study's layer state. Raising it costs "
+            "nothing on a run that works; it only decides how long a genuinely "
+            "stuck Archicad is waited on.",
+        )
+
+    def _model(self, frame: ttk.Frame) -> None:
+        """The model the three solar tools export: what is shown, what is
+        forced on, what the neighbours are, what is kept off, and the height
+        above which nothing counts. Asked once here rather than in each."""
+        row = 0
+        self._caption(
+            frame,
+            row,
+            "The layer state every solar tool exports from. Set once for the project.",
+        )
+        row += 1
         self.exclude, row = self._entry(
             frame,
             row,
@@ -729,10 +813,6 @@ class Window:
             "lift overrun and is far below anything parked. Type over it and "
             "the typed figure is kept. Clear the box to keep everything.",
         )
-
-        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
-        row += 1
-
         self.combination, row = self._combo(
             frame,
             row,
@@ -780,46 +860,13 @@ class Window:
             "here rather than guessed from layer names.",
         )
 
-        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
-        row += 1
-
-        self.prefix, row = self._entry(
-            frame,
-            row,
-            "Layer prefix",
-            naming.DEFAULT_PREFIX,
-            "Leads the name of every layer, view and sheet the study creates.",
-            "So the output files itself inside the office's own numbering: on "
-            "a project whose layer groups run 00 to 13, '14 |' gives "
-            "'14 | Sun Study.Results' and it sorts where a reader expects. It "
-            "is also how a rerun finds its own sheets to replace, so changing "
-            "it leaves the last run's behind to be deleted by hand, and it "
-            "cannot be emptied — an empty prefix matches every layout in the "
-            "project.",
-        )
-        self.wait_min, row = self._entry(
-            frame,
-            row,
-            "Archicad wait (min)",
-            "30",
-            "How long to let Archicad think about one command before giving up.",
-            "Only the IFC export comes anywhere near it, and on a big project "
-            "that export is minutes rather than seconds -- 455 MB on one "
-            "mixed-use job. Too short and the run stops partway with 'Archicad "
-            "did not answer', having already done the slow part, and leaves "
-            "the project holding the study's layer state. Raising it costs "
-            "nothing on a run that works; it only decides how long a genuinely "
-            "stuck Archicad is waited on.",
-        )
-
-    def _facade(self, frame: ttk.Frame) -> None:
-        """The 3D skin: what gets painted, and how finely."""
-        row = 0
+    def _facade(self, frame: ttk.Frame, row: int) -> int:
+        """The facade study's rows: the 3D skin, what gets painted, how finely."""
         self.do_facade = tk.BooleanVar(value=True)
         self.do_floors = tk.BooleanVar(value=True)
 
         facade_box = ttk.Checkbutton(
-            frame, text="Facade skin in 3D", variable=self.do_facade, command=self._sync
+            frame, text="Facade (massing stage)", variable=self.do_facade, command=self._sync
         )
         facade_box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -877,21 +924,23 @@ class Window:
             "makes over five thousand at 0.5 m. A face narrower than one cell "
             "is not drawn at all, so a coarse setting loses thin columns.",
         )
+        return row
 
     def _diagrams(self, frame: ttk.Frame) -> None:
-        """The drawn studies: apartments, and communal open space.
+        """Solar analysis: hours of direct sun, on the apartments, on the
+        facade, or over communal open space.
 
-        Two studies in one section because they are one deliverable. Both
-        band a plan by hours of direct sun, both are read at the same
-        drawing, and a job that asks for solar diagrams means both — so where
-        the sheets are filed is asked once, at the top, for the pair.
+        Three studies in one section because they are one question asked
+        of three things, and a job that asks for the solar analysis means
+        whichever of them the model can answer -- so where the banded
+        sheets are filed is asked once, at the top, for all three.
         """
         row = 0
         self.adg_subset, row = self._combo(
             frame,
             row,
-            "Diagrams filed in",
-            "Layout Book subset both studies' banded sheets go into.",
+            "ADG sheets filed under",
+            "Layout Book subset the banded sheets go into.",
             "So the sheets sit with the practice's own drawings of that kind "
             "instead of at the root of the book. The subset has to exist "
             "already — the run will not create one, because the Layout Book is "
@@ -904,7 +953,7 @@ class Window:
 
         self.do_plans = tk.BooleanVar(value=False)
         plans_box = ttk.Checkbutton(
-            frame, text="Apartment plans and sheets", variable=self.do_plans, command=self._sync
+            frame, text="Apartments", variable=self.do_plans, command=self._sync
         )
         plans_box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -969,7 +1018,7 @@ class Window:
         self.shadow_subset, row = self._combo(
             frame,
             row,
-            "Times filed in",
+            "Time-of-day sheets filed under",
             "Layout Book subset the clock-time sheets go into.",
             "A sheet that is a time of day belongs with the practice's own, "
             "which is usually a different subset from the banded plans. Same "
@@ -978,6 +1027,11 @@ class Window:
             "under its own setting, because the two are different drawings "
             "and a practice does not always keep them together.",
         )
+
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        row += 1
+
+        row = self._facade(frame, row)
 
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
         row += 1
@@ -1235,7 +1289,7 @@ class Window:
         self.shadow_study_subset, row = self._combo(
             frame,
             row,
-            "Diagrams filed in",
+            "Shadow sheets filed under",
             "Layout Book subset the shadow sheets go into.",
             "Same rule as the other two: the subset has to exist already, "
             "because the Layout Book is the office's structure to organise. A "
@@ -1260,7 +1314,7 @@ class Window:
         row = 0
         self.do_sun_eyes = tk.BooleanVar(value=False)
         box = ttk.Checkbutton(
-            frame, text="Sun eye views", variable=self.do_sun_eyes, command=self._sync
+            frame, text="Sun views", variable=self.do_sun_eyes, command=self._sync
         )
         box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -1329,16 +1383,6 @@ class Window:
             "on the next, in the same grid with one cell empty. Every sheet "
             "is laid out as a full one so the two match.",
         )
-        self.eye_title_block, row = self._entry(
-            frame,
-            row,
-            "Title block width",
-            "100",
-            "Millimetres kept clear down the right of the sheet.",
-            "Archicad reports a layout's margins and nothing about its "
-            "master, so the drawings would otherwise tile under the title "
-            "block. About 100 mm on the DA B1 VERTICAL masters.",
-        )
         self.eye_hours, row = self._entry(
             frame,
             row,
@@ -1360,23 +1404,21 @@ class Window:
         """
         row = 0
         self.do_site = tk.BooleanVar(value=False)
-        box = ttk.Checkbutton(
-            frame, text="Site analysis", variable=self.do_site, command=self._sync
-        )
+        box = ttk.Checkbutton(frame, text="Site tools", variable=self.do_site, command=self._sync)
         box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
             box,
             "Fetches the neighbourhood from NSW open data for the address below "
-            "and draws it into worksheets of the open project: the context "
-            "analysis, the site analysis and the development summary, each with "
-            "a view at its sheet's scale. Needs the Loriini add-on beside Tapir, "
-            "and an internet connection. NSW addresses only.",
+            "and makes whichever of the four outputs are ticked: the Context "
+            "Analysis and Site Analysis sheets, the Summary of Controls on a "
+            "layout, and the Context Model in 3D. Needs the Loriini add-on "
+            "beside Tapir, and an internet connection. NSW addresses only.",
         )
         row += 1
         self._caption(
             frame,
             row,
-            "Type the address, tick the sheets, press Run. A few minutes: the "
+            "Type the address, tick the outputs, press Run. A few minutes: the "
             "public data services are slow and are asked for everything at once.",
         )
         row += 1
@@ -1399,7 +1441,7 @@ class Window:
         for variable, label, detail in (
             (
                 self.do_site_context,
-                "Context analysis",
+                "Context Analysis sheet",
                 "Land use wash by LEP zone, schools and hospitals coloured by what "
                 "they are, heritage items, rail, bus stops and routes, stations, "
                 "5 and 10 minute walking catchments, place and street names, "
@@ -1407,7 +1449,7 @@ class Window:
             ),
             (
                 self.do_site_site,
-                "Site analysis",
+                "Site Analysis sheet",
                 "The boundary with its dimensions and corner levels, the fall, "
                 "contours, neighbours with storeys and zone, trees, poles, "
                 "hydrants, driveways, kerbside parking, one-way streets, noise "
@@ -1416,11 +1458,12 @@ class Window:
             ),
             (
                 self.do_site_summary,
-                "Development summary",
-                "The planning-controls table: zone, height of building, FSR and "
-                "the gross floor area it allows, minimum lot size, heritage, and "
-                "the ADG figures worked out for this site area. Council DCP rows "
-                "are ruled up empty; they are not open data.",
+                "Summary of Controls layout",
+                "The planning-controls table, drawn straight onto a layout of "
+                "its own: zone, height of building, FSR and the gross floor area "
+                "it allows, minimum lot size, heritage, and the ADG figures "
+                "worked out for this site area. Council DCP rows are ruled up "
+                "empty; they are not open data.",
             ),
             (
                 self.do_site_aerial,
@@ -1440,12 +1483,13 @@ class Window:
         for variable, label, detail in (
             (
                 self.do_site_model,
-                "Model the terrain and the neighbours in 3D",
-                "One Mesh from the 1 m contours and one slab per neighbouring "
-                "building footprint, as tall as its storeys say -- or as the "
+                "Context Model in 3D (terrain, blocks, neighbours)",
+                "The terrain as one mesh from the contours, every street block "
+                "as a kerbed mesh with the roads left between, and one slab per "
+                "neighbouring building as tall as its storeys say -- or as the "
                 "LEP height control allows, and said to be assumed -- on the "
-                "LORIINI layer, for the shadow and sun eye studies to cast "
-                "against. The site's own buildings are left out.",
+                "LORIINI layer, for the shadow diagram and the sun views to "
+                "cast against. The site's own buildings are left out.",
             ),
             (
                 self.do_site_location,
@@ -1513,7 +1557,7 @@ class Window:
             "Where what was fetched is saved. Blank is Documents\\Loriini\\site-analysis.",
             "Every run writes the data it fetched as JSON here, and the aerial "
             "if asked for. A saved run can be redrawn without the internet: "
-            "sun-study site-analysis --from <this folder>.",
+            "sun-study site --from <this folder>.",
         )
 
     def _folder_row(
@@ -1859,15 +1903,23 @@ class Window:
         """
         try:
             # Tk's own wrappers, and none of ttk's Notebook is annotated --
-            # hence the three ignores in this file and nowhere else.
-            return self.titles[self.tabs.index("current")]  # type: ignore[no-untyped-call]
+            # hence the ignores in this file and nowhere else.
+            outer = self.titles[self.tabs.index("current")]  # type: ignore[no-untyped-call]
+            if outer == self.SOLAR:
+                inner = self.solar_tabs.index("current")  # type: ignore[no-untyped-call]
+                return str(self.solar_titles[inner])
+            return outer
         except (tk.TclError, IndexError):  # pragma: no cover - no tab yet
             return ""
 
     def _show_section(self, title: str) -> None:
-        """Open that tab, if there is still one by that name."""
+        """Open that tab, if there is still one by that name -- outside, or
+        one of the Solar tools' own, which opens Solar tools first."""
         if title in self.titles:
             self.tabs.select(self.titles.index(title))  # type: ignore[no-untyped-call]
+        elif title in self.solar_titles:
+            self.tabs.select(self.titles.index(self.SOLAR))  # type: ignore[no-untyped-call]
+            self.solar_tabs.select(self.solar_titles.index(title))  # type: ignore[no-untyped-call]
 
     def _sync(self) -> None:
         """Keep the window telling the truth about what it will do.
@@ -1891,8 +1943,14 @@ class Window:
         self.hourly_box.config(state="normal" if self.do_communal.get() else "disabled")
 
         running = {where for _name, tick, where in self._studies() if tick.get()}
+        if running & set(self.solar_titles):
+            running.add(self.SOLAR)
         for index, title in enumerate(self.titles):
             self.tabs.tab(  # type: ignore[no-untyped-call]
+                index, text=f"{title} ✓" if title in running else title
+            )
+        for index, title in enumerate(self.solar_titles):
+            self.solar_tabs.tab(  # type: ignore[no-untyped-call]
                 index, text=f"{title} ✓" if title in running else title
             )
 
@@ -2549,7 +2607,7 @@ class Window:
             made.append(Job(SHADOW_JOB, args))
 
         if self.do_sun_eyes.get():
-            args = ["sun-eyes", "--timezone", "Australia/Sydney", *common]
+            args = ["sun-views", "--timezone", "Australia/Sydney", *common]
             # Only what is filled in is sent, so the command's own defaults
             # -- read off the practice's diagrams -- hold for a blank field,
             # and a blank pen set keeps each view's own rather than naming
@@ -2571,7 +2629,7 @@ class Window:
             made.append(Job(SUN_EYE_JOB, args))
 
         if self.do_site.get() and self.site_address.get().strip():
-            args = ["site-analysis", self.site_address.get().strip(), *common]
+            args = ["site", self.site_address.get().strip(), *common]
             args += ["--context" if self.do_site_context.get() else "--no-context"]
             args += ["--site" if self.do_site_site.get() else "--no-site"]
             args += ["--summary" if self.do_site_summary.get() else "--no-summary"]

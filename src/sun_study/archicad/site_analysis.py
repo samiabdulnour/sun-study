@@ -121,7 +121,7 @@ __all__ = [
 #: The words the three sheets are filed under, after the tool's prefix.
 CONTEXT_WORD = "Context Analysis"
 SITE_WORD = "Site Analysis"
-SUMMARY_WORD = "Development Summary"
+SUMMARY_WORD = "Summary of Controls"
 
 #: The View Map folder every sheet's view goes in.
 FOLDER_WORD = "Site Analysis"
@@ -2014,7 +2014,7 @@ def summary_drawing(bundle: SummaryBundle, scale: float = SUMMARY_SCALE) -> Draw
     label_x, controls_x = mm(0.7), mm(60.4)
     y = 0.0
     drawing.text(
-        "Table", "DEVELOPMENT SUMMARY", (label_x, y + mm(2)), height_mm=8.2, justification="Left"
+        "Table", "SUMMARY OF CONTROLS", (label_x, y + mm(2)), height_mm=8.2, justification="Left"
     )
     y -= mm(6.3)
     drawing.line("Table", [(left, y), (right, y)], colour=INK)

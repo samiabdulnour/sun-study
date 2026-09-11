@@ -704,21 +704,32 @@ def model_context(
             )
             identifiers.append(f"SA NEIGHBOUR {storeys} STOREY ({'ASSUMED' if guessed else 'OSM'})")
     made: list[dict[str, Any]] = []
-    for start in range(0, len(slabs), 200):
-        try:
-            response = connection.run_tapir(
-                "CreateSlabs", {"slabsData": slabs[start : start + 200]}
-            )
-            batch = _elements(response, "CreateSlabs")
-        except ArchicadError as error:
-            notes.append(f"a batch of {len(slabs[start : start + 200])} slabs was refused: {error}")
-            continue
-        made.extend(batch)
-    if made:
-        moved = move_to_layer(connection, made, layer.index)
-        if moved != len(made):
-            notes.append(f"{len(made) - moved} slabs stayed on the Slab tool's default layer.")
-        stamp_in_order(connection, made, identifiers[: len(made)])
+    # The add-on's CreateSlabs takes the layer, the storey and the ID with
+    # the outline, so the three passes Tapir needs (create, move, stamp) are
+    # one; Tapir's is the fallback for an add-on built before it existed.
+    own = _slabs_through_the_addon(
+        connection, slabs, identifiers, layer.index, _datum_storey(connection)[0], notes
+    )
+    if own is not None:
+        made = own
+    else:
+        for start in range(0, len(slabs), 200):
+            try:
+                response = connection.run_tapir(
+                    "CreateSlabs", {"slabsData": slabs[start : start + 200]}
+                )
+                batch = _elements(response, "CreateSlabs")
+            except ArchicadError as error:
+                notes.append(
+                    f"a batch of {len(slabs[start : start + 200])} slabs was refused: {error}"
+                )
+                continue
+            made.extend(batch)
+        if made:
+            moved = move_to_layer(connection, made, layer.index)
+            if moved != len(made):
+                notes.append(f"{len(made) - moved} slabs stayed on the Slab tool's default layer.")
+            stamp_in_order(connection, made, identifiers[: len(made)])
     if say:
         say(f"  {len(made)} neighbours as slabs, {assumed} with assumed storeys")
     return ContextModelReport(
@@ -731,6 +742,45 @@ def model_context(
         layer=layer.name,
         notes=tuple(notes),
     )
+
+
+def _slabs_through_the_addon(
+    connection: ArchicadConnection,
+    slabs: Sequence[dict[str, Any]],
+    identifiers: Sequence[str],
+    layer_index: int,
+    floor_index: int,
+    notes: list[str],
+) -> list[dict[str, Any]] | None:
+    """The slabs through Loriini's ``CreateSlabs``; ``None`` when the add-on
+    does not have the command, so the caller falls back to Tapir's."""
+    made: list[dict[str, Any]] = []
+    for start in range(0, len(slabs), 200):
+        batch = [
+            {
+                "contours": [{"points": one["polygonCoordinates"]}],
+                "level": one["level"],
+                "thickness": one["thickness"],
+                "referencePlane": "bottom",
+                "layerIndex": layer_index,
+                "floorIndex": floor_index,
+                "elementId": identifiers[start + i][:255],
+            }
+            for i, one in enumerate(slabs[start : start + 200])
+        ]
+        try:
+            response = connection.run_loriini("CreateSlabs", {"slabs": batch})
+        except ArchicadError as error:
+            if "not have the registered" in str(error) and not made:
+                return None
+            notes.append(f"a batch of {len(batch)} slabs was refused: {error}")
+            continue
+        elements = response.get("elements") if isinstance(response, dict) else None
+        if not isinstance(elements, list):
+            notes.append(f"CreateSlabs answered without an element list: {response!r}")
+            continue
+        made.extend({"elementId": {"guid": str(e.get("guid", ""))}} for e in elements)
+    return made
 
 
 def ground_at_site(bundle: SiteBundle, frame: Frame) -> float | None:
