@@ -6473,6 +6473,16 @@ def site_analysis(
         bool,
         typer.Option("--view/--no-view", help="Make a view of each worksheet in the View Map."),
     ] = True,
+    wait_minutes: Annotated[
+        float,
+        typer.Option(
+            "--wait-minutes",
+            help=(
+                "How long to wait for a worksheet to be opened by hand when Archicad refuses "
+                "to make it current, which it does for one made in this session."
+            ),
+        ),
+    ] = 5.0,
     layer_prefix: Annotated[
         str | None,
         typer.Option("--layer-prefix", help="What every layer, worksheet and view is named under."),
@@ -6510,7 +6520,10 @@ def site_analysis(
     connection: ArchicadConnection | None = None
     geo: GeoLocation | None = None
     if not fetch_only:
-        connection = _connect(port, timeout)
+        # Without the switch to a floor plan every other command makes: this
+        # one draws into whatever worksheet a person has put in front, and
+        # moving the database off it first is the one way to lose that.
+        connection = _connect(port, timeout, switch_database=False)
         try:
             geo = read_geo_location(connection)
             typer.echo(f"  project location: {geo.describe()}")
@@ -6603,18 +6616,30 @@ def site_analysis(
         if context_bundle is not None:
             typer.echo("drawing the context analysis...")
             report = site_drawing.draw_context(
-                connection, context_bundle, frame_and_offset(context_bundle), view=view
+                connection,
+                context_bundle,
+                frame_and_offset(context_bundle),
+                view=view,
+                wait_s=wait_minutes * 60.0,
+                say=say,
             )
             typer.echo(report.describe())
         if site_bundle is not None:
             typer.echo("drawing the site analysis...")
             report = site_drawing.draw_site(
-                connection, site_bundle, frame_and_offset(site_bundle), view=view
+                connection,
+                site_bundle,
+                frame_and_offset(site_bundle),
+                view=view,
+                wait_s=wait_minutes * 60.0,
+                say=say,
             )
             typer.echo(report.describe())
         if summary_bundle is not None:
             typer.echo("drawing the development summary...")
-            report = site_drawing.draw_summary(connection, summary_bundle, view=view)
+            report = site_drawing.draw_summary(
+                connection, summary_bundle, view=view, wait_s=wait_minutes * 60.0, say=say
+            )
             typer.echo(report.describe())
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)

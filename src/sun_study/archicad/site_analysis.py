@@ -37,7 +37,8 @@ is a drawing of the neighbourhood, to be placed on a sheet or traced over.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+import time
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import Any
@@ -74,6 +75,7 @@ __all__ = [
     "SUMMARY_WORD",
     "Drawing",
     "Frame",
+    "WorksheetNotEnteredError",
     "WorksheetReport",
     "context_drawing",
     "draw_context",
@@ -1602,47 +1604,160 @@ def _attributes(connection: ArchicadConnection) -> _Attributes:
     )
 
 
-def ensure_worksheet(connection: ArchicadConnection, name: str) -> tuple[str, str, bool]:
+class WorksheetNotEnteredError(ArchicadError):
+    """The worksheet exists and Archicad will not make it current from outside.
+
+    Measured on 11 September 2026 against the Kogarah solar study: a worksheet
+    made in this session, by Tapir's ``CreateWorksheets``, answers
+    ``APIERR_BADDATABASE`` (-2130313110) to ``APIDb_ChangeCurrentDatabaseID``
+    -- the add-on's own call, not only Tapir's ``ChangeWindow``. A worksheet
+    that is *open in front* is current by definition, so the way through is
+    a person opening it, which the message says.
+    """
+
+
+def _tidy(name: str) -> str:
+    return " ".join(name.split()).casefold()
+
+
+def _worksheet_by_name(connection: ArchicadConnection, name: str) -> str:
+    """The Project Map id of the worksheet called ``name``, or empty."""
+    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "ProjectMap"})
+    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
+    if not isinstance(root, dict):
+        return ""
+    wanted = _tidy(name)
+    for item_name, identifier in _worksheets(root.get("rootItem", root)):
+        if _tidy(item_name) == wanted:
+            return identifier
+    return ""
+
+
+def _standing_in(connection: ArchicadConnection) -> tuple[str, str, str]:
+    """``(database id, window type, name)`` of the current database, asked
+    of the add-on; empty strings when it will not say."""
+    try:
+        here = connection.run_loriini("GetCurrentDatabase", {})
+    except ArchicadError:
+        return "", "", ""
+    if not isinstance(here, dict):
+        return "", "", ""
+    return (
+        str((here.get("databaseId") or {}).get("guid", "")),
+        str(here.get("windowType", "")),
+        str(here.get("name", "")),
+    )
+
+
+def _enter(connection: ArchicadConnection, database_id: str) -> bool:
+    """Try to make the worksheet current through the add-on. False if refused."""
+    try:
+        moved = connection.run_loriini(
+            "SetCurrentDatabase", {"databaseId": {"guid": database_id}, "windowType": "Worksheet"}
+        )
+    except ArchicadError:
+        return False
+    return isinstance(moved, dict) and bool(moved.get("success"))
+
+
+def _wait_until_in_front(
+    connection: ArchicadConnection,
+    database_id: str,
+    name: str,
+    *,
+    wait_s: float,
+    say: Callable[[str], None] | None,
+) -> None:
+    """Poll until the worksheet is the current database, or give up.
+
+    A worksheet made in this session refuses every move from outside, and a
+    person opening it is the only thing that makes it current. So the run
+    asks, and waits: two seconds between looks, ``wait_s`` in all.
+    """
+    deadline = time.monotonic() + wait_s
+    if say and wait_s > 0:
+        say(
+            f"  waiting for {name!r} to become current -- save the project (Ctrl+S), "
+            f"and double-click the worksheet under Worksheets in the Project Map -- "
+            f"within {wait_s / 60:.0f} minutes..."
+        )
+    while True:
+        here_id, here_kind, _ = _standing_in(connection)
+        if here_id == database_id and here_kind == "Worksheet":
+            return
+        # A save may be what makes the database enterable (D39 found that
+        # for a layout), so the move is retried on every look as well.
+        if _enter(connection, database_id):
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(2.0)
+    raise WorksheetNotEnteredError(
+        f"The worksheet {name!r} is in the project but Archicad refused to make it "
+        f"current, and it was not opened while the run waited. Open it -- double-click "
+        f"it under Worksheets in the Project Map -- and run again; the run draws into the "
+        f"worksheet in front."
+    )
+
+
+def ensure_worksheet(
+    connection: ArchicadConnection,
+    name: str,
+    *,
+    wait_s: float = 0.0,
+    say: Callable[[str], None] | None = None,
+) -> tuple[str, str, bool]:
     """A worksheet by this name, current. Returns ``(database id, navigator id, reused)``.
 
-    An existing one is entered through the add-on's ``SetCurrentDatabase``,
-    which reads back and refuses to claim a move that did not happen; a new
-    one is made and entered in one call, which is what makes it drawable in
-    the session that made it (D33).
-    """
-    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "ProjectMap"})
-    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
-    wanted = " ".join(name.split()).casefold()
-    if isinstance(root, dict):
-        for item_name, navigator_id in _worksheets(root.get("rootItem", root)):
-            if " ".join(item_name.split()).casefold() != wanted:
-                continue
-            database_id = database_of(connection, navigator_id)
-            moved = connection.run_loriini(
-                "SetCurrentDatabase",
-                {"databaseId": {"guid": database_id}, "windowType": "Worksheet"},
-            )
-            if not isinstance(moved, dict) or not moved.get("success"):
-                raise ArchicadError(f"Could not enter the worksheet {name!r}: {moved!r}")
-            return database_id, navigator_id, True
+    In order of what works: the worksheet already current, by its database
+    id; an existing one entered through the add-on's ``SetCurrentDatabase``,
+    which reads back rather than claims; a new one from the add-on's
+    ``CreateWorksheet``; and, when that is refused, Tapir's
+    ``CreateWorksheets`` followed by the same entering step.
 
-    made = connection.run_loriini("CreateWorksheet", {"name": name, "makeCurrent": True})
-    database_id = (
-        str(((made or {}).get("databaseId") or {}).get("guid", ""))
-        if isinstance(made, dict)
-        else ""
-    )
-    if not database_id or not made.get("isCurrent"):
-        raise ArchicadError(f"CreateWorksheet for {name!r} answered {made!r}")
-    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "ProjectMap"})
-    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
-    navigator_id = ""
-    if isinstance(root, dict):
-        for item_name, identifier in _worksheets(root.get("rootItem", root)):
-            if " ".join(item_name.split()).casefold() == wanted:
-                navigator_id = identifier
-                break
-    return database_id, navigator_id, False
+    A worksheet made in this session refuses to be entered by either route
+    (measured, 11 September 2026). It is created all the same, and the run
+    then waits ``wait_s`` for a person to open it, since a worksheet in front
+    is current by definition.
+    """
+    navigator_id = _worksheet_by_name(connection, name)
+    database_id = database_of(connection, navigator_id) if navigator_id else ""
+    reused = bool(navigator_id)
+
+    if not database_id:
+        try:
+            made = connection.run_loriini("CreateWorksheet", {"name": name, "makeCurrent": True})
+            if isinstance(made, dict):
+                database_id = str((made.get("databaseId") or {}).get("guid", ""))
+                if database_id and made.get("isCurrent"):
+                    return database_id, _worksheet_by_name(connection, name), False
+        except ArchicadError:
+            # APIERR_REFUSEDCMD from the undo scope the first build wrapped it
+            # in; Tapir's own creation is the same call outside one.
+            pass
+        if not database_id:
+            made = connection.run_tapir(
+                "CreateWorksheets",
+                {"worksheetsData": [{"name": name, "referenceId": name[:31]}]},
+            )
+            databases = made.get("databases") if isinstance(made, dict) else None
+            first = databases[0] if isinstance(databases, list) and databases else None
+            database_id = (
+                str((first.get("databaseId") or {}).get("guid", ""))
+                if isinstance(first, dict)
+                else ""
+            )
+            if not database_id:
+                raise ArchicadError(f"CreateWorksheets for {name!r} answered {made!r}")
+        navigator_id = _worksheet_by_name(connection, name)
+
+    here_id, here_kind, _ = _standing_in(connection)
+    if here_id == database_id and here_kind == "Worksheet":
+        return database_id, navigator_id, reused
+    if _enter(connection, database_id):
+        return database_id, navigator_id, reused
+    _wait_until_in_front(connection, database_id, name, wait_s=wait_s, say=say)
+    return database_id, navigator_id, reused
 
 
 def _batched(items: Sequence[dict[str, Any]], size: int) -> Iterable[list[dict[str, Any]]]:
@@ -1712,6 +1827,81 @@ def _texts_onto(
     return sum(1 for row in moved if isinstance(row, dict) and row.get("layerIndex") == layer_index)
 
 
+#: What a justification means for where the text hangs off its point, when
+#: the add-on is asked. A label is placed at its centre, a legend row at its
+#: left edge; Tapir's command has no anchor, so its texts hang from the Text
+#: tool's default and a centred label sits a little off.
+_ANCHORS = {"Center": "MiddleMiddle", "Left": "LeftMiddle", "Right": "RightMiddle"}
+
+
+def _texts(
+    connection: ArchicadConnection,
+    texts: Sequence[Text],
+    indices: dict[str, int],
+    attributes: _Attributes,
+) -> int:
+    """Write the texts, through the add-on when it has the command.
+
+    The add-on's ``CreateTexts`` makes a non-breaking box on the study's
+    layer with the anchor asked for. Tapir's makes a text in the Text tool's
+    default box on the Text tool's default layer -- which on the Kogarah
+    solar study wrapped every label to one letter per line -- so it is the
+    fallback for an add-on built before the command existed, and the layer
+    move follows it. Returns how many texts ended on their layer.
+    """
+    if not texts:
+        return 0
+    data: list[dict[str, Any]] = []
+    for text in texts:
+        one: dict[str, Any] = {
+            "coordinate": {"x": text.at[0], "y": text.at[1]},
+            "text": text.text,
+            "height": text.height_mm,
+            "justification": text.justification,
+            "layerIndex": indices[text.layer],
+        }
+        if text.justification in _ANCHORS:
+            one["anchor"] = _ANCHORS[text.justification]
+        if abs(text.angle_rad) > 1e-9:
+            one["angle"] = text.angle_rad
+        pen = attributes.pen(INK)
+        if pen is not None:
+            one["penIndex"] = pen
+        data.append(one)
+    try:
+        on_layer = 0
+        for batch in _batched(data, 500):
+            made = _created(connection.run_loriini("CreateTexts", {"texts": batch}), "CreateTexts")
+            on_layer += len(made)
+        return on_layer
+    except ArchicadError as error:
+        if (
+            "not have the registered" not in str(error)
+            and "no add-on response" not in str(error).lower()
+        ):
+            raise
+
+    on_layer = 0
+    by_layer: dict[str, list[dict[str, Any]]] = {}
+    for text, one in zip(texts, data, strict=True):
+        by_layer.setdefault(text.layer, []).append(
+            {
+                "coordinate": {**one["coordinate"], "z": 0.0},
+                "text": one["text"],
+                "height": one["height"],
+                "justification": one["justification"],
+                **({"angle": one["angle"]} if "angle" in one else {}),
+            }
+        )
+    for layer, rows in by_layer.items():
+        for batch in _batched(rows, 500):
+            made = _created(
+                connection.run_tapir("CreateTexts", {"textsData": batch}), "CreateTexts"
+            )
+            on_layer += _texts_onto(connection, made, indices[layer])
+    return on_layer
+
+
 def _flush(
     connection: ArchicadConnection, drawing: Drawing, attributes: _Attributes
 ) -> tuple[int, int, int, int]:
@@ -1762,27 +1952,7 @@ def _flush(
             connection.run_tapir("CreatePolylines", {"polylinesData": batch}), "CreatePolylines"
         )
 
-    on_layer = 0
-    by_layer: dict[str, list[Text]] = {}
-    for text in drawing.texts:
-        by_layer.setdefault(text.layer, []).append(text)
-    for layer, texts in by_layer.items():
-        data_list: list[dict[str, Any]] = []
-        for text in texts:
-            data = {
-                "coordinate": {"x": text.at[0], "y": text.at[1], "z": 0.0},
-                "text": text.text,
-                "height": text.height_mm,
-                "justification": text.justification,
-            }
-            if abs(text.angle_rad) > 1e-9:
-                data["angle"] = text.angle_rad
-            data_list.append(data)
-        for batch in _batched(data_list, 500):
-            made = _created(
-                connection.run_tapir("CreateTexts", {"textsData": batch}), "CreateTexts"
-            )
-            on_layer += _texts_onto(connection, made, indices[layer])
+    on_layer = _texts(connection, drawing.texts, indices, attributes)
 
     return len(fills), len(lines), len(drawing.texts), on_layer
 
@@ -1805,7 +1975,13 @@ def _view_of(connection: ArchicadConnection, navigator_id: str, name: str, drawi
 
 
 def _draw(
-    connection: ArchicadConnection, drawing: Drawing, name: str, *, view: bool
+    connection: ArchicadConnection,
+    drawing: Drawing,
+    name: str,
+    *,
+    view: bool,
+    wait_s: float = 0.0,
+    say: Callable[[str], None] | None = None,
 ) -> WorksheetReport:
     attributes = _attributes(connection)
     notes: list[str] = []
@@ -1818,7 +1994,7 @@ def _draw(
     if not attributes.pens:
         notes.append("the pen table could not be read; lines take the tool's current pen.")
 
-    database_id, navigator_id, reused = ensure_worksheet(connection, name)
+    database_id, navigator_id, reused = ensure_worksheet(connection, name, wait_s=wait_s, say=say)
     cleared = 0
     if reused:
         cleared, left = clear_database(connection)
@@ -1849,18 +2025,56 @@ def _draw(
 
 
 def draw_context(
-    connection: ArchicadConnection, bundle: ContextBundle, frame: Frame, *, view: bool = True
+    connection: ArchicadConnection,
+    bundle: ContextBundle,
+    frame: Frame,
+    *,
+    view: bool = True,
+    wait_s: float = 0.0,
+    say: Callable[[str], None] | None = None,
 ) -> WorksheetReport:
-    return _draw(connection, context_drawing(bundle, frame), naming.named(CONTEXT_WORD), view=view)
+    return _draw(
+        connection,
+        context_drawing(bundle, frame),
+        naming.named(CONTEXT_WORD),
+        view=view,
+        wait_s=wait_s,
+        say=say,
+    )
 
 
 def draw_site(
-    connection: ArchicadConnection, bundle: SiteBundle, frame: Frame, *, view: bool = True
+    connection: ArchicadConnection,
+    bundle: SiteBundle,
+    frame: Frame,
+    *,
+    view: bool = True,
+    wait_s: float = 0.0,
+    say: Callable[[str], None] | None = None,
 ) -> WorksheetReport:
-    return _draw(connection, site_drawing(bundle, frame), naming.named(SITE_WORD), view=view)
+    return _draw(
+        connection,
+        site_drawing(bundle, frame),
+        naming.named(SITE_WORD),
+        view=view,
+        wait_s=wait_s,
+        say=say,
+    )
 
 
 def draw_summary(
-    connection: ArchicadConnection, bundle: SummaryBundle, *, view: bool = True
+    connection: ArchicadConnection,
+    bundle: SummaryBundle,
+    *,
+    view: bool = True,
+    wait_s: float = 0.0,
+    say: Callable[[str], None] | None = None,
 ) -> WorksheetReport:
-    return _draw(connection, summary_drawing(bundle), naming.named(SUMMARY_WORD), view=view)
+    return _draw(
+        connection,
+        summary_drawing(bundle),
+        naming.named(SUMMARY_WORD),
+        view=view,
+        wait_s=wait_s,
+        say=say,
+    )

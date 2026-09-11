@@ -112,30 +112,40 @@ coloured by what its name says it is -- `SCHOOL` is education, `HOSPITAL` is
 medical, `CHURCH` is community -- because the register's type codes are
 unreliable and its names are not. The palette is the Oatley legend's.
 
-## What to check on a live project
+## What the first live run found
 
-None of this has run against an Archicad yet. The fake-transport tests
-assert the shape of every request; these are the facts only a workstation
-can settle, in the order they will be met:
+Run on the Kogarah solar study, 18-24 Princes Highway, on 11 September 2026.
+The fetch, the frame turn and the drawing all held; two walls and one fault
+came up, and each is recorded in `docs/addon.md`.
 
-1. **`CreateTexts` and `angle`.** Rotated labels -- street names, boundary
-   dimensions -- pass `angle` in radians, the Archicad API's own unit, on the
-   strength of D60's probe that the field exists. If they arrive turned by
-   the wrong amount, it is degrees. Everything else about a text is the same
-   call the shadow diagrams already make.
-2. **`SetCurrentDatabase` into an existing worksheet.** A rerun finds the
-   worksheet by name and enters it through the add-on before clearing it.
-   The command reads back and refuses a move that did not happen, so a
-   refusal is reported rather than drawn over.
-3. **The fill attribute.** Fills are given the attribute named `Solid Fill`
-   when the project has one; otherwise they take the Fill tool's current
-   pattern and the run says so. Likewise the line type named `Dashed`.
-4. **The text move.** Texts land on the Text tool's default layer and are
-   moved onto the study's; the run reports how many arrived. The landing
-   layer is switched on inside the worksheet first, which is where the
-   elements are.
-5. **The frame turn**, by eye: the site's street should run the way it does
-   on the survey.
+**Entering the worksheet.** Archicad refuses to make a worksheet created in
+the same session current, whichever add-on asks -- Tapir's `ChangeWindow`,
+the add-on's `SetCurrentDatabase`, both `APIERR_BADDATABASE`. Opening the
+worksheet by hand is what makes it current, and the run is built around
+that: it creates the worksheet, prints *waiting for '14 | Context Analysis'
+to become current*, and polls every two seconds for `--wait-minutes` (five by
+default). Double-click the worksheet under Worksheets in the Project Map and
+leave it as the front tab; the run draws the moment it sees it. On a later
+session the worksheet already exists and is entered without help. The
+add-on's own `CreateWorksheet` was refused outright by the first build, from
+an undo scope it should not have had; that is fixed for the next build and
+the Tapir route stands as the fallback.
+
+**One letter per label.** Every text made through Tapir 1.5.8 showed its
+first letter: the Text tool's default box in that project wraps, and Tapir
+hands the default through. The add-on now has its own `CreateTexts`, with a
+non-breaking box, the layer, the anchor and the pen set at creation; the run
+uses it when the installed add-on has it and falls back to Tapir's, and the
+layer move, otherwise. Until the new build is installed, setting the Text
+tool's default to non-breaking in the project and rerunning is the
+workaround.
+
+**Still to confirm by eye:** the `angle` of rotated labels is sent in
+radians; if street names and boundary dimensions arrive turned wrong, it is
+degrees. Fills were given the `Solid Fill` attribute (index 12 on that
+project) and dashed lines the `Dashed` line type (14); lines took the nearest
+pen of the active table, `00 FA Pens`, which has a `- Site Analysis`
+sibling the office keeps for exactly these sheets.
 
 The aerial is not drawn: Archicad's JSON API has no command that places a
 picture, and neither does the add-on yet. It is saved for placing by hand.

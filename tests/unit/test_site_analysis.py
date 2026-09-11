@@ -344,6 +344,7 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
     and texts, and the texts moved onto the study's layer."""
     connection, transport_ = connect(
         {
+            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
             "GetNavigatorItemTree": navigator_tree(),
             "CreateWorksheet": {"success": True, "databaseId": {"guid": "WS"}, "isCurrent": True},
             # One list answers every attribute kind: the fill and line type by
@@ -397,9 +398,7 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
             "CreateLayers": {"success": True},
             "CreateFills": {"success": True, "elements": [{"guid": "H"}]},
             "CreatePolylines": {"elements": [{"elementId": {"guid": "P"}}]},
-            "CreateTexts": {"elements": [{"elementId": {"guid": "T"}}]},
-            "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 1}]},
-            "SetDetailsOfElements": {"success": True},
+            "CreateTexts": {"success": True, "elements": [{"guid": "T"}]},
             "CreateLayerCombinations": {"executionResults": [{"success": True}]},
             "CreateViewsInViewMap": {"navigatorItems": [{"navigatorItemId": {"guid": "V"}}]},
             "SetViewSettings": {"executionResults": [{"success": True}]},
@@ -437,10 +436,11 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
     assert any(line.get("lineTypeIndex") == 2 for line in lines), "the site outline is dashed"
     site_line = next(line for line in lines if line.get("penWeightMm") == 0.9)
     assert site_line["linePenIndex"] == 5, "the site's red takes the nearest pen"
-    texts = [t for call in transport_.all_parameters_for("CreateTexts") for t in call["textsData"]]
-    assert any(t["text"] == "SITE" and t["justification"] == "Center" for t in texts)
-    assert all("layerIndex" not in t for t in texts), "a Text takes no layer; it is moved after"
-    assert "SetDetailsOfElements" in commands
+    texts = [t for call in transport_.all_parameters_for("CreateTexts") for t in call["texts"]]
+    site_text = next(t for t in texts if t["text"] == "SITE")
+    assert site_text["justification"] == "Center" and site_text["anchor"] == "MiddleMiddle"
+    assert all("layerIndex" in t for t in texts), "the add-on's texts take their layer at creation"
+    assert "SetDetailsOfElements" not in commands, "so nothing has to be moved afterwards"
 
     assert report.reused is False and report.fills == len(fills) and report.lines == len(lines)
     assert report.texts == len(texts)
@@ -450,6 +450,7 @@ def test_drawing_makes_the_worksheet_through_the_add_on_and_fills_in_colour() ->
 def test_an_existing_worksheet_is_entered_and_cleared_first() -> None:
     connection, transport_ = connect(
         {
+            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
             "GetNavigatorItemTree": navigator_tree((f"{SS} Development Summary", "NAV")),
             "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "DB"}}]},
             "SetCurrentDatabase": {"success": True},
@@ -481,3 +482,98 @@ def test_a_context_extent_is_the_sheet_at_its_scale() -> None:
     bundle = context_bundle()
     assert isinstance(bundle.extent, Extent)
     assert bundle.extent.width == pytest.approx(2070.0 / math.cos(math.radians(LAT)), rel=1e-6)
+
+
+def test_a_refused_creation_falls_back_to_tapir_and_a_refused_entry_says_what_to_do() -> None:
+    """Measured on the Kogarah solar study: the add-on's CreateWorksheet is
+    refused from its undo scope, Tapir's CreateWorksheets makes the sheet,
+    and neither route can enter a worksheet made in this session. The
+    worksheet is then there, and the error says to open it and rerun."""
+    from sun_study.archicad.site_analysis import WorksheetNotEnteredError, ensure_worksheet
+
+    connection, transport_ = connect(
+        {
+            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+            "GetNavigatorItemTree": navigator_tree(),
+            "CreateWorksheet": {"error": {"code": -2130312312, "message": "Failed to create"}},
+            "CreateWorksheets": {"databases": [{"databaseId": {"guid": "NEW"}}]},
+            "SetCurrentDatabase": {"error": {"code": -2130313110, "message": "refused to move"}},
+        }
+    )
+    with pytest.raises(WorksheetNotEnteredError, match="double-click"):
+        ensure_worksheet(connection, f"{SS} Context Analysis", wait_s=0.0)
+    assert transport_.parameters_for("CreateWorksheets") == {
+        "worksheetsData": [
+            {"name": f"{SS} Context Analysis", "referenceId": f"{SS} Context Analysis"}
+        ]
+    }
+    assert transport_.all_parameters_for("SetCurrentDatabase")[0]["databaseId"] == {"guid": "NEW"}
+
+
+def test_a_worksheet_already_in_front_is_drawn_into_without_a_move() -> None:
+    """The way through the refusal: a person opens the worksheet, and the run
+    finds itself standing in it."""
+    from sun_study.archicad.site_analysis import ensure_worksheet
+
+    connection, transport_ = connect(
+        {
+            "GetCurrentDatabase": {"databaseId": {"guid": "WS"}, "windowType": "Worksheet"},
+            "GetNavigatorItemTree": navigator_tree((f"{SS} Context Analysis", "NAV")),
+            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "WS"}}]},
+        }
+    )
+    assert ensure_worksheet(connection, f"{SS} Context Analysis") == ("WS", "NAV", True)
+    assert "SetCurrentDatabase" not in transport_.commands()
+
+
+def test_the_run_waits_for_a_person_to_open_the_worksheet() -> None:
+    """Refused twice, then in front: the third look finds it and drawing goes on."""
+    from sun_study.archicad.site_analysis import ensure_worksheet
+
+    connection, transport_ = connect(
+        {
+            "GetCurrentDatabase": Sequential(
+                {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+                {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+                {"databaseId": {"guid": "NEW"}, "windowType": "Worksheet"},
+            ),
+            "GetNavigatorItemTree": navigator_tree((f"{SS} Site Analysis", "NAV")),
+            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "NEW"}}]},
+            "SetCurrentDatabase": {"error": {"code": -2130313110, "message": "refused"}},
+        }
+    )
+    said: list[str] = []
+    assert ensure_worksheet(connection, f"{SS} Site Analysis", wait_s=30.0, say=said.append) == (
+        "NEW",
+        "NAV",
+        True,
+    )
+    assert said and "double-click" in said[0]
+    assert transport_.commands().count("GetCurrentDatabase") == 3
+
+
+def test_texts_fall_back_to_tapir_and_a_move_when_the_add_on_is_older() -> None:
+    """An add-on without CreateTexts answers 'not registered'; the texts then
+    go through Tapir on the Text tool's layer and are moved onto the study's."""
+    from sun_study.archicad.site_analysis import Text, _Attributes, _texts
+
+    connection, transport_ = connect(
+        {
+            "CreateTexts": Sequential(
+                {"error": {"code": 4010, "message": "does not have the registered Add-On command"}},
+                {"elements": [{"elementId": {"guid": "T"}}]},
+            ),
+            "GetDetailsOfElements": Sequential(
+                {"detailsOfElements": [{"layerIndex": 3}]},
+                {"detailsOfElements": [{"layerIndex": 7}]},
+            ),
+            "GetAttributesByType": {"attributes": []},
+            "SetDetailsOfElements": {"success": True},
+        }
+    )
+    texts = [Text(layer="L", text="SITE", at=(1.0, 2.0), height_mm=4.0)]
+    moved = _texts(connection, texts, {"L": 7}, _Attributes(None, None, ()))
+    assert moved == 1
+    calls = transport_.all_parameters_for("CreateTexts")
+    assert "texts" in calls[0] and "textsData" in calls[1]
+    assert calls[1]["textsData"][0]["coordinate"] == {"x": 1.0, "y": 2.0, "z": 0.0}

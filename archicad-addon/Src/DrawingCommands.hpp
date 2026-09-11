@@ -52,6 +52,40 @@ public:
 													 GS::ProcessControl& processControl) const override;
 };
 
+
+// Texts, with the box, the layer and the anchor Tapir's `CreateTexts` cannot set.
+//
+// Tapir's version takes a coordinate, a string, a height, a pen, a
+// justification and an angle, and hands everything else to the Text tool's
+// defaults. Two of those defaults decide whether the text can be read at all.
+// A text box that is not `nonBreaking` wraps at its `width`, and a project
+// whose Text tool was last used for a narrow wrapped note then draws every
+// label one letter per line -- measured on the Kogarah solar study on 11
+// September 2026, 81 labels each showing its first letter. And a Text takes
+// no layer, so every label lands on the office's annotation layer and has to
+// be moved (D60, D62).
+//
+// So: the box is non-breaking unless a width is asked for, the layer is set
+// at creation, the anchor is the caller's, and the element ID goes on in the
+// same call, as `CreateFills` does. Content is one paragraph and one run,
+// which is what a label is.
+class CreateTextsCommand : public Command {
+public:
+	virtual GS::String						GetName () const override;
+	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
+	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
+
+	virtual API_AddOnCommandExecutionPolicy	GetExecutionPolicy () const override
+	{
+		return API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread;
+	}
+
+	virtual bool							IsProcessWindowVisible () const override { return true; }
+
+	virtual GS::ObjectState					Execute (const GS::ObjectState& parameters,
+													 GS::ProcessControl& processControl) const override;
+};
+
 }		// namespace Loriini
 
 #endif

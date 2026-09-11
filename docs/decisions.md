@@ -2582,3 +2582,30 @@ building footprint in its extent with the storeys and height OSM records,
 which the sheets only label. That is the material for the next step, a
 massing of the neighbours on a context layer, and the reason it is fetched
 now rather than later.
+
+### D84 — A worksheet made in the session is entered by a person, and the run waits for that
+
+Measured on the Kogarah solar study on 11 September 2026, drawing the site
+sheets. The add-on's `CreateWorksheet` was refused from its undo scope, the
+same fault D82's 3D Document command had, and is fixed. Tapir's
+`CreateWorksheets` then made the worksheet, and entering it was refused too:
+`APIDb_ChangeCurrentDatabaseID`, the add-on's own call, answers
+`APIERR_BADDATABASE` for a worksheet made in the session, so the wall D33
+blamed on Tapir's `ChangeWindow` is Archicad's. A save did not lift it.
+
+What does lift it is the one thing the API cannot do: a person opening the
+worksheet. With it double-clicked in the Project Map, `GetCurrentDatabase`
+reported the worksheet by id and by name, and the site sheet drew into it.
+
+So the run no longer claims to enter a worksheet it cannot. It creates one
+if there is none, tries the move once, and then polls for up to
+`--wait-minutes`, saying exactly which worksheet to open. Matched by database
+id rather than by name, because the add-on reports an empty name for a floor
+plan and a name is a weaker key than an id anyway. A rerun in a later session
+enters the existing worksheet without help, as the docs measured for the
+penetration series.
+
+The alternative -- drawing into the floor plan and asking a person to move
+the elements -- was not taken. A context sheet is 6,000 elements at
+1:3000 over a kilometre of the model's storey, and nothing about that is
+tidier than a click.

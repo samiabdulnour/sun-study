@@ -367,3 +367,273 @@ GS::ObjectState CreateFillsCommand::Execute (const GS::ObjectState& parameters,
 }
 
 }		// namespace Loriini
+
+
+// -- CreateTexts --------------------------------------------------------------
+
+namespace Loriini {
+
+namespace {
+
+// Archicad's own names for where the text hangs off its point.
+bool ReadAnchor (const GS::UniString& name, API_AnchorID& into)
+{
+	static const struct { const char* name; API_AnchorID anchor; } anchors[] = {
+		{ "LeftTop", APIAnc_LT },      { "LeftMiddle", APIAnc_LM },      { "LeftBottom", APIAnc_LB },
+		{ "MiddleTop", APIAnc_MT },    { "MiddleMiddle", APIAnc_MM },    { "MiddleBottom", APIAnc_MB },
+		{ "RightTop", APIAnc_RT },     { "RightMiddle", APIAnc_RM },     { "RightBottom", APIAnc_RB },
+	};
+	for (const auto& entry : anchors) {
+		if (name == entry.name) {
+			into = entry.anchor;
+			return true;
+		}
+	}
+	return false;
+}
+
+
+bool ReadJustification (const GS::UniString& name, API_JustID& into)
+{
+	if (name == "Left")   { into = APIJust_Left;   return true; }
+	if (name == "Center") { into = APIJust_Center; return true; }
+	if (name == "Right")  { into = APIJust_Right;  return true; }
+	if (name == "Full")   { into = APIJust_Full;   return true; }
+	return false;
+}
+
+
+// The content: one paragraph, one run, a line break wherever the string has
+// one. The shape Tapir builds, because it is the shape Archicad reads back
+// without complaint.
+GSErrCode BuildContent (const GS::UniString& text, API_TextType& data, API_ElementMemo& memo)
+{
+	memo.textContent = BMhAllClear ((text.GetLength () + 1) * sizeof (GS::uchar_t));
+	if (memo.textContent == nullptr) {
+		return APIERR_MEMFULL;
+	}
+	GS::ucscpy (reinterpret_cast<GS::uchar_t*> (*memo.textContent), text.ToUStr ());
+
+	const GS::UniChar newline = GS::UniChar (char (10));
+	data.nLine = text.Count (newline) + 1;
+
+	memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAllClear (sizeof (API_ParagraphType)));
+	if (memo.paragraphs == nullptr) {
+		return APIERR_MEMFULL;
+	}
+	API_ParagraphType& paragraph = (*memo.paragraphs)[0];
+	paragraph.from = 0;
+	paragraph.range = text.GetLength ();
+	paragraph.tab = reinterpret_cast<API_TabType*> (BMpAllClear (sizeof (API_TabType)));
+	paragraph.run = reinterpret_cast<API_RunType*> (BMpAllClear (sizeof (API_RunType)));
+	paragraph.eolPos = reinterpret_cast<Int32*> (BMpAllClear (data.nLine * sizeof (Int32)));
+	if (paragraph.tab == nullptr || paragraph.run == nullptr || paragraph.eolPos == nullptr) {
+		return APIERR_MEMFULL;
+	}
+	paragraph.run[0].from = 0;
+	paragraph.run[0].range = text.GetLength ();
+	paragraph.run[0].pen = data.pen;
+	paragraph.run[0].faceBits = data.faceBits;
+	paragraph.run[0].font = data.font;
+	paragraph.run[0].effectBits = data.effectsBits;
+	paragraph.run[0].size = data.size;
+
+	Int32 last = 0;
+	for (Int32 line = 0; line < data.nLine; ++line) {
+		const UIndex found = text.FindFirst (newline, line == 0 ? 0 : last + 1);
+		const Int32 end = (found != MaxUIndex) ? static_cast<Int32> (found) : static_cast<Int32> (text.GetLength ());
+		const Int32 offset = end - last - 1;
+		paragraph.eolPos[line] = offset < 0 ? 0 : offset;
+		last = (found != MaxUIndex) ? static_cast<Int32> (found) : end;
+	}
+	data.useEolPos = true;
+	return NoError;
+}
+
+}		// namespace
+
+
+GS::String CreateTextsCommand::GetName () const			{ return "CreateTexts"; }
+
+GS::Optional<GS::UniString> CreateTextsCommand::GetInputParametersSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"texts": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"coordinate": {
+							"type": "object",
+							"properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+							"required": [ "x", "y" ]
+						},
+						"text": { "type": "string" },
+						"height": { "type": "number", "description": "Character height, in the unit the Text tool uses here: millimetres on paper." },
+						"justification": { "type": "string", "enum": [ "Left", "Center", "Right", "Full" ] },
+						"anchor": {
+							"type": "string",
+							"description": "Which point of the box sits on the coordinate. The Text tool's default when left out.",
+							"enum": [ "LeftTop", "LeftMiddle", "LeftBottom", "MiddleTop", "MiddleMiddle", "MiddleBottom", "RightTop", "RightMiddle", "RightBottom" ]
+						},
+						"angle": { "type": "number", "description": "Radians, anticlockwise from +X." },
+						"layerIndex": { "type": "integer" },
+						"floorIndex": { "type": "integer" },
+						"penIndex": { "type": "integer" },
+						"width": {
+							"type": "number",
+							"description": "Box width in millimetres on paper, at which the text wraps. Left out, the box fits the text and never wraps."
+						},
+						"elementId": { "type": "string" }
+					},
+					"required": [ "coordinate", "text" ]
+				},
+				"minItems": 1
+			}
+		},
+		"required": [ "texts" ],
+		"additionalProperties": false
+	})");
+}
+
+GS::Optional<GS::UniString> CreateTextsCommand::GetResponseSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"success": { "type": "boolean" },
+			"elements": {
+				"type": "array",
+				"items": { "type": "object", "properties": { "guid": { "type": "string" } } }
+			},
+			"error": { "type": "object" }
+		}
+	})");
+}
+
+GS::ObjectState CreateTextsCommand::Execute (const GS::ObjectState& parameters,
+											 GS::ProcessControl& /*processControl*/) const
+{
+	GS::Array<GS::ObjectState> wanted;
+	if (!parameters.Get ("texts", wanted) || wanted.IsEmpty ()) {
+		return Failed ("Nothing to write: 'texts' is empty.", APIERR_BADPARS);
+	}
+
+	GS::Array<API_Guid> made;
+	GSErrCode failure = NoError;
+	GS::UniString failureText;
+
+	const GSErrCode err = ACAPI_CallUndoableCommand ("Write site analysis texts", [&] () -> GSErrCode {
+		for (const GS::ObjectState& one : wanted) {
+			API_Element element = {};
+			API_ElementMemo memo = {};
+			element.header.type = API_TextID;
+
+			GSErrCode step = ACAPI_Element_GetDefaults (&element, &memo);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Could not read the Text tool's defaults.";
+				return step;
+			}
+			ACAPI_DisposeElemMemoHdls (&memo);
+			memo = {};
+
+			API_TextType& text = element.text;
+			GS::ObjectState coordinate;
+			if (!one.Get ("coordinate", coordinate) || !coordinate.Get ("x", text.loc.x) || !coordinate.Get ("y", text.loc.y)) {
+				failure = APIERR_BADPARS;
+				failureText = "Every text needs a coordinate with an x and a y.";
+				return failure;
+			}
+			GS::UniString content;
+			if (!one.Get ("text", content)) {
+				failure = APIERR_BADPARS;
+				failureText = "Every text needs its text.";
+				return failure;
+			}
+
+			ReadInt (one, "layerIndex", element.header.layer);
+			ReadShort (one, "floorIndex", element.header.floorInd);
+			ReadShort (one, "penIndex", text.pen);
+
+			double height = 0.0;
+			if (one.Get ("height", height) && height > 0.0) {
+				text.size = height;
+			}
+			double angle = 0.0;
+			if (one.Get ("angle", angle)) {
+				text.angle = angle;
+			}
+			GS::UniString word;
+			if (one.Get ("justification", word) && !ReadJustification (word, text.just)) {
+				failure = APIERR_BADPARS;
+				failureText = "justification takes Left, Center, Right or Full.";
+				return failure;
+			}
+			if (one.Get ("anchor", word) && !ReadAnchor (word, text.anchor)) {
+				failure = APIERR_BADPARS;
+				failureText = "anchor takes LeftTop ... RightBottom.";
+				return failure;
+			}
+
+			// The box. Non-breaking is what a label is; a width is what a
+			// note wraps at. The Text tool's own default is neither reliably.
+			double width = 0.0;
+			if (one.Get ("width", width) && width > 0.0) {
+				text.nonBreaking = false;
+				text.width = width;
+			} else {
+				text.nonBreaking = true;
+				text.width = 0.0;
+			}
+			text.height = 0.0;
+
+			step = BuildContent (content, text, memo);
+			if (step != NoError) {
+				ACAPI_DisposeElemMemoHdls (&memo);
+				failure = step;
+				failureText = "Ran out of memory laying out a text.";
+				return step;
+			}
+
+			step = ACAPI_Element_Create (&element, &memo);
+			ACAPI_DisposeElemMemoHdls (&memo);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Archicad refused to create a text.";
+				return step;
+			}
+
+			GS::UniString identifier;
+			if (one.Get ("elementId", identifier) && !identifier.IsEmpty ()) {
+				step = ACAPI_Database (APIDb_ChangeElementInfoStringID, &element.header.guid, &identifier);
+				if (step != NoError) {
+					failure = step;
+					failureText = "A text was created but would not take its element ID.";
+					return step;
+				}
+			}
+			made.Push (element.header.guid);
+		}
+		return NoError;
+	});
+
+	if (err != NoError) {
+		return Failed (failureText.IsEmpty () ? GS::UniString ("Failed to write the texts.") : failureText,
+					   failure != NoError ? failure : err);
+	}
+
+	GS::Array<GS::ObjectState> elements;
+	for (const API_Guid& guid : made) {
+		GS::ObjectState one;
+		one.Add ("guid", APIGuidToString (guid));
+		elements.Push (one);
+	}
+	GS::ObjectState result = Succeeded ();
+	result.Add ("elements", elements);
+	return result;
+}
+
+}		// namespace Loriini

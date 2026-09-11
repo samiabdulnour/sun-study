@@ -204,6 +204,41 @@ drawing into a worksheet made in the same session fails with `-2130313110`,
 before and after `RebuildView`. Creating it and entering it in one call is what
 makes it drawable, which is why `makeCurrent` defaults to true.
 
+What the first live run taught, on the Kogarah solar study on 11 September
+2026. The first build wrapped `APIDb_NewDatabaseID` in an undo scope, and it
+answered `APIERR_REFUSEDCMD` (-2130312312), exactly as the 3D Document
+command had; the scope is gone. Tapir's own `CreateWorksheets` then made the
+worksheet (it wants `name` and `referenceId`), and `SetCurrentDatabase` --
+`APIDb_ChangeCurrentDatabaseID`, the add-on's own call -- was refused with
+`APIERR_BADDATABASE` (-2130313110) for it, so the refusal Tapir's
+`ChangeWindow` meets is Archicad's, not Tapir's. **A worksheet made in the
+session cannot be entered from outside by any route.** What does make it
+current is a person opening it: with the worksheet double-clicked in the
+Project Map, `GetCurrentDatabase` reported its id, its type and its name, and
+6,000 elements later drew into it. So the Python side creates the worksheet,
+asks for it to be opened, and polls until it is (D84).
+
+### `Loriini.CreateTexts`
+
+Texts with the box, the layer and the anchor Tapir's `CreateTexts` cannot set.
+
+Measured on the same run: the 81 labels of a site sheet, made through Tapir
+1.5.8, each showed its first letter. `Get3DBoundingBoxes` on a ten-character
+probe explained it -- 3.2 m wide and 5.5 m tall, ten lines of one character.
+Tapir takes the Text tool's defaults and this project's default box wraps at
+a width narrower than a character. Tapir's command has no field for the box,
+`ModifyTexts` is not in 1.5.8, and `SetDetailsOfElements` refuses a Text
+until 1.5.9. So the add-on carries the command: a non-breaking box unless a
+`width` is asked for, the layer at creation (which retires the move D60 and
+D62 describe), the anchor by name, the angle in radians, and the element ID
+in the same call. Content is one paragraph and one run, the shape Tapir
+builds, because a memo without paragraphs reads back with no style.
+
+The probe also settled the unit of `height` for a worksheet: millimetres on
+paper at the worksheet's own scale, 0.35 m per 3.5 mm in a fresh worksheet
+at 1:100. A text keeps its paper size in any view, so a label sized for the
+sheet prints right at the view's scale whatever the worksheet's is.
+
 ### `Loriini.ActivateLayerCombination` and `ModifyLayers`
 
 [D59](decisions.md) says a layer combination cannot be activated. It can:

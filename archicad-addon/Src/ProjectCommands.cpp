@@ -242,9 +242,13 @@ GS::ObjectState CreateWorksheetCommand::Execute (const GS::ObjectState& paramete
 		CopyName (referenceId, database.ref);
 	}
 
-	GSErrCode err = ACAPI_CallUndoableCommand ("Create worksheet", [&] () -> GSErrCode {
-		return ACAPI_Database (APIDb_NewDatabaseID, &database);
-	});
+	// Not undoable, on purpose. The kit documents `APIDb_NewDatabaseID` as a
+	// non-undoable data structure modifier, and inside an undo scope it
+	// answers APIERR_REFUSEDCMD (-2130312312) -- measured on 11 September
+	// 2026 against the Kogarah solar study, the same refusal the 3D Document
+	// command met on its first live run. A worksheet a run abandons is deleted
+	// in the Navigator, as a document is.
+	GSErrCode err = ACAPI_Database (APIDb_NewDatabaseID, &database);
 	if (err != NoError) {
 		return Failed ("Failed to create the worksheet.", err);
 	}
