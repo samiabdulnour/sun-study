@@ -428,7 +428,7 @@ def run_context(
         if with_aerial and out_dir is not None:
             f_aerial = soft.submit(
                 "aerial imagery",
-                lambda: aerial(extent, aerial_px_width, out_dir / "data"),
+                lambda: aerial(extent, aerial_px_width, out_dir / "data" / "aerial-context"),
                 None,
             )
 
@@ -598,7 +598,9 @@ def run_site(
         f_aerial: Future[Aerial | None] | None = None
         if with_aerial and out_dir is not None:
             f_aerial = soft.submit(
-                "aerial imagery", lambda: aerial(extent, 3600, out_dir / "data"), None
+                "aerial imagery",
+                lambda: aerial(extent, 3600, out_dir / "data" / "aerial-site"),
+                None,
             )
         key = transport.tfnsw_key()
         f_stops = (

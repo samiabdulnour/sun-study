@@ -239,6 +239,27 @@ paper at the worksheet's own scale, 0.35 m per 3.5 mm in a fresh worksheet
 at 1:100. A text keeps its paper size in any view, so a label sized for the
 sheet prints right at the view's scale whatever the worksheet's is.
 
+And the same afternoon, the reason the box was not the whole story: with the
+new command installed the labels were *still* one letter, and a
+one-character and a ten-character probe came back the same width from both
+commands. The content was cut, not wrapped. Archicad 26's
+`API_ElementMemo::textContent` is `char **` -- a byte string, read out of
+the kit's own `APIdefs_Elements.h` -- and both Tapir 1.5.8 and the first
+build of this command wrote UTF-16 with `GS::ucscpy`, whose second byte is
+the NUL that ends a C string. Tapir's newest source switches to a
+`GS::UniString` for Archicad 28, where the field's type changed, and keeps
+the UTF-16 copy for 26. This command writes UTF-8.
+
+### `Loriini.PlaceFigures`
+
+A picture on the drawing, for the orthophoto under a site sheet. No command
+anywhere places a Figure: not the JSON API, not Tapir. The image comes
+inside the request as base64, because an add-on cannot be pointed at a path
+on the machine; the box is the size in metres, `usePixelSize` off, with
+`rotAngle` about the anchor and `storageFormat` from the file type. The
+kit's own `Element_Test` example is the model: `API_PictureID`, the defaults
+read with no memo, the file's bytes in `memo.pictHdl`.
+
 ### `Loriini.ActivateLayerCombination` and `ModifyLayers`
 
 [D59](decisions.md) says a layer combination cannot be activated. It can:

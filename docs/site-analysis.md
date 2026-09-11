@@ -140,15 +140,29 @@ layer move, otherwise. Until the new build is installed, setting the Text
 tool's default to non-breaking in the project and rerunning is the
 workaround.
 
+**One letter, the real cause.** With the add-on's own command the labels
+were still one letter, and a one-character and a ten-character text came
+back the same width: the content was cut, not wrapped. Archicad 26's text
+memo is a byte string (`char **textContent` in its header), and both Tapir
+1.5.8 and the first build wrote UTF-16, whose second byte is a NUL. The
+command writes UTF-8 now.
+
+**The orthophoto.** No command in Archicad's API or Tapir places a picture,
+so the add-on grew `PlaceFigures`: the tile as base64 inside the request,
+its box in metres and its turn from the frame. With `--aerial` the tiles
+are fetched into `data/aerial-context/` and `data/aerial-site/`, and each
+sheet draws them under everything else; the zoning and institution washes
+then use the project's `50%` fill with a clear background so the photo
+shows through, the way the office's sheets have it. Without that fill
+attribute the wash is solid and the run says so.
+
 **Still to confirm by eye:** the `angle` of rotated labels is sent in
 radians; if street names and boundary dimensions arrive turned wrong, it is
 degrees. Fills were given the `Solid Fill` attribute (index 12 on that
 project) and dashed lines the `Dashed` line type (14); lines took the nearest
-pen of the active table, `00 FA Pens`, which has a `- Site Analysis`
-sibling the office keeps for exactly these sheets.
-
-The aerial is not drawn: Archicad's JSON API has no command that places a
-picture, and neither does the add-on yet. It is saved for placing by hand.
+pen of the active table, `00 FA Pens`, and the views are pinned to its
+`- Site Analysis` sibling, which the office keeps for these sheets, and to
+No Overrides.
 
 ## What comes next
 

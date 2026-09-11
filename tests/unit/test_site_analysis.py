@@ -599,3 +599,38 @@ def test_a_multipolygon_becomes_one_fill_per_part_with_its_own_holes() -> None:
     drawing.fill("Zoning", [big, hole, other], "#f7c1bd")
     assert len(drawing.fills) == 2
     assert drawing.fills[0].rings[0][-1] != drawing.fills[0].rings[0][0]
+
+
+def test_the_aerial_lands_under_the_cadastre_as_a_turned_figure(tmp_path: Path) -> None:
+    """A tile is north-up in mercator; in the project frame it is turned by
+    the frame's angle and sized by its corners on the ground, and it goes
+    over the wire as base64 with its box in metres."""
+    from sun_study.archicad.site_analysis import Drawing, _aerial, _figures
+    from sun_study.site.imagery import Aerial, Tile
+
+    (tmp_path / "aerial_0_0.jpg").write_bytes(b"\xff\xd8 not really a jpeg")
+    bundle = context_bundle()
+    bundle.aerial = Aerial((Tile("aerial_0_0.jpg", 0.0, 0.0, 1.0, 1.0),), 3200, 2755, str(tmp_path))
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    drawing = Drawing(bundle.scale, "Context Analysis")
+    assert _aerial(drawing, bundle, frame)
+    (figure,) = drawing.figures
+    # 690 mm at 1:3000 is 2070 m of ground, whatever the mercator stretch.
+    assert figure.width_m == pytest.approx(2070.0, rel=0.01)
+    assert figure.height_m == pytest.approx(1782.0, rel=0.01)
+    # The tile's east edge: true east, which in a frame whose +Y is at bearing B sits at angle B.
+    turn = math.degrees(figure.angle_rad) % 360.0
+    assert turn == pytest.approx(319.052, abs=0.2), "true east is the +Y bearing, as an angle"
+
+    connection, transport_ = connect(
+        {"PlaceFigures": {"success": True, "elements": [{"guid": "PIC"}]}}
+    )
+    assert _figures(connection, drawing.figures, {figure.layer: 5}) == 1
+    (request,) = transport_.parameters_for("PlaceFigures")["figures"]
+    assert (
+        request["format"] == "jpg"
+        and request["anchor"] == "LeftBottom"
+        and request["layerIndex"] == 5
+    )
+    assert request["box"]["xMax"] - request["box"]["xMin"] == pytest.approx(2070.0, rel=0.01)
+    assert request["data"].startswith("/9g")

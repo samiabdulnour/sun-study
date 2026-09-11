@@ -36,11 +36,13 @@ is a drawing of the neighbourhood, to be placed on a sheet or traced over.
 
 from __future__ import annotations
 
+import base64
 import math
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 from sun_study.archicad import naming
@@ -262,6 +264,23 @@ class Fill:
     colour: str
     contour: str | None = None
     element_id: str = ""
+    wash: bool = False
+    """A percentage fill with a clear background, so what is under it shows
+    through -- the zoning over the aerial, as the office's sheets have it."""
+
+
+@dataclass
+class Figure:
+    """A picture placed on the drawing: a JPEG on disk, its bottom-left corner,
+    its size on the ground and its turn, in project metres and radians."""
+
+    layer: str
+    path: str
+    at: Point
+    width_m: float
+    height_m: float
+    angle_rad: float = 0.0
+    name: str = ""
 
 
 @dataclass
@@ -296,6 +315,7 @@ class Drawing:
     fills: list[Fill] = field(default_factory=list)
     lines: list[Line] = field(default_factory=list)
     texts: list[Text] = field(default_factory=list)
+    figures: list[Figure] = field(default_factory=list)
 
     def mm(self, value: float) -> float:
         """Millimetres on paper at this drawing's scale, as ground metres."""
@@ -312,9 +332,28 @@ class Drawing:
         *,
         contour: str | None = None,
         element_id: str = "",
+        wash: bool = False,
     ) -> None:
         for outer, holes in _polygons(rings):
-            self.fills.append(Fill(self.layer(part), [outer, *holes], colour, contour, element_id))
+            self.fills.append(
+                Fill(self.layer(part), [outer, *holes], colour, contour, element_id, wash)
+            )
+
+    def figure(
+        self,
+        part: str,
+        path: str,
+        at: Point,
+        width_m: float,
+        height_m: float,
+        *,
+        angle_rad: float = 0.0,
+        name: str = "",
+    ) -> None:
+        if width_m > 0 and height_m > 0:
+            self.figures.append(
+                Figure(self.layer(part), path, at, width_m, height_m, angle_rad, name)
+            )
 
     def line(
         self,
@@ -375,6 +414,7 @@ class Drawing:
                 *(f.layer for f in self.fills),
                 *(line.layer for line in self.lines),
                 *(t.layer for t in self.texts),
+                *(g.layer for g in self.figures),
             }
         )
 
@@ -625,6 +665,42 @@ def _furniture_of_sheet(
     return (right + drawing.mm(15), top)
 
 
+def _aerial(drawing: Drawing, bundle: ContextBundle | SiteBundle, frame: Frame) -> bool:
+    """The orthophoto tiles as Figures, under everything else. True if any.
+
+    A tile is north-up in Web Mercator; in the project frame it is turned by
+    the frame's angle and sized by its corners' distances on the ground, so
+    it lands under the cadastre it was fetched with.
+    """
+    aerial = bundle.aerial
+    if aerial is None or not aerial.tiles:
+        return False
+    e = bundle.extent
+    placed = 0
+    for tile in aerial.tiles:
+        x0 = e.xmin + e.width * tile.left
+        x1 = x0 + e.width * tile.width
+        y1 = e.ymax - e.height * tile.top
+        y0 = y1 - e.height * tile.height
+        sw = frame.project(*mercator_to_lonlat(x0, y0))
+        se = frame.project(*mercator_to_lonlat(x1, y0))
+        nw = frame.project(*mercator_to_lonlat(x0, y1))
+        path = Path(aerial.folder) / tile.file
+        if not path.is_file():
+            continue
+        drawing.figure(
+            "Aerial",
+            str(path),
+            sw,
+            math.dist(sw, se),
+            math.dist(sw, nw),
+            angle_rad=math.atan2(se[1] - sw[1], se[0] - sw[0]),
+            name=tile.file,
+        )
+        placed += 1
+    return placed > 0
+
+
 # -- the context analysis ------------------------------------------------------
 
 
@@ -634,6 +710,9 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
     drawing = Drawing(bundle.scale, CONTEXT_WORD)
     placer = Placer()
     present: dict[str, curate.Category] = {}
+    # The photo under everything; over it the zoning is a wash rather than a
+    # coat, as on the office's sheets, so the streets stay visible through it.
+    wash = _aerial(drawing, bundle, frame)
 
     # Zoning first, so everything else sits over it.
     for feature in bundle.zoning["features"]:
@@ -649,6 +728,7 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
             cat.fill,
             contour=cat.stroke or cat.fill,
             element_id=f"SA ZONE {code}",
+            wash=wash,
         )
 
     for institution in bundle.institutions:
@@ -660,6 +740,7 @@ def context_drawing(bundle: ContextBundle, frame: Frame) -> Drawing:
             cat.fill,
             contour=cat.stroke or cat.fill,
             element_id=f"SA {cat.label} {institution.name}",
+            wash=wash,
         )
 
     railway = curate.category("railway")
@@ -901,6 +982,7 @@ def site_drawing(bundle: SiteBundle, frame: Frame) -> Drawing:
 
     # Reserve the fixed furniture first so every later label keeps clear.
     placer.reserve(centroid[0], centroid[1], mm(56), mm(24))
+    _aerial(drawing, bundle, frame)
 
     for feature in bundle.all_lots["features"]:
         for ring in rings_of(feature.get("geometry")):
@@ -1605,6 +1687,8 @@ class _Attributes:
     solid_fill: int | None
     dashed: int | None
     pens: tuple[Pen, ...]
+    wash_fill: int | None = None
+    """A percentage fill, for a wash the photo shows through."""
 
     def pen(self, colour: str) -> int | None:
         if not self.pens:
@@ -1648,6 +1732,9 @@ def _attributes(connection: ArchicadConnection) -> _Attributes:
     return _Attributes(
         solid_fill=_attribute_index(connection, "Fill", ("Solid Fill", "Solid", "Foreground")),
         dashed=_attribute_index(connection, "Line", ("Dashed", "Dashed Line", "Dash")),
+        wash_fill=_attribute_index(
+            connection, "Fill", ("50%", "50 %", "Percent 50", "Percentage 50")
+        ),
         pens=pens,
     )
 
@@ -1950,6 +2037,53 @@ def _texts(
     return on_layer
 
 
+def _figures(
+    connection: ArchicadConnection, figures: Sequence[Figure], indices: dict[str, int]
+) -> int:
+    """Place the pictures through the add-on. Returns how many were placed.
+
+    Each file goes over the wire as base64 inside the request, which for a
+    4000-pixel JPEG tile is a few megabytes; no command can point Archicad at
+    a path. An add-on without the command costs the sheet its photo and says
+    so, not the run.
+    """
+    placed = 0
+    for figure in figures:
+        try:
+            data = base64.b64encode(Path(figure.path).read_bytes()).decode("ascii")
+        except OSError:
+            continue
+        request = {
+            "figures": [
+                {
+                    "data": data,
+                    "format": Path(figure.path).suffix.lstrip(".").lower() or "jpeg",
+                    "box": {
+                        "xMin": figure.at[0],
+                        "yMin": figure.at[1],
+                        "xMax": figure.at[0] + figure.width_m,
+                        "yMax": figure.at[1] + figure.height_m,
+                    },
+                    "angle": figure.angle_rad,
+                    "anchor": "LeftBottom",
+                    "layerIndex": indices[figure.layer],
+                    "name": figure.name or Path(figure.path).name,
+                }
+            ]
+        }
+        try:
+            _created(connection.run_loriini("PlaceFigures", request), "PlaceFigures")
+        except ArchicadError as error:
+            if "not have the registered" in str(error):
+                raise ArchicadError(
+                    "The installed Loriini add-on has no PlaceFigures command, so the aerial "
+                    "cannot be placed; install the current build."
+                ) from error
+            raise
+        placed += 1
+    return placed
+
+
 def _flush(
     connection: ArchicadConnection, drawing: Drawing, attributes: _Attributes
 ) -> tuple[int, int, int, int, int]:
@@ -1958,6 +2092,8 @@ def _flush(
     Returns ``(fills, lines, texts, texts on their layer, fills refused)``.
     """
     indices = {name: ensure_layer(connection, name).index for name in drawing.layers}
+
+    _figures(connection, drawing.figures, indices)
 
     fills: list[dict[str, Any]] = []
     for fill in drawing.fills:
@@ -1970,7 +2106,11 @@ def _flush(
             "foregroundColour": {"red": r, "green": g, "blue": b},
             "backgroundColour": {"red": r, "green": g, "blue": b},
         }
-        if attributes.solid_fill is not None:
+        if fill.wash and attributes.wash_fill is not None:
+            data["fillIndex"] = attributes.wash_fill
+            data["backgroundPen"] = 0
+            del data["backgroundColour"]
+        elif attributes.solid_fill is not None:
             data["fillIndex"] = attributes.solid_fill
         contour_pen = attributes.pen(fill.contour or fill.colour)
         if contour_pen is not None:
@@ -2110,7 +2250,16 @@ def _draw(
             notes.append(
                 f"{left} elements from the last run could not be deleted and are still there."
             )
-    fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
+    if drawing.figures and attributes.wash_fill is None:
+        notes.append("no percentage fill named '50%'; the zoning is drawn solid over the aerial.")
+    try:
+        fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
+    except ArchicadError as error:
+        if "PlaceFigures" not in str(error):
+            raise
+        notes.append(str(error))
+        drawing.figures.clear()
+        fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
     if refused:
         notes.append(f"Archicad refused {refused} fills; they are left out of the sheet.")
     view_name = ""
