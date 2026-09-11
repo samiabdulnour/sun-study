@@ -239,8 +239,11 @@ GS::ObjectState GetDrawingsCommand::Execute (const GS::ObjectState& parameters,
 		if (ReadFrame (element, frame)) {
 			one.Add ("frame", BoxState (frame));
 		}
+		// The kit's signature is untyped, so the guid is passed as a copy it
+		// is allowed to point at.
 		API_Box content = {};
-		if (ACAPI_Database (APIDb_GetFullDrawingContentBoxID, &content, &guid) == NoError) {
+		API_Guid lookup = guid;
+		if (ACAPI_Database (APIDb_GetFullDrawingContentBoxID, &content, &lookup) == NoError) {
 			one.Add ("contentBox", BoxState (content));
 		}
 		drawings.Push (one);
