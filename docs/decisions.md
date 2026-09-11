@@ -2609,3 +2609,28 @@ The alternative -- drawing into the floor plan and asking a person to move
 the elements -- was not taken. A context sheet is 6,000 elements at
 1:3000 over a kilometre of the model's storey, and nothing about that is
 tidier than a click.
+
+### D85 — The context model fetches its own square, and reads the ground from an index
+
+Asked for on 11 September 2026, after the site sheet's 34 footprints had
+been modelled: "a large context, ideally 1 km radius" became 600 m and then
+"make it 500 m". The site sheet's bundle covers about 300 m; the model
+wants a kilometre across, and the furniture query that serves the sheet
+(fifteen kinds at once, sized for 1:500) is the wrong fetch for it.
+
+So `run_model` fetches a square of `--model-radius` metres each way: the
+contours, the height-of-building control, and the footprints alone through
+one Overpass query, saved as `data/model.json`. It is a `SiteBundle` with
+the sheet fields empty rather than a fourth kind: the model reads the same
+five fields either way, and one loader serves both. At Kogarah that is 483
+footprints and 36,191 contour vertices, fetched in 38 s and modelled in 5 s.
+
+Two things had to change for that size. The ground under each slab was
+found by scanning every contour vertex for every footprint -- fine at 34,
+seventeen million distances at 483 -- and is now a 40 m grid of the
+vertices, the same inverse-distance-between-two-levels answer from the
+cells around the point. And the mesh's level lines are thinned to 12,000
+vertices, halving contours and points in turn, because Archicad
+triangulates between every one and a kilometre of 2 m contours reads as
+ground long before that. `--model-radius 0` keeps to the site sheet's
+bundle for a small study.

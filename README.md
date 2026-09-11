@@ -171,11 +171,13 @@ origin for a project whose location is not set yet. Needs the Loriini add-on:
 a worksheet can only be drawn into in the session that made it through the
 add-on's own command.
 
-Ported from the office's own `au-site-analysis` generator, endpoint for
-endpoint, so the two agree about where every line comes from. **Not yet run
-against a live Archicad**; [`docs/site-analysis.md`](docs/site-analysis.md)
-lists what to check first, and what comes next: a massing of the neighbours
-from the building footprints the site bundle already carries.
+`--model` adds the context itself: a terrain mesh from the contours and one
+slab per building footprint, storeys from OpenStreetMap or the LEP height
+control, half a kilometre each way (`--model-radius`), on the `LORIINI`
+layer, and `--set-location` writes the site's coordinates into Project
+Location first. Ported from the office's own `au-site-analysis` generator,
+endpoint for endpoint, so the two agree about where every line comes from;
+run live on the Kogarah solar study. [`docs/site-analysis.md`](docs/site-analysis.md).
 
 ## Rules are data
 

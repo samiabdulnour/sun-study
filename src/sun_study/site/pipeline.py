@@ -58,6 +58,7 @@ __all__ = [
     "load_summary",
     "lots_area_m2",
     "run_context",
+    "run_model",
     "run_site",
     "run_summary",
     "save",
@@ -688,6 +689,68 @@ def lots_area_m2(site: FeatureCollection, zone: int) -> float | None:
                 projected = [lonlat_to_mga(float(p[0]), float(p[1]), zone) for p in ring]
                 total += (1 if index == 0 else -1) * abs(ring_area(projected))
     return total if total > 0 else None
+
+
+def run_model(
+    address: str,
+    *,
+    radius_m: float = 500.0,
+    out_dir: Path | None = None,
+    log: Log | None = None,
+) -> SiteBundle:
+    """What a context model needs, for a square of ``radius_m`` each way
+    around the site: the contours, every building footprint, the height
+    control, and the site itself. Saved as ``data/model.json``.
+
+    A ``SiteBundle`` rather than a fourth kind, with the sheet fields left
+    empty: the model reads the same five things off it as off a site
+    bundle, and one loader serves both.
+    """
+    say = log or (lambda _line: None)
+    found = _geocode(address, say)
+    site = nsw.site_lots(found.points)
+    if not site["features"]:
+        raise ValueError("No cadastral lots found for the site.")
+    lon0, _ = mercator_to_lonlat(*found.centre)
+    rings = _site_rings(site, mga_zone(lon0))
+    merc = [lonlat_to_mercator(lon, lat) for ring in rings for lon, lat in ring]
+    centre = (
+        (min(p[0] for p in merc) + max(p[0] for p in merc)) / 2.0,
+        (min(p[1] for p in merc) + max(p[1] for p in merc)) / 2.0,
+    )
+    _, lat = mercator_to_lonlat(*centre)
+    half = radius_m * scale_factor(lat)
+    extent = Extent(centre[0] - half, centre[1] - half, centre[0] + half, centre[1] + half)
+    say(f"fetching contours, footprints and height controls {radius_m:.0f} m around the site...")
+
+    soft = _Soft(say)
+    try:
+        f_contours = soft.submit("contours", lambda: nsw.contours(extent), [])
+        f_hob = soft.submit("height of building", lambda: nsw.height_of_building(extent), empty())
+        f_buildings = soft.submit(
+            "building footprints (OSM)", lambda: osm.buildings(extent, log=say), ()
+        )
+        contours = soft.take(f_contours)
+        footprints = soft.take(f_buildings)
+        bundle = SiteBundle(
+            address=address,
+            matched=found.matched,
+            centre=centre,
+            extent=extent,
+            scale=1000.0,
+            site_lots=site,
+            site_rings=tuple(tuple(ring) for ring in rings),
+            height_of_building=soft.take(f_hob),
+            contours=tuple(contours),
+            furniture=osm.Furniture(buildings=tuple(footprints)),
+        )
+    finally:
+        soft.close()
+    bundle.warnings = tuple(soft.warnings)
+    say(f"  contours:{len(bundle.contours)} footprints:{len(bundle.furniture.buildings)}")
+    if out_dir is not None:
+        say(f"  saved {save(bundle, out_dir / 'data' / 'model.json')}")
+    return bundle
 
 
 def run_summary(

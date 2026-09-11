@@ -6497,6 +6497,13 @@ def site_analysis(
             help="Also model the terrain and the neighbouring buildings, on the LORIINI layer.",
         ),
     ] = False,
+    model_radius: Annotated[
+        float,
+        typer.Option(
+            "--model-radius",
+            help="Metres each way around the site the model covers. 0: the site sheet's extent.",
+        ),
+    ] = 500.0,
     set_location: Annotated[
         bool | None,
         typer.Option(
@@ -6542,9 +6549,11 @@ def site_analysis(
             "  Give an address, or --from a folder of saved bundles.", fg=typer.colors.RED, err=True
         )
         raise typer.Exit(code=2)
-    if not (context or site or summary):
+    if not (context or site or summary or model):
         typer.secho(
-            "  Nothing to draw: every sheet is switched off.", fg=typer.colors.RED, err=True
+            "  Nothing to do: every sheet and the model are switched off.",
+            fg=typer.colors.RED,
+            err=True,
         )
         raise typer.Exit(code=2)
 
@@ -6626,6 +6635,8 @@ def site_analysis(
             typer.secho(f"  WARN {warning}", fg=typer.colors.YELLOW)
 
     if connection is None:
+        if model and model_radius > 0 and from_dir is None:
+            site_pipeline.run_model(address or "", radius_m=model_radius, out_dir=where, log=say)
         typer.echo("  fetched only; nothing drawn.")
         return
 
@@ -6712,25 +6723,34 @@ def site_analysis(
         raise typer.Exit(code=2) from error
 
     if model:
-        if site_bundle is None:
-            typer.secho(
-                "  --model needs the site bundle; nothing modelled.", fg=typer.colors.YELLOW
+        model_bundle = site_bundle
+        if model_radius > 0:
+            model_bundle = fetch_or_load(
+                "model",
+                True,
+                site_pipeline.load_site,
+                lambda: site_pipeline.run_model(
+                    address or "", radius_m=model_radius, out_dir=where, log=say
+                ),
             )
+        if model_bundle is None:
+            typer.secho("  nothing to model from; no bundle.", fg=typer.colors.YELLOW)
         else:
             typer.echo("modelling the terrain and the neighbours...")
             try:
                 built = context_model.model_context(
-                    connection, site_bundle, frame_and_offset(site_bundle), say=say
+                    connection, model_bundle, frame_and_offset(model_bundle), say=say
                 )
                 typer.echo(built.describe())
             except ArchicadError as error:
                 typer.secho(f"  the model was not made: {error}", fg=typer.colors.RED, err=True)
 
-    typer.echo(
-        "  Archicad is left standing in the last worksheet drawn. Click a storey in the "
-        "Project Map before the next export, and save: a worksheet made through the API "
-        "does not survive an unsaved close."
-    )
+    if context or site or summary:
+        typer.echo(
+            "  Archicad is left standing in the last worksheet drawn. Click a storey in the "
+            "Project Map before the next export, and save: a worksheet made through the API "
+            "does not survive an unsaved close."
+        )
     if unplaced:
         for bundle in (context_bundle, site_bundle):
             if bundle is not None and bundle.aerial is not None:

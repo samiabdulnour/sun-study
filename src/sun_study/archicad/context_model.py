@@ -24,6 +24,7 @@ it is, so the filing can be done by a Find & Select.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -32,7 +33,7 @@ from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import ensure_layer, move_to_layer
 from sun_study.archicad.ids import stamp_in_order
 from sun_study.archicad.read import GeoLocation
-from sun_study.archicad.site_analysis import Frame, _clean_ring, _level_at, _map_rectangle
+from sun_study.archicad.site_analysis import Frame, _clean_ring, _map_rectangle
 from sun_study.site.arcgis import rings_of
 from sun_study.site.geo import (
     Point,
@@ -147,9 +148,45 @@ def _contours(bundle: SiteBundle, frame: Frame) -> list[tuple[float, list[Point]
     return [(c.elevation, frame.ring(c.coords)) for c in bundle.contours if len(c.coords) >= 2]
 
 
-def _ground(point: Point, contours: Sequence[tuple[float, list[Point]]]) -> float:
-    level = _level_at(point, contours) if contours else None
-    return level if level is not None else 0.0
+class _Ground:
+    """The ground level anywhere, from the contours, in constant time.
+
+    Every contour vertex goes into a cell of ``cell_m``; a query looks at
+    the cells around the point, takes the nearest vertex of each of the two
+    nearest distinct levels, and weights them by inverse distance -- the
+    site sheet's own rule, without its scan of every point of every
+    contour, which for a thousand footprints against a kilometre of contours
+    was a billion distances.
+    """
+
+    def __init__(self, contours: Sequence[tuple[float, list[Point]]], cell_m: float = 40.0) -> None:
+        self.cell = cell_m
+        self.cells: dict[tuple[int, int], list[tuple[float, float, float]]] = {}
+        for elevation, points in contours:
+            for x, y in points:
+                key = (int(x // cell_m), int(y // cell_m))
+                self.cells.setdefault(key, []).append((x, y, elevation))
+        self.empty = not self.cells
+
+    def at(self, point: Point) -> float:
+        if self.empty:
+            return 0.0
+        cx, cy = int(point[0] // self.cell), int(point[1] // self.cell)
+        for reach in (1, 3, 8, 25):
+            nearest: dict[float, float] = {}
+            for i in range(cx - reach, cx + reach + 1):
+                for j in range(cy - reach, cy + reach + 1):
+                    for x, y, elevation in self.cells.get((i, j), ()):
+                        d = math.hypot(x - point[0], y - point[1])
+                        if d < nearest.get(elevation, math.inf):
+                            nearest[elevation] = d
+            if nearest:
+                ranked = sorted(nearest.items(), key=lambda item: item[1])
+                if len(ranked) == 1 or ranked[0][1] < 1.0:
+                    return ranked[0][0]
+                (e1, d1), (e2, d2) = ranked[0], ranked[1]
+                return (e1 / d1 + e2 / d2) / (1 / d1 + 1 / d2)
+        return 0.0
 
 
 def storeys_of(
@@ -174,17 +211,29 @@ def storeys_of(
     return 2, True
 
 
-def _hob_at(bundle: SiteBundle, lon: float, lat: float) -> float | None:
-    for feature in bundle.height_of_building.get("features", []):
-        value = feature["properties"].get("MAX_B_H")
-        if value is None:
-            continue
-        if any(point_in_ring(lon, lat, ring) for ring in rings_of(feature.get("geometry"))):
+class _Heights:
+    """The LEP height-of-building control at a point, boxes checked first."""
+
+    def __init__(self, bundle: SiteBundle) -> None:
+        self.zones: list[tuple[tuple[float, float, float, float], list[list[Point]], float]] = []
+        for feature in bundle.height_of_building.get("features", []):
             try:
-                return float(value)
+                value = float(feature["properties"].get("MAX_B_H"))
             except (TypeError, ValueError):
-                return None
-    return None
+                continue
+            rings = rings_of(feature.get("geometry"))
+            if not rings:
+                continue
+            xs = [x for ring in rings for x, _ in ring]
+            ys = [y for ring in rings for _, y in ring]
+            self.zones.append(((min(xs), min(ys), max(xs), max(ys)), rings, value))
+
+    def at(self, lon: float, lat: float) -> float | None:
+        for (x0, y0, x1, y1), rings, value in self.zones:
+            if x0 <= lon <= x1 and y0 <= lat <= y1:
+                if any(point_in_ring(lon, lat, ring) for ring in rings):
+                    return value
+        return None
 
 
 # -- the model ----------------------------------------------------------------------
@@ -245,6 +294,31 @@ def _on_the_floor_plan(connection: ArchicadConnection) -> None:
         )
 
 
+#: How many level-line vertices a terrain mesh is allowed. Archicad triangulates
+#: between every one of them, and a kilometre of 1 m contours is far more than
+#: a context model needs to read as ground.
+MESH_POINTS = 12_000
+
+
+def _thinned(
+    contours: Sequence[tuple[float, list[Point]]], limit: int = MESH_POINTS
+) -> list[tuple[float, list[Point]]]:
+    """The contours, fewer where there are too many: every second contour and
+    every second point, again and again, until the mesh can take them."""
+    kept = [(elevation, list(points)) for elevation, points in contours]
+    step = 1.0
+    while sum(len(points) for _, points in kept) > limit and kept:
+        step *= 2.0
+        kept = [
+            (elevation, points[::2] if len(points) > 4 else points)
+            for elevation, points in kept
+            if abs(elevation / step - round(elevation / step)) < 1e-9
+        ]
+        if not kept:
+            break
+    return kept
+
+
 def _datum_storey(connection: ArchicadConnection) -> tuple[int, float]:
     """The storey nearest level zero, and its level: ``(index, level)``.
 
@@ -283,10 +357,11 @@ def _terrain(
     # hundred metres in the air. Home it on the storey nearest level zero
     # and give every point its height above that.
     floor_index, floor_level = _datum_storey(connection)
+    ground = _Ground(contours)
     corners = _map_rectangle(bundle, frame)
-    outline = [{"x": x, "y": y, "z": _ground((x, y), contours) - floor_level} for x, y in corners]
+    outline = [{"x": x, "y": y, "z": ground.at((x, y)) - floor_level} for x, y in corners]
     sublines: list[dict[str, Any]] = []
-    for elevation, points in contours:
+    for elevation, points in _thinned(contours):
         run: list[dict[str, float]] = []
         for x, y in points:
             if point_in_ring(x, y, corners):
@@ -374,6 +449,8 @@ def model_context(
     _on_the_floor_plan(connection)
     layer = ensure_layer(connection, LAYER)
     contours = _contours(bundle, frame)
+    ground = _Ground(contours)
+    heights = _Heights(bundle)
     notes: list[str] = []
     removed = _clear_previous(connection)
     if removed:
@@ -407,14 +484,14 @@ def model_context(
             storeys, guessed = storeys_of(
                 building.levels,
                 building.height_m,
-                _hob_at(bundle, building.lon, building.lat),
+                heights.at(building.lon, building.lat),
                 storey_m=storey_m,
             )
             assumed += int(guessed)
             slabs.append(
                 {
                     "polygonCoordinates": [{"x": x, "y": y} for x, y in ring],
-                    "level": _ground(centre, contours),
+                    "level": ground.at(centre),
                     "thickness": storeys * storey_m,
                     "referencePlaneLocation": "Bottom",
                 }
@@ -455,4 +532,4 @@ def ground_at_site(bundle: SiteBundle, frame: Frame) -> float | None:
     if not contours:
         return None
     centre = frame.project(*mercator_to_lonlat(*bundle.centre))
-    return _level_at(centre, contours)
+    return _Ground(contours).at(centre)

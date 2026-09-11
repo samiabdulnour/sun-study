@@ -53,6 +53,10 @@ Options worth knowing:
 | `--fetch-only` | fetch and save; touch nothing in Archicad |
 | `--from <folder>` | draw the bundles saved in that folder's `data/`; no fetch |
 | `--out <folder>` | where to save; `Documents\Loriini\site-analysis\<address>` by default |
+| `--no-layout` | leave the sheets off the A1 master (`--master-layout` picks another) |
+| `--set-location` | write the site's lat/lon and MGA survey point into Project Location |
+| `--model` | terrain mesh and neighbour slabs on the `LORIINI` layer (below) |
+| `--model-radius 500` | how far each way the model reaches; `0` keeps to the site sheet's extent |
 
 Needs the Loriini add-on beside Tapir. A worksheet can only be drawn into in
 the session that made it if the add-on's own `CreateWorksheet` made it and
@@ -164,10 +168,31 @@ pen of the active table, `00 FA Pens`, and the views are pinned to its
 `- Site Analysis` sibling, which the office keeps for these sheets, and to
 No Overrides.
 
-## What comes next
+## The context model
 
-The site bundle already carries every OSM building footprint in the extent
-with its storey count and height where recorded. The next step is a massing
-of the neighbours from those -- one slab or morph per footprint at
-`levels x 3.1 m`, on a context layer -- so the shadow diagrams and the sun
-eye views have something to cast against before anybody models the street.
+`--model` (the **3D model** tick in the window) builds the neighbourhood the
+shadow diagrams and sun eye views cast against, in the floor plan, every
+element on the `LORIINI` layer with an `SA ...` element ID:
+
+- **Terrain**: one mesh from the 2 m contours, through the add-on's own
+  `CreateMesh` (Tapir's `CreateMeshes` answers `APIERR_BADINDEX` for every
+  mesh on AC26). Its levels are metres above the storey nearest RL 0, so the
+  ground sits where the contours say, whatever storey is current. Level
+  lines are thinned -- every second contour, every second point, again --
+  until they are under 12,000 vertices, because Archicad triangulates between
+  all of them.
+- **Neighbours**: one slab per OSM footprint, `levels x 3.1 m` thick, on the
+  ground at its centre. Where OSM has no storeys the LEP height-of-building
+  control gives them (`SA NEIGHBOUR 2 STOREY (ASSUMED)`), two storeys where
+  there is neither. Footprints on the site's own lots are left out.
+- **Location**: with the project unlocated and the site anchored at the
+  origin, `SetGeoLocation` writes the site centre and its MGA survey point
+  first, so a survey merged later lands on top.
+
+The model fetches its own square, `--model-radius` metres each way from the
+site (500 by default: a kilometre across, about 500 footprints and 36,000
+contour vertices at Kogarah), saved as `data/model.json` beside the sheets'
+bundles. The ground level under each slab comes from a grid index of the
+contour vertices -- the site sheet's inverse-distance rule, without its scan
+of every vertex for every footprint. A rerun deletes the last run's slabs
+and mesh by their IDs first, so the model is replaced, not stacked.

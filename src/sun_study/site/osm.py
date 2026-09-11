@@ -24,6 +24,7 @@ __all__ = [
     "Furniture",
     "Stop",
     "Utility",
+    "buildings",
     "bus_data",
     "cluster_stops",
     "furniture",
@@ -271,6 +272,39 @@ def _number(value: Any) -> float | None:
         return float(str(value).split()[0])
     except (TypeError, ValueError, IndexError):
         return None
+
+
+def buildings(extent: Extent, *, log: Log | None = None) -> tuple[Building, ...]:
+    """Every building footprint in the extent, and nothing else.
+
+    The furniture query asks for fifteen things at once and is sized for a
+    site sheet; a context model half a kilometre each way wants the
+    footprints alone, thousands of them, in one answer.
+    """
+    south, west, north, east = extent.lonlat_bbox()
+    query = f"""[out:json][timeout:120];
+way["building"]({south},{west},{north},{east});
+out geom;"""
+    data = overpass(query, timeout=120.0, log=log)
+    found: list[Building] = []
+    for element in data.get("elements") or []:
+        if element.get("type") != "way" or not element.get("geometry"):
+            continue
+        tags = element.get("tags") or {}
+        coords: Line = tuple((float(g["lon"]), float(g["lat"])) for g in element["geometry"])
+        if len(coords) < 3:
+            continue
+        levels = _number(tags.get("building:levels"))
+        found.append(
+            Building(
+                lon=sum(p[0] for p in coords) / len(coords),
+                lat=sum(p[1] for p in coords) / len(coords),
+                ring=coords,
+                levels=int(levels) if levels is not None else None,
+                height_m=_number(tags.get("height")),
+            )
+        )
+    return tuple(found)
 
 
 def furniture(extent: Extent, *, log: Log | None = None) -> Furniture:

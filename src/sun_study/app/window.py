@@ -1495,6 +1495,17 @@ class Window:
         )
         self.site_anchor.config(values=("Project location", "Project origin"), state="readonly")
         self.site_anchor.set("Project location")
+        self.site_radius, row = self._entry(
+            frame,
+            row,
+            "Model radius (m)",
+            "500",
+            "How far each way around the site the 3D model reaches. Blank: the site sheet's.",
+            "A square of this half-width around the site is fetched for the model: "
+            "the contours, every building footprint and the height controls. "
+            "500 m is a neighbourhood; the fetch and the slabs both grow with the "
+            "square of it.",
+        )
         self.site_out, row = self._folder_row(
             frame,
             row,
@@ -1953,6 +1964,7 @@ class Window:
             "site_scale": self.site_scale,
             "site_anchor": self.site_anchor,
             "site_out": self.site_out,
+            "site_radius": self.site_radius,
             "adg_subset": self.adg_subset,
             "layer_prefix": self.prefix,
             "archicad_wait_minutes": self.wait_min,
@@ -2567,6 +2579,8 @@ class Window:
                 args += ["--aerial"]
             if self.do_site_model.get():
                 args += ["--model"]
+                if self.site_radius.get().strip():
+                    args += ["--model-radius", self.site_radius.get().strip()]
             if not self.do_site_location.get():
                 args += ["--keep-location"]
             if self.site_scale.get().strip():

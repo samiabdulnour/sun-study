@@ -764,3 +764,22 @@ def test_the_location_is_the_site_on_the_grid_with_north_kept() -> None:
     assert sent["surveyPoint"]["geoReferencingParameters"]["crsName"] == "EPSG:7856"
     assert 300_000 < sent["surveyPoint"]["position"]["eastings"] < 400_000
     assert geo.altitude_m == 26.0 and geo.project_north_bearing_deg == pytest.approx(319.052)
+
+
+def test_the_ground_index_answers_like_the_scan_and_the_contours_thin_to_a_limit() -> None:
+    from sun_study.archicad.context_model import _Ground, _thinned
+
+    contours = [
+        (24.0, [(0.0, float(y)) for y in range(0, 100, 5)]),
+        (26.0, [(20.0, float(y)) for y in range(0, 100, 5)]),
+    ]
+    ground = _Ground(contours)
+    assert ground.at((10.0, 50.0)) == pytest.approx(25.0, abs=0.01), "halfway is halfway"
+    assert ground.at((0.0, 50.0)) == pytest.approx(24.0)
+    assert 24.0 <= ground.at((400.0, 400.0)) <= 26.0, "far away, still between the two"
+    assert _Ground([]).at((0.0, 0.0)) == 0.0
+
+    many = [(float(e), [(float(i), float(e)) for i in range(100)]) for e in range(0, 40)]
+    thinned = _thinned(many, limit=600)
+    assert sum(len(p) for _, p in thinned) <= 600
+    assert all(e % 2 == 0 for e, _ in thinned) or all(e % 4 == 0 for e, _ in thinned)
