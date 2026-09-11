@@ -86,6 +86,32 @@ public:
 													 GS::ProcessControl& processControl) const override;
 };
 
+
+// A picture on the drawing: the orthophoto under a site sheet.
+//
+// No command anywhere places a Figure -- not Archicad's JSON API, not Tapir --
+// and a context analysis without its aerial is a diagram of nothing. The
+// image comes inside the request as base64, because the add-on cannot be
+// pointed at a file on the machine; the box is the picture's size on the
+// drawing in metres, which for a tile of the ground is known before its
+// pixel count is, and the turn is the frame's.
+class PlaceFiguresCommand : public Command {
+public:
+	virtual GS::String						GetName () const override;
+	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
+	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
+
+	virtual API_AddOnCommandExecutionPolicy	GetExecutionPolicy () const override
+	{
+		return API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread;
+	}
+
+	virtual bool							IsProcessWindowVisible () const override { return true; }
+
+	virtual GS::ObjectState					Execute (const GS::ObjectState& parameters,
+													 GS::ProcessControl& processControl) const override;
+};
+
 }		// namespace Loriini
 
 #endif

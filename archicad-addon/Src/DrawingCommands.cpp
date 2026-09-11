@@ -4,6 +4,8 @@
 // BMAllocateHandle, for the polygon memo handles.
 #include "BM.hpp"
 
+#include <cstring>
+
 namespace Loriini {
 
 namespace {
@@ -408,11 +410,19 @@ bool ReadJustification (const GS::UniString& name, API_JustID& into)
 // without complaint.
 GSErrCode BuildContent (const GS::UniString& text, API_TextType& data, API_ElementMemo& memo)
 {
-	memo.textContent = BMhAllClear ((text.GetLength () + 1) * sizeof (GS::uchar_t));
+	// UTF-8, not UTF-16. Archicad 26 reads `textContent` as a byte string, so
+	// a UTF-16 copy -- which is what Tapir 1.5.8 writes for this version --
+	// ends at the NUL that is the second byte of the first character. Measured
+	// on the Kogarah solar study, 11 September 2026: a ten-character text and
+	// a one-character text came back the same width from both commands.
+	const auto utf8 = text.ToCStr (CC_UTF8);
+	const char* bytes = utf8.Get ();
+	const GSSize length = static_cast<GSSize> (strlen (bytes));
+	memo.textContent = BMhAllClear (length + 1);
 	if (memo.textContent == nullptr) {
 		return APIERR_MEMFULL;
 	}
-	GS::ucscpy (reinterpret_cast<GS::uchar_t*> (*memo.textContent), text.ToUStr ());
+	memcpy (*memo.textContent, bytes, length);
 
 	const GS::UniChar newline = GS::UniChar (char (10));
 	data.nLine = text.Count (newline) + 1;
@@ -622,6 +632,236 @@ GS::ObjectState CreateTextsCommand::Execute (const GS::ObjectState& parameters,
 
 	if (err != NoError) {
 		return Failed (failureText.IsEmpty () ? GS::UniString ("Failed to write the texts.") : failureText,
+					   failure != NoError ? failure : err);
+	}
+
+	GS::Array<GS::ObjectState> elements;
+	for (const API_Guid& guid : made) {
+		GS::ObjectState one;
+		one.Add ("guid", APIGuidToString (guid));
+		elements.Push (one);
+	}
+	GS::ObjectState result = Succeeded ();
+	result.Add ("elements", elements);
+	return result;
+}
+
+}		// namespace Loriini
+
+
+// -- PlaceFigures ---------------------------------------------------------------
+
+namespace Loriini {
+
+namespace {
+
+// Base64, decoded by hand: the picture comes over the wire inside the JSON,
+// because no command can point Archicad at a path on the machine it runs on,
+// and the kit ships no decoder this add-on can reach.
+bool DecodeBase64 (const GS::UniString& text, GS::Array<char>& into)
+{
+	static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	unsigned char lookup[256];
+	for (int i = 0; i < 256; ++i) {
+		lookup[i] = 0xFF;
+	}
+	for (unsigned char i = 0; i < 64; ++i) {
+		lookup[static_cast<unsigned char> (alphabet[i])] = i;
+	}
+
+	const auto ascii = text.ToCStr ();
+	const char* in = ascii.Get ();
+	const USize length = static_cast<USize> (strlen (in));
+	into.SetCapacity (length / 4 * 3 + 3);
+
+	UInt32 buffer = 0;
+	int bits = 0;
+	for (USize i = 0; i < length; ++i) {
+		const unsigned char c = static_cast<unsigned char> (in[i]);
+		if (c == '=' || c == '\n' || c == '\r' || c == ' ') {
+			continue;
+		}
+		const unsigned char value = lookup[c];
+		if (value == 0xFF) {
+			return false;
+		}
+		buffer = (buffer << 6) | value;
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			into.Push (static_cast<char> ((buffer >> bits) & 0xFF));
+		}
+	}
+	return !into.IsEmpty ();
+}
+
+
+bool ReadFormat (const GS::UniString& name, API_PictureFormat& into)
+{
+	if (name == "jpeg" || name == "jpg")	{ into = APIPictForm_JPEG;	 return true; }
+	if (name == "png")						{ into = APIPictForm_PNG;	 return true; }
+	if (name == "tiff" || name == "tif")	{ into = APIPictForm_TIFF;	 return true; }
+	if (name == "gif")						{ into = APIPictForm_GIF;	 return true; }
+	if (name == "bmp")						{ into = APIPictForm_Bitmap; return true; }
+	return false;
+}
+
+}		// namespace
+
+
+GS::String PlaceFiguresCommand::GetName () const			{ return "PlaceFigures"; }
+
+GS::Optional<GS::UniString> PlaceFiguresCommand::GetInputParametersSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"figures": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"data": { "type": "string", "description": "The image file, base64." },
+						"format": { "type": "string", "enum": [ "jpeg", "jpg", "png", "tiff", "tif", "gif", "bmp" ] },
+						"box": {
+							"type": "object",
+							"description": "Where the picture goes before its turn, in model metres.",
+							"properties": {
+								"xMin": { "type": "number" }, "yMin": { "type": "number" },
+								"xMax": { "type": "number" }, "yMax": { "type": "number" }
+							},
+							"required": [ "xMin", "yMin", "xMax", "yMax" ]
+						},
+						"angle": { "type": "number", "description": "Radians, anticlockwise, about the anchor." },
+						"anchor": {
+							"type": "string",
+							"enum": [ "LeftTop", "LeftMiddle", "LeftBottom", "MiddleTop", "MiddleMiddle", "MiddleBottom", "RightTop", "RightMiddle", "RightBottom" ]
+						},
+						"layerIndex": { "type": "integer" },
+						"floorIndex": { "type": "integer" },
+						"name": { "type": "string" },
+						"transparent": { "type": "boolean", "description": "Draw white pixels as clear." }
+					},
+					"required": [ "data", "format", "box" ]
+				},
+				"minItems": 1
+			}
+		},
+		"required": [ "figures" ],
+		"additionalProperties": false
+	})");
+}
+
+GS::Optional<GS::UniString> PlaceFiguresCommand::GetResponseSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"success": { "type": "boolean" },
+			"elements": {
+				"type": "array",
+				"items": { "type": "object", "properties": { "guid": { "type": "string" } } }
+			},
+			"error": { "type": "object" }
+		}
+	})");
+}
+
+GS::ObjectState PlaceFiguresCommand::Execute (const GS::ObjectState& parameters,
+											  GS::ProcessControl& /*processControl*/) const
+{
+	GS::Array<GS::ObjectState> wanted;
+	if (!parameters.Get ("figures", wanted) || wanted.IsEmpty ()) {
+		return Failed ("Nothing to place: 'figures' is empty.", APIERR_BADPARS);
+	}
+
+	GS::Array<API_Guid> made;
+	GSErrCode failure = NoError;
+	GS::UniString failureText;
+
+	const GSErrCode err = ACAPI_CallUndoableCommand ("Place site analysis pictures", [&] () -> GSErrCode {
+		for (const GS::ObjectState& one : wanted) {
+			GS::UniString encoded;
+			GS::Array<char> bytes;
+			if (!one.Get ("data", encoded) || !DecodeBase64 (encoded, bytes)) {
+				failure = APIERR_BADPARS;
+				failureText = "A figure's 'data' is not base64.";
+				return failure;
+			}
+			GS::UniString formatName;
+			API_PictureFormat format = APIPictForm_JPEG;
+			if (!one.Get ("format", formatName) || !ReadFormat (formatName, format)) {
+				failure = APIERR_BADPARS;
+				failureText = "format takes jpeg, png, tiff, gif or bmp.";
+				return failure;
+			}
+
+			API_Element element = {};
+			API_ElementMemo memo = {};
+			element.header.type = API_PictureID;
+			GSErrCode step = ACAPI_Element_GetDefaults (&element, nullptr);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Could not read the Figure tool's defaults.";
+				return step;
+			}
+
+			API_PictureType& picture = element.picture;
+			GS::ObjectState box;
+			if (!one.Get ("box", box)
+				|| !box.Get ("xMin", picture.destBox.xMin) || !box.Get ("yMin", picture.destBox.yMin)
+				|| !box.Get ("xMax", picture.destBox.xMax) || !box.Get ("yMax", picture.destBox.yMax)) {
+				failure = APIERR_BADPARS;
+				failureText = "Every figure needs a box with xMin, yMin, xMax and yMax.";
+				return failure;
+			}
+			// The box is the size on the drawing, not the pixel count: a
+			// tile of the ground has a size in metres before it has one in
+			// pixels.
+			picture.usePixelSize = false;
+			picture.mirrored = false;
+			picture.rotAngle = 0.0;
+			one.Get ("angle", picture.rotAngle);
+			picture.anchorPoint = APIAnc_LB;
+			GS::UniString word;
+			if (one.Get ("anchor", word) && !ReadAnchor (word, picture.anchorPoint)) {
+				failure = APIERR_BADPARS;
+				failureText = "anchor takes LeftTop ... RightBottom.";
+				return failure;
+			}
+			picture.storageFormat = format;
+			bool transparent = false;
+			one.Get ("transparent", transparent);
+			picture.transparent = transparent;
+			ReadInt (one, "layerIndex", element.header.layer);
+			ReadShort (one, "floorIndex", element.header.floorInd);
+			GS::UniString name;
+			if (one.Get ("name", name) && !name.IsEmpty ()) {
+				CopyName (name, picture.pictName);
+			}
+
+			memo.pictHdl = BMAllocateHandle (bytes.GetSize (), ALLOCATE_CLEAR, 0);
+			if (memo.pictHdl == nullptr) {
+				failure = APIERR_MEMFULL;
+				failureText = "Ran out of memory holding a picture.";
+				return failure;
+			}
+			memcpy (*memo.pictHdl, bytes.GetContent (), bytes.GetSize ());
+
+			step = ACAPI_Element_Create (&element, &memo);
+			ACAPI_DisposeElemMemoHdls (&memo);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Archicad refused to place a picture.";
+				return step;
+			}
+			made.Push (element.header.guid);
+		}
+		return NoError;
+	});
+
+	if (err != NoError) {
+		return Failed (failureText.IsEmpty () ? GS::UniString ("Failed to place the pictures.") : failureText,
 					   failure != NoError ? failure : err);
 	}
 
