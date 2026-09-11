@@ -190,6 +190,36 @@ def _hob_at(bundle: SiteBundle, lon: float, lat: float) -> float | None:
 # -- the model ----------------------------------------------------------------------
 
 
+def _clear_previous(connection: ArchicadConnection, layer_index: int) -> int:
+    """Delete the slabs and meshes of the last run: what sits on the tool's
+    layer and carries its ID. Returns how many went.
+
+    On the tool's layer *and* with its ID, both, so a slab somebody moved
+    onto the layer by hand is left alone; three runs had stacked ninety
+    slabs before this existed.
+    """
+    doomed: list[dict[str, Any]] = []
+    for kind in ("Slab", "Mesh"):
+        found = connection.run_tapir("GetElementsByType", {"elementType": kind})
+        elements = found.get("elements") if isinstance(found, dict) else None
+        if not isinstance(elements, list) or not elements:
+            continue
+        details = connection.run_tapir("GetDetailsOfElements", {"elements": elements})
+        rows = details.get("detailsOfElements") if isinstance(details, dict) else None
+        if not isinstance(rows, list) or len(rows) != len(elements):
+            continue
+        doomed.extend(
+            element
+            for element, row in zip(elements, rows, strict=True)
+            if isinstance(row, dict)
+            and row.get("layerIndex") == layer_index
+            and str(row.get("id", "")).startswith("SA ")
+        )
+    if doomed:
+        connection.run_tapir("DeleteElements", {"elements": doomed})
+    return len(doomed)
+
+
 def _on_the_floor_plan(connection: ArchicadConnection) -> None:
     """Make the floor plan the current database, and check that it is.
 
@@ -315,6 +345,9 @@ def model_context(
     layer = ensure_layer(connection, LAYER)
     contours = _contours(bundle, frame)
     notes: list[str] = []
+    removed = _clear_previous(connection, layer.index)
+    if removed:
+        notes.append(f"{removed} slabs and meshes from the last run removed first.")
 
     made_terrain = False
     if terrain:

@@ -729,6 +729,7 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
             "CreateMesh": {"success": True, "guid": "MESH"},
             "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
             "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
+            "GetElementsByType": {"elements": []},
             "SetPropertyValuesOfElements": {"executionResults": [{"success": True}]},
             "GetAllProperties": {"properties": []},
             "GetPropertyValuesOfElements": {"propertyValuesForElements": []},

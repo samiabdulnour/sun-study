@@ -2535,6 +2535,17 @@ def _draw(
             notes.append(
                 f"{left} elements from the last run could not be deleted and are still there."
             )
+        # Emptying a worksheet has been seen to move the current database
+        # off it -- a clear of 449 elements recounted as 6,875, the other
+        # sheet's, and the redraw landed there -- so the worksheet is entered
+        # again before anything is drawn, and the run stops rather than draw
+        # into the wrong one.
+        here_id, _, _ = _standing_in(connection)
+        if here_id and here_id != database_id and not _enter(connection, database_id):
+            raise ArchicadError(
+                f"The worksheet {name!r} stopped being current after it was cleared and "
+                f"could not be entered again. Open it and run again."
+            )
     if drawing.figures and attributes.wash_fill is None:
         notes.append("no percentage fill named '50%'; the zoning is drawn solid over the aerial.")
     try:
