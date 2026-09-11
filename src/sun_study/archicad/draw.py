@@ -35,7 +35,12 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from sun_study.archicad import naming
-from sun_study.archicad.connection import ArchicadConnection, ArchicadError
+from sun_study.archicad.connection import (
+    ArchicadConnection,
+    ArchicadError,
+    CommandFailedError,
+    TapirUnavailableError,
+)
 from sun_study.archicad.ids import (
     NOT_GROUPED,
     NOT_STAMPED,
@@ -875,17 +880,14 @@ def draw_assessment(
         # never tagged: see ``ids.stamp_in_order``.
         stamped = stamp_in_order(connection, made, [*element_ids, *([None] * len(legend_fills))])
     if legend_texts:
-        # CreateTexts takes no layer, so the labels land on the Text tool's
-        # default -- an office annotation layer -- and have to be moved onto
-        # the study's own. Otherwise the legend is not part of what the next
-        # run clears, and switching the study off leaves it behind.
-        made = create_elements(connection, "CreateTexts", "textsData", legend_texts)
-        moved = move_to_layer(connection, made, layer_index)
-        if moved != len(made):
+        # On the study's own layer, so the legend is part of what the next
+        # run clears and switching the study off takes it with it.
+        moved = place_texts(connection, legend_texts, layer_index)
+        if moved != len(legend_texts):
             raise ArchicadError(
-                f"{len(made) - moved} of {len(made)} legend labels would not move onto "
-                f"layer {layer_name!r}. They are still on the Text tool's default layer, "
-                f"which is where a Text is created; that layer or this one is locked."
+                f"{len(legend_texts) - moved} of {len(legend_texts)} legend labels would not "
+                f"move onto layer {layer_name!r}. They are still on the Text tool's default "
+                f"layer, which is where a Text is created; that layer or this one is locked."
             )
 
     return DrawReport(
@@ -947,6 +949,86 @@ def create_elements(
             + "\n  ".join(sorted(set(problems))[:5])
         )
     return [item for item in elements if isinstance(item, dict) and "elementId" in item]
+
+
+def _addon_text(text: dict[str, Any], layer_index: int | None) -> dict[str, Any]:
+    """A ``textsData`` item, as the add-on's ``CreateTexts`` takes it."""
+    coordinate = text.get("coordinate") or {}
+    one: dict[str, Any] = {
+        "coordinate": {"x": float(coordinate.get("x", 0.0)), "y": float(coordinate.get("y", 0.0))},
+        "text": str(text.get("text", "")),
+    }
+    for key in ("height", "justification", "angle", "anchor", "elementId"):
+        if key in text:
+            one[key] = text[key]
+    if "floorIndex" in text:
+        one["floorIndex"] = int(text["floorIndex"])
+    if "pen" in text:
+        one["penIndex"] = int(text["pen"])
+    if layer_index is not None:
+        one["layerIndex"] = layer_index
+    return one
+
+
+def create_texts(
+    connection: ArchicadConnection,
+    texts: Sequence[dict[str, Any]],
+    *,
+    layer_index: int | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Write texts; returns what was made and whether they are on ``layer_index``.
+
+    Through the add-on's ``CreateTexts`` first, and Tapir's only for an add-on
+    built before the command existed or no add-on at all. The difference is
+    not convenience. On Archicad 26 Tapir 1.5.8's texts are cut to their first
+    character -- the memo wants UTF-8 and Tapir writes UTF-16 -- and they take
+    no layer, so every study's labels were both unreadable and filed on the
+    office's annotation layer (D60, D62). The add-on's command writes the
+    whole string, on the layer asked for, with an anchor when one is given.
+
+    ``texts`` are in Tapir's own shape, so a caller changes nothing; ``anchor``
+    and ``elementId`` are passed on when present. The elements come back as
+    ``{"elementId": {"guid": ...}}`` whichever route made them.
+    """
+    if not texts:
+        return [], True
+    wanted = [_addon_text(text, layer_index) for text in texts]
+    made: list[dict[str, Any]] = []
+    try:
+        for start in range(0, len(wanted), 500):
+            response = connection.run_loriini("CreateTexts", {"texts": wanted[start : start + 500]})
+            elements = response.get("elements") if isinstance(response, dict) else None
+            if not isinstance(elements, list):
+                raise ArchicadError(f"CreateTexts returned no element list: {response!r}")
+            for entry in elements:
+                if not isinstance(entry, dict):
+                    continue
+                guid = entry.get("guid") or (entry.get("elementId") or {}).get("guid")
+                if guid:
+                    made.append({"elementId": {"guid": str(guid)}})
+        return made, layer_index is not None
+    except TapirUnavailableError:
+        pass
+    except CommandFailedError as error:
+        if "not have the registered" not in str(error):
+            raise
+    made = create_elements(connection, "CreateTexts", "textsData", list(texts))
+    return made, False
+
+
+def place_texts(
+    connection: ArchicadConnection, texts: Sequence[dict[str, Any]], layer_index: int
+) -> int:
+    """Write texts onto the study's layer. Returns how many are there.
+
+    The add-on puts them there at creation; Tapir's route lands them on the
+    Text tool's default and they are moved after, read back rather than
+    believed (D43).
+    """
+    made, on_layer = create_texts(connection, texts, layer_index=layer_index)
+    if on_layer:
+        return min(len(made), len(texts))
+    return move_to_layer(connection, made, layer_index)
 
 
 def move_to_layer(

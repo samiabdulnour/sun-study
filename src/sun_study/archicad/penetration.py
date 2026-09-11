@@ -50,7 +50,7 @@ from sun_study.archicad.draw import (
     LayerState,
     clear_layer,
     ensure_layer,
-    move_to_layer,
+    place_texts,
 )
 from sun_study.archicad.ids import (
     NOT_GROUPED,
@@ -756,7 +756,7 @@ def _texts_on(
     mixed into somebody else's layer, and it is outside what the next run
     clears, so switching the study's layer off leaves the labels on the plan.
     """
-    move_to_layer(connection, _create(connection, "CreateTexts", "textsData", data), layer.index)
+    place_texts(connection, data, layer.index)
 
 
 def _one_group_report(reports: list[GroupReport]) -> GroupReport:

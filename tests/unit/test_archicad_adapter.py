@@ -180,6 +180,15 @@ class FakeTransport:
         ]
 
 
+def texts_sent(transport: Any) -> list[dict[str, Any]]:
+    """Every text asked for, through the add-on's command or Tapir's."""
+    return [
+        text
+        for call in transport.all_parameters_for("CreateTexts")
+        for text in (call.get("texts") or call.get("textsData") or [])
+    ]
+
+
 #: The prefix the tool leads its own layers, views and layouts with. Tests
 #: build names from it rather than spelling one out: the prefix files the
 #: output inside an office's numbering and is expected to differ per office.
@@ -1898,7 +1907,7 @@ def test_the_legend_sits_clear_of_the_plan() -> None:
         "the legend must not land on top of the zones, which end at x=4"
     )
 
-    labels = [t["text"] for t in transport.parameters_for("CreateTexts")["textsData"]]
+    labels = [t["text"] for t in texts_sent(transport)]
     assert labels[: len(DEFAULT_BANDS)] == [b.label for b in reversed(DEFAULT_BANDS)]
 
 
@@ -4439,7 +4448,7 @@ def test_a_legend_label_carries_its_own_height() -> None:
         zone_by_apartment={"apt-1": "z1"},
     )
 
-    texts = transport.parameters_for("CreateTexts")["textsData"]
+    texts = texts_sent(transport)
     assert texts and all("height" in text for text in texts)
 
 

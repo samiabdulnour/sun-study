@@ -47,8 +47,8 @@ from typing import Any
 
 from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
-from sun_study.archicad.draw import Pen, _looks_like, ensure_layer, pen_table
-from sun_study.archicad.read import GeoLocation, layer_names
+from sun_study.archicad.draw import Pen, _looks_like, ensure_layer, pen_table, place_texts
+from sun_study.archicad.read import GeoLocation
 from sun_study.archicad.series import _worksheets, clear_database, database_of
 from sun_study.archicad.views import ModelSource, ensure_layer_combination, views_for_sources
 from sun_study.site import curate
@@ -1916,56 +1916,8 @@ def _created(response: Any, command: str) -> list[dict[str, Any]]:
     return [e for e in elements if isinstance(e, dict) and ("elementId" in e or "guid" in e)]
 
 
-def _texts_onto(
-    connection: ArchicadConnection, made: Sequence[dict[str, Any]], layer_index: int
-) -> int:
-    """Move texts onto the study's layer, read back. Returns how many are there.
-
-    ``CreateTexts`` takes no layer, so a text lands on the Text tool's
-    default. The landing layers are switched on first -- inside the
-    worksheet, whose own layer state is the right one here -- because a
-    hidden layer refuses the move silently (D43, D62).
-    """
-    if not made:
-        return 0
-    where = connection.run_tapir("GetDetailsOfElements", {"elements": list(made)})
-    rows = where.get("detailsOfElements") if isinstance(where, dict) else None
-    landed = {
-        row.get("layerIndex")
-        for row in (rows if isinstance(rows, list) else [])
-        if isinstance(row, dict) and isinstance(row.get("layerIndex"), int)
-    }
-    if landed and landed <= {layer_index}:
-        return len(made)
-    names = layer_names(connection)
-    for index in landed:
-        name = names.get(index) if isinstance(index, int) else None
-        if name:
-            try:
-                ensure_layer(connection, name)
-            except ArchicadError:
-                pass
-    connection.run_tapir(
-        "SetDetailsOfElements",
-        {
-            "elementsWithDetails": [
-                {"elementId": element["elementId"], "details": {"layerIndex": layer_index}}
-                for element in made
-                if "elementId" in element
-            ]
-        },
-    )
-    check = connection.run_tapir("GetDetailsOfElements", {"elements": list(made)})
-    moved = check.get("detailsOfElements") if isinstance(check, dict) else None
-    if not isinstance(moved, list):
-        return 0
-    return sum(1 for row in moved if isinstance(row, dict) and row.get("layerIndex") == layer_index)
-
-
-#: What a justification means for where the text hangs off its point, when
-#: the add-on is asked. A label is placed at its centre, a legend row at its
-#: left edge; Tapir's command has no anchor, so its texts hang from the Text
-#: tool's default and a centred label sits a little off.
+#: What a justification means for where the text hangs off its point. A
+#: label is placed at its centre, a legend row at its left edge.
 _ANCHORS = {"Center": "MiddleMiddle", "Left": "LeftMiddle", "Right": "RightMiddle"}
 
 
@@ -1975,65 +1927,31 @@ def _texts(
     indices: dict[str, int],
     attributes: _Attributes,
 ) -> int:
-    """Write the texts, through the add-on when it has the command.
+    """Write the texts on their layers. Returns how many ended there.
 
-    The add-on's ``CreateTexts`` makes a non-breaking box on the study's
-    layer with the anchor asked for. Tapir's makes a text in the Text tool's
-    default box on the Text tool's default layer -- which on the Kogarah
-    solar study wrapped every label to one letter per line -- so it is the
-    fallback for an add-on built before the command existed, and the layer
-    move follows it. Returns how many texts ended on their layer.
+    Through ``draw.place_texts``, which is every study's route: the add-on's
+    command with the layer and the anchor, or Tapir's and a move for an
+    add-on too old to have it.
     """
-    if not texts:
-        return 0
-    data: list[dict[str, Any]] = []
+    on_layer = 0
+    pen = attributes.pen(INK)
+    by_layer: dict[str, list[dict[str, Any]]] = {}
     for text in texts:
         one: dict[str, Any] = {
-            "coordinate": {"x": text.at[0], "y": text.at[1]},
+            "coordinate": {"x": text.at[0], "y": text.at[1], "z": 0.0},
             "text": text.text,
             "height": text.height_mm,
             "justification": text.justification,
-            "layerIndex": indices[text.layer],
         }
         if text.justification in _ANCHORS:
             one["anchor"] = _ANCHORS[text.justification]
         if abs(text.angle_rad) > 1e-9:
             one["angle"] = text.angle_rad
-        pen = attributes.pen(INK)
         if pen is not None:
-            one["penIndex"] = pen
-        data.append(one)
-    try:
-        on_layer = 0
-        for batch in _batched(data, 500):
-            made = _created(connection.run_loriini("CreateTexts", {"texts": batch}), "CreateTexts")
-            on_layer += len(made)
-        return on_layer
-    except ArchicadError as error:
-        if (
-            "not have the registered" not in str(error)
-            and "no add-on response" not in str(error).lower()
-        ):
-            raise
-
-    on_layer = 0
-    by_layer: dict[str, list[dict[str, Any]]] = {}
-    for text, one in zip(texts, data, strict=True):
-        by_layer.setdefault(text.layer, []).append(
-            {
-                "coordinate": {**one["coordinate"], "z": 0.0},
-                "text": one["text"],
-                "height": one["height"],
-                "justification": one["justification"],
-                **({"angle": one["angle"]} if "angle" in one else {}),
-            }
-        )
+            one["pen"] = pen
+        by_layer.setdefault(text.layer, []).append(one)
     for layer, rows in by_layer.items():
-        for batch in _batched(rows, 500):
-            made = _created(
-                connection.run_tapir("CreateTexts", {"textsData": batch}), "CreateTexts"
-            )
-            on_layer += _texts_onto(connection, made, indices[layer])
+        on_layer += place_texts(connection, rows, indices[layer])
     return on_layer
 
 

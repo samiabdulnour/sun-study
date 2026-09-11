@@ -20,7 +20,7 @@ from sun_study.archicad.series import (
     find_worksheet,
     restore_after,
 )
-from tests.unit.test_archicad_adapter import FakeTransport, Sequential
+from tests.unit.test_archicad_adapter import FakeTransport, Sequential, texts_sent
 
 WORKSHEET_TREE = {
     "navigatorItemTree": {
@@ -157,7 +157,7 @@ def test_the_series_is_one_row_per_level_and_one_column_per_instant() -> None:
         "one square-metre figure printed across every cell of the patch"
     )
 
-    texts = [t for call in transport.all_parameters_for("CreateTexts") for t in call["textsData"]]
+    texts = texts_sent(transport)
     assert {t["text"] for t in texts} == {"09:00", "15:00", "RL 6.0", "RL 3.0"}
 
 

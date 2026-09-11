@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError, activate
+from sun_study.archicad.draw import create_texts
 from sun_study.archicad.layout import LayoutSheet, Tiling, tile_positions
 
 __all__ = [
@@ -460,7 +461,7 @@ def draw_statistics(
         )
         written += 1
 
-    connection.run_tapir("CreateTexts", {"textsData": texts})
+    create_texts(connection, texts)
     return written
 
 
@@ -550,5 +551,5 @@ def draw_table(
 
     if fills:
         connection.run_tapir("CreateHatches", {"hatchesData": fills})
-    connection.run_tapir("CreateTexts", {"textsData": texts})
+    create_texts(connection, texts)
     return len(rows)

@@ -15,7 +15,7 @@ import pytest
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.penetration import PlanInstant, draw_penetration, fit_to_plan
 from sun_study.archicad.read import ArchicadZone
-from tests.unit.test_archicad_adapter import FakeTransport
+from tests.unit.test_archicad_adapter import FakeTransport, texts_sent
 
 # One flat, four cells of floor, the near half of it in sun.
 POSITIONS = np.array([[0.25, 0.25, 3.0], [0.75, 0.25, 3.0], [0.25, 0.75, 3.0], [0.75, 0.75, 3.0]])
@@ -97,7 +97,7 @@ def test_a_patch_a_green_outline_and_a_label_are_all_drawn() -> None:
     assert len(outlines) == 2, "one per matched apartment"
     assert outlines[0]["coordinates"][0] == outlines[0]["coordinates"][-1], "closed"
 
-    texts = transport.parameters_for("CreateTexts")["textsData"]
+    texts = texts_sent(transport)
     assert texts[0]["text"].endswith("Not Achieved")
     assert report.patches and report.outlines == 2 and report.labels == 1
 

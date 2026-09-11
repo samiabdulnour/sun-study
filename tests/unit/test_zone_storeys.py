@@ -68,7 +68,7 @@ class DrawingTransport:
         if command == "GetElementsByType":
             return {"elements": []}
         if command == "CreateTexts":
-            return {"elements": [{"elementId": {"guid": "t"}} for _ in given["textsData"]]}
+            return {"elements": [{"guid": "t"} for _ in (given.get("texts") or given["textsData"])]}
         if command == "GetAllProperties":
             return {"properties": []}
         if command in ("CreateGroups",):

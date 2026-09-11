@@ -250,6 +250,14 @@ the NUL that ends a C string. Tapir's newest source switches to a
 `GS::UniString` for Archicad 28, where the field's type changed, and keeps
 the UTF-16 copy for 26. This command writes UTF-8.
 
+Every text the tool writes now goes through this command --
+`draw.create_texts` and `draw.place_texts` are the one route, and the
+plan legend, the penetration labels, the series captions, the sheet tables
+and the site sheets all take it. Tapir's `CreateTexts` remains only as the
+fallback for an add-on built before this command existed, with the layer
+move after it (D60, D62); on Archicad 26 that fallback still writes one
+character, which is Tapir's to fix.
+
 ### `Loriini.PlaceFigures`
 
 A picture on the drawing, for the orthophoto under a site sheet. No command
