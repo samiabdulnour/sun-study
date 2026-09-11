@@ -200,11 +200,15 @@ def _on_the_floor_plan(connection: ArchicadConnection) -> None:
     did, since the answer is not to be believed.
     """
     here = connection.run_loriini("GetCurrentDatabase", {})
+    if not (isinstance(here, dict) and here.get("windowType") == "FloorPlan"):
+        connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
+        here = connection.run_loriini("GetCurrentDatabase", {})
     if isinstance(here, dict) and here.get("windowType") == "FloorPlan":
+        # Tell the connection, which otherwise remembers the layout the
+        # sheets left it in and refuses every layer read (D63).
+        connection.note_model_database(str((here.get("databaseId") or {}).get("guid", "")))
         return
-    connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
-    here = connection.run_loriini("GetCurrentDatabase", {})
-    if not isinstance(here, dict) or here.get("windowType") != "FloorPlan":
+    if True:
         raise ArchicadError(
             "The floor plan could not be made the current database, and a slab or a "
             "mesh cannot be created anywhere else. Click a storey in the Project Map "
