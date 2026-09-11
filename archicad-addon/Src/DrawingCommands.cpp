@@ -937,6 +937,19 @@ GS::Optional<GS::UniString> CreateMeshCommand::GetInputParametersSchema () const
 					"minItems": 2
 				}
 			},
+			"holes": {
+				"type": "array",
+				"description": "Openings in the mesh, each a ring of points with levels, inside the outline and clear of each other.",
+				"items": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": { "x": { "type": "number" }, "y": { "type": "number" }, "z": { "type": "number" } },
+						"required": [ "x", "y", "z" ]
+					},
+					"minItems": 3
+				}
+			},
 			"skirt": { "type": "string", "enum": [ "solid", "skirt", "surface" ], "description": "A solid body down to skirtLevel, a surface with a skirt, or the surface alone." },
 			"skirtLevel": { "type": "number" },
 			"layerIndex": { "type": "integer" },
@@ -968,6 +981,25 @@ GS::ObjectState CreateMeshCommand::Execute (const GS::ObjectState& parameters,
 	if (!ReadOutline (parameters, outline, why)) {
 		return Failed (why, APIERR_BADPARS);
 	}
+	GS::Array<GS::Array<API_Coord3D>> holes;
+	{
+		GS::Array<GS::Array<GS::ObjectState>> rings;
+		parameters.Get ("holes", rings);
+		for (const GS::Array<GS::ObjectState>& ring : rings) {
+			GS::Array<API_Coord3D> hole;
+			for (const GS::ObjectState& point : ring) {
+				API_Coord3D c = {};
+				if (!point.Get ("x", c.x) || !point.Get ("y", c.y) || !point.Get ("z", c.z)) {
+					return Failed ("Each hole point needs an x, a y and a z.", APIERR_BADPARS);
+				}
+				hole.Push (c);
+			}
+			if (hole.GetSize () < 3) {
+				return Failed ("A hole needs at least three points.", APIERR_BADPARS);
+			}
+			holes.Push (hole);
+		}
+	}
 	API_Element element = {};
 	element.header.type = API_MeshID;
 	GSErrCode err = ACAPI_Element_GetDefaults (&element, nullptr);
@@ -984,29 +1016,47 @@ GS::ObjectState CreateMeshCommand::Execute (const GS::ObjectState& parameters,
 	parameters.Get ("skirtLevel", element.mesh.skirtLevel);
 	element.mesh.level = 0.0;
 
-	// The polygon: one-based, the first point repeated last, with a level per
-	// vertex beside it -- the kit's own Element_Test lays it out this way.
-	const Int32 n = static_cast<Int32> (outline.GetSize ());
-	element.mesh.poly.nCoords = n + 1;
-	element.mesh.poly.nSubPolys = 1;
+	// The polygon: one-based, every contour's first point repeated last, with
+	// a level per vertex beside it -- the kit's own Element_Test lays it out
+	// this way. The outline first, then each hole as a sub-contour of its own.
+	GS::Array<GS::Array<API_Coord3D>> rings;
+	rings.Push (outline);
+	for (const GS::Array<API_Coord3D>& hole : holes) {
+		rings.Push (hole);
+	}
+	Int32 total = 0;
+	for (const GS::Array<API_Coord3D>& ring : rings) {
+		total += static_cast<Int32> (ring.GetSize ()) + 1;
+	}
+	element.mesh.poly.nCoords = total;
+	element.mesh.poly.nSubPolys = static_cast<Int32> (rings.GetSize ());
 	element.mesh.poly.nArcs = 0;
 
 	API_ElementMemo memo = {};
-	memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((n + 2) * sizeof (API_Coord), ALLOCATE_CLEAR, 0));
-	memo.pends = reinterpret_cast<Int32**> (BMAllocateHandle (2 * sizeof (Int32), ALLOCATE_CLEAR, 0));
-	memo.meshPolyZ = reinterpret_cast<double**> (BMAllocateHandle ((n + 2) * sizeof (double), ALLOCATE_CLEAR, 0));
+	memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((total + 1) * sizeof (API_Coord), ALLOCATE_CLEAR, 0));
+	memo.pends = reinterpret_cast<Int32**> (BMAllocateHandle ((rings.GetSize () + 1) * sizeof (Int32), ALLOCATE_CLEAR, 0));
+	memo.meshPolyZ = reinterpret_cast<double**> (BMAllocateHandle ((total + 1) * sizeof (double), ALLOCATE_CLEAR, 0));
 	if (memo.coords == nullptr || memo.pends == nullptr || memo.meshPolyZ == nullptr) {
 		ACAPI_DisposeElemMemoHdls (&memo);
 		return Failed ("Ran out of memory laying out the mesh.", APIERR_MEMFULL);
 	}
-	for (Int32 i = 0; i < n; ++i) {
-		(*memo.coords)[i + 1].x = outline[i].x;
-		(*memo.coords)[i + 1].y = outline[i].y;
-		(*memo.meshPolyZ)[i + 1] = outline[i].z;
+	{
+		Int32 at = 0;
+		Int32 which = 0;
+		for (const GS::Array<API_Coord3D>& ring : rings) {
+			const Int32 first = at + 1;
+			for (const API_Coord3D& c : ring) {
+				++at;
+				(*memo.coords)[at].x = c.x;
+				(*memo.coords)[at].y = c.y;
+				(*memo.meshPolyZ)[at] = c.z;
+			}
+			++at;
+			(*memo.coords)[at] = (*memo.coords)[first];
+			(*memo.meshPolyZ)[at] = (*memo.meshPolyZ)[first];
+			(*memo.pends)[++which] = at;
+		}
 	}
-	(*memo.coords)[n + 1] = (*memo.coords)[1];
-	(*memo.meshPolyZ)[n + 1] = (*memo.meshPolyZ)[1];
-	(*memo.pends)[1] = n + 1;
 
 	// The level lines: zero-based, each run ending where `meshLevelEnds` says,
 	// every vertex with an ID of its own.
@@ -1076,6 +1126,208 @@ GS::ObjectState CreateMeshCommand::Execute (const GS::ObjectState& parameters,
 
 	GS::ObjectState result = Succeeded ();
 	result.Add ("guid", APIGuidToString (element.header.guid));
+	return result;
+}
+
+
+// -- CreateSlabs ----------------------------------------------------------------
+
+namespace {
+
+// The slab's polygon, laid out the way `BuildPolygon` lays out a fill's:
+// one-based, each contour closed by repeating its first point.
+GSErrCode BuildSlabPolygon (const GS::Array<Contour>& contours, API_SlabType& slab, API_ElementMemo& memo)
+{
+	Int32 total = 0;
+	for (const Contour& contour : contours) {
+		total += static_cast<Int32> (contour.GetSize ()) + 1;
+	}
+	slab.poly.nCoords = total;
+	slab.poly.nSubPolys = static_cast<Int32> (contours.GetSize ());
+	slab.poly.nArcs = 0;
+
+	memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((total + 1) * sizeof (API_Coord), ALLOCATE_CLEAR, 0));
+	memo.pends = reinterpret_cast<Int32**> (BMAllocateHandle ((slab.poly.nSubPolys + 1) * sizeof (Int32), ALLOCATE_CLEAR, 0));
+	if (memo.coords == nullptr || memo.pends == nullptr) {
+		return APIERR_MEMFULL;
+	}
+	Int32 at = 0;
+	Int32 which = 0;
+	for (const Contour& contour : contours) {
+		for (const API_Coord& point : contour) {
+			(*memo.coords)[++at] = point;
+		}
+		(*memo.coords)[++at] = contour[0];
+		(*memo.pends)[++which] = at;
+	}
+	return NoError;
+}
+
+}		// namespace
+
+
+GS::String CreateSlabsCommand::GetName () const			{ return "CreateSlabs"; }
+
+GS::Optional<GS::UniString> CreateSlabsCommand::GetInputParametersSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"slabs": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"contours": {
+							"type": "array",
+							"description": "The outline, outer contour first, every contour after it a hole. Do not repeat the first point at the end.",
+							"items": {
+								"type": "object",
+								"properties": {
+									"points": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+											"required": [ "x", "y" ]
+										},
+										"minItems": 3
+									}
+								},
+								"required": [ "points" ]
+							},
+							"minItems": 1
+						},
+						"level": { "type": "number", "description": "Metres above the home storey of the reference plane." },
+						"thickness": { "type": "number" },
+						"referencePlane": { "type": "string", "enum": [ "bottom", "top" ], "description": "Which face the level names. Bottom by default: the slab stands up from the ground it is put on." },
+						"layerIndex": { "type": "integer" },
+						"floorIndex": { "type": "integer" },
+						"elementId": { "type": "string" }
+					},
+					"required": [ "contours" ]
+				},
+				"minItems": 1
+			}
+		},
+		"required": [ "slabs" ],
+		"additionalProperties": false
+	})");
+}
+
+GS::Optional<GS::UniString> CreateSlabsCommand::GetResponseSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"success": { "type": "boolean" },
+			"elements": {
+				"type": "array",
+				"items": { "type": "object", "properties": { "guid": { "type": "string" } } }
+			},
+			"error": { "type": "object" }
+		}
+	})");
+}
+
+GS::ObjectState CreateSlabsCommand::Execute (const GS::ObjectState& parameters,
+											 GS::ProcessControl& /*processControl*/) const
+{
+	GS::Array<GS::ObjectState> wanted;
+	if (!parameters.Get ("slabs", wanted) || wanted.IsEmpty ()) {
+		return Failed ("Nothing to make: 'slabs' is empty.", APIERR_BADPARS);
+	}
+
+	GS::Array<API_Guid> made;
+	GS::UniString why;
+	GSErrCode failure = NoError;
+	GS::UniString failureText;
+
+	const GSErrCode err = ACAPI_CallUndoableCommand ("Model the neighbours", [&] () -> GSErrCode {
+		for (const GS::ObjectState& one : wanted) {
+			GS::Array<Contour> contours;
+			why.Clear ();
+			if (!ReadContours (one, contours, why)) {
+				failure = APIERR_BADPARS;
+				failureText = why;
+				return APIERR_BADPARS;
+			}
+
+			API_Element element = {};
+			API_ElementMemo memo = {};
+			element.header.type = API_SlabID;
+			GSErrCode step = ACAPI_Element_GetDefaults (&element, &memo);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Could not read the Slab tool's defaults.";
+				return step;
+			}
+			ACAPI_DisposeElemMemoHdls (&memo);
+			memo = {};
+
+			ReadInt (one, "layerIndex", element.header.layer);
+			ReadShort (one, "floorIndex", element.header.floorInd);
+			double level = 0.0;
+			if (one.Get ("level", level)) {
+				element.slab.level = level;
+			}
+			double thickness = 0.0;
+			if (one.Get ("thickness", thickness) && thickness > 0.0) {
+				element.slab.thickness = thickness;
+			}
+			GS::UniString plane;
+			element.slab.referencePlaneLocation = APISlabRefPlane_Bottom;
+			if (one.Get ("referencePlane", plane) && plane == "top") {
+				element.slab.referencePlaneLocation = APISlabRefPlane_Top;
+			}
+			// The slab's own offset from its reference plane, which the tool's
+			// defaults may carry, would move it off the ground it was put on.
+			element.slab.offsetFromTop = 0.0;
+
+			step = BuildSlabPolygon (contours, element.slab, memo);
+			if (step != NoError) {
+				ACAPI_DisposeElemMemoHdls (&memo);
+				failure = step;
+				failureText = "Ran out of memory laying out a slab's outline.";
+				return step;
+			}
+
+			step = ACAPI_Element_Create (&element, &memo);
+			ACAPI_DisposeElemMemoHdls (&memo);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Archicad refused to create a slab.";
+				return step;
+			}
+
+			GS::UniString identifier;
+			if (one.Get ("elementId", identifier) && !identifier.IsEmpty ()) {
+				step = ACAPI_Database (APIDb_ChangeElementInfoStringID, &element.header.guid, &identifier);
+				if (step != NoError) {
+					failure = step;
+					failureText = "A slab was created but would not take its element ID.";
+					return step;
+				}
+			}
+			made.Push (element.header.guid);
+		}
+		return NoError;
+	});
+
+	if (err != NoError) {
+		return Failed (failureText.IsEmpty () ? GS::UniString ("Failed to create the slabs.") : failureText,
+					   failure != NoError ? failure : err);
+	}
+
+	GS::Array<GS::ObjectState> elements;
+	for (const API_Guid& guid : made) {
+		GS::ObjectState entry;
+		entry.Add ("guid", APIGuidToString (guid));
+		elements.Push (entry);
+	}
+
+	GS::ObjectState result = Succeeded ();
+	result.Add ("elements", elements);
 	return result;
 }
 

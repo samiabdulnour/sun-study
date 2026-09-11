@@ -139,6 +139,31 @@ public:
 													 GS::ProcessControl& processControl) const override;
 };
 
+
+// The neighbours: slabs, each with its layer, its storey and its ID in the
+// one call, and holes where a footprint has a courtyard.
+//
+// Tapir's `CreateSlabs` makes the slab and nothing else: it lands on the
+// Slab tool's layer, without an ID, and a light well is filled in because
+// the schema takes one contour. The context model then made three passes
+// over 480 slabs -- create, move, stamp -- where one is enough.
+class CreateSlabsCommand : public Command {
+public:
+	virtual GS::String						GetName () const override;
+	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
+	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
+
+	virtual API_AddOnCommandExecutionPolicy	GetExecutionPolicy () const override
+	{
+		return API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread;
+	}
+
+	virtual bool							IsProcessWindowVisible () const override { return true; }
+
+	virtual GS::ObjectState					Execute (const GS::ObjectState& parameters,
+													 GS::ProcessControl& processControl) const override;
+};
+
 }		// namespace Loriini
 
 #endif
