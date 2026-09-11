@@ -1435,11 +1435,39 @@ class Window:
             tick.grid(row=row, column=0, columnspan=2, sticky="w", padx=(18, 0))
             Tooltip(tick, detail)
             row += 1
+        self.do_site_model = tk.BooleanVar(value=False)
+        self.do_site_location = tk.BooleanVar(value=True)
+        for variable, label, detail in (
+            (
+                self.do_site_model,
+                "Model the terrain and the neighbours in 3D",
+                "One Mesh from the 1 m contours and one slab per neighbouring "
+                "building footprint, as tall as its storeys say -- or as the "
+                "LEP height control allows, and said to be assumed -- on the "
+                "LORIINI layer, for the shadow and sun eye studies to cast "
+                "against. The site's own buildings are left out.",
+            ),
+            (
+                self.do_site_location,
+                "Set the project location from the address",
+                "Puts Options > Project Location at the site's centre, with the "
+                "survey point on the MGA2020 grid, so the sun studies and the "
+                "IFC exports know where the project is. Only when the site is "
+                "placed at the project origin, and only if the location is still "
+                "a city preset; north is kept as it is.",
+            ),
+        ):
+            tick = ttk.Checkbutton(frame, text=label, variable=variable, command=self._sync)
+            tick.grid(row=row, column=0, columnspan=2, sticky="w", padx=(18, 0))
+            Tooltip(tick, detail)
+            row += 1
         self.site_ticks = [
             self.do_site_context,
             self.do_site_site,
             self.do_site_summary,
             self.do_site_aerial,
+            self.do_site_model,
+            self.do_site_location,
         ]
 
         self.site_scale, row = self._entry(
@@ -1946,6 +1974,8 @@ class Window:
             "site_site": self.do_site_site,
             "site_summary": self.do_site_summary,
             "site_aerial": self.do_site_aerial,
+            "site_model": self.do_site_model,
+            "site_location": self.do_site_location,
         }
 
     #: The section that was showing, saved under its own name. It is neither
@@ -2535,6 +2565,10 @@ class Window:
             args += ["--summary" if self.do_site_summary.get() else "--no-summary"]
             if self.do_site_aerial.get():
                 args += ["--aerial"]
+            if self.do_site_model.get():
+                args += ["--model"]
+            if not self.do_site_location.get():
+                args += ["--keep-location"]
             if self.site_scale.get().strip():
                 args += ["--scale", self.site_scale.get().strip()]
             # The combobox says it in words; the command takes a keyword.

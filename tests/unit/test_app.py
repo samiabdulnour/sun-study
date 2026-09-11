@@ -1495,6 +1495,11 @@ def test_the_site_analysis_runs_from_an_address_and_names_its_sheets(hidden_wind
     assert flag(site.args, "--scale") == ["3000"]
     assert flag(site.args, "--port") == ["19723"]
     assert "--aerial" not in site.args
+    assert "--model" not in site.args and "--keep-location" not in site.args
+    hidden_window.do_site_model.set(True)
+    hidden_window.do_site_location.set(False)
+    (site,) = hidden_window.jobs()
+    assert "--model" in site.args and "--keep-location" in site.args
 
 
 def test_the_site_analysis_waits_for_an_address(hidden_window: Any) -> None:

@@ -30,7 +30,7 @@ import numpy.typing as npt
 import typer
 
 from sun_study import AUTHOR, PRODUCT, STOP_FILE_VAR, __version__, licence
-from sun_study.archicad import naming
+from sun_study.archicad import context_model, naming
 from sun_study.archicad import site_analysis as site_drawing
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
@@ -6490,6 +6490,23 @@ def site_analysis(
         float,
         typer.Option("--title-block-mm", help="Width of the master's title block, kept clear."),
     ] = 100.0,
+    model: Annotated[
+        bool,
+        typer.Option(
+            "--model/--no-model",
+            help="Also model the terrain and the neighbouring buildings, on the LORIINI layer.",
+        ),
+    ] = False,
+    set_location: Annotated[
+        bool | None,
+        typer.Option(
+            "--set-location/--keep-location",
+            help=(
+                "Set the project location to the site. By default only when the project is "
+                "still on a city preset and the site is anchored at the origin."
+            ),
+        ),
+    ] = None,
     wait_minutes: Annotated[
         float,
         typer.Option(
@@ -6632,6 +6649,26 @@ def site_analysis(
     # The photo is placed by the add-on; only an add-on without the command
     # leaves the tiles for a person, and only then is the hint worth printing.
     unplaced = False
+    # The location first, so the sheets and the model that follow land on a
+    # project that says where it is. Only with the site at the origin: with
+    # --anchor location the origin is wherever the project already says.
+    reference = site_bundle if site_bundle is not None else context_bundle
+    if reference is not None and anchor == "site":
+        preset = geo is not None and geo.looks_like_a_city_preset
+        if set_location or (set_location is None and preset):
+            ground = (
+                context_model.ground_at_site(site_bundle, frame_and_offset(site_bundle))
+                if site_bundle is not None
+                else None
+            )
+            try:
+                geo = context_model.set_project_location(
+                    connection, geo, reference.centre_lonlat, ground_m=ground
+                )
+                typer.echo(f"  project location set to the site: {geo.describe()}")
+            except ArchicadError as error:
+                typer.secho(f"  the project location was not set: {error}", fg=typer.colors.YELLOW)
+
     try:
         if context_bundle is not None:
             typer.echo("drawing the context analysis...")
@@ -6673,6 +6710,21 @@ def site_analysis(
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
+
+    if model:
+        if site_bundle is None:
+            typer.secho(
+                "  --model needs the site bundle; nothing modelled.", fg=typer.colors.YELLOW
+            )
+        else:
+            typer.echo("modelling the terrain and the neighbours...")
+            try:
+                built = context_model.model_context(
+                    connection, site_bundle, frame_and_offset(site_bundle), say=say
+                )
+                typer.echo(built.describe())
+            except ArchicadError as error:
+                typer.secho(f"  the model was not made: {error}", fg=typer.colors.RED, err=True)
 
     typer.echo(
         "  Archicad is left standing in the last worksheet drawn. Click a storey in the "

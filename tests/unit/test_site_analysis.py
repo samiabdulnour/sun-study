@@ -695,3 +695,62 @@ def test_one_institution_parcel_is_drawn_once() -> None:
     drawing = context_drawing(bundle, frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site"))
     parcels = [f for f in drawing.fills if f.element_id.startswith(("SA MEDICAL", "SA EDUCATION"))]
     assert len(parcels) == 1
+
+
+def test_storeys_come_from_osm_then_the_lep_then_a_stated_default() -> None:
+    from sun_study.archicad.context_model import storeys_of
+
+    assert storeys_of(3, None, None) == (3, False)
+    assert storeys_of(None, 9.5, None) == (3, False)
+    assert storeys_of(None, None, 9.0) == (2, True)
+    assert storeys_of(None, None, None) == (2, True)
+
+
+def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> None:
+    from sun_study.archicad.context_model import model_context
+
+    bundle = site_bundle()
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    connection, transport_ = connect(
+        {
+            "GetAttributesByType": {
+                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+            },
+            "GetLayers": {
+                "layers": [
+                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                ]
+            },
+            "CreateMeshes": {"elements": [{"elementId": {"guid": "MESH"}}]},
+            "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
+            "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
+            "SetPropertyValuesOfElements": {"executionResults": [{"success": True}]},
+            "GetAllProperties": {"properties": []},
+            "GetPropertyValuesOfElements": {"propertyValuesForElements": []},
+        }
+    )
+    report = model_context(connection, bundle, frame)
+    assert report.terrain and report.contours == 2
+    mesh = transport_.parameters_for("CreateMeshes")["meshesData"][0]
+    assert len(mesh["polygonCoordinates"]) == 4 and mesh["skirtType"] == "SolidBodyWithSkirt"
+    assert all("z" in p for p in mesh["polygonCoordinates"])
+    slabs = transport_.parameters_for("CreateSlabs")["slabsData"]
+    # The one footprint in the fixture sits 30 m east of the site, two storeys
+    # by OSM, standing on the ground the contours give.
+    assert len(slabs) == 1 and report.on_site == 0
+    assert slabs[0]["thickness"] == pytest.approx(2 * 3.1)
+    assert slabs[0]["referencePlaneLocation"] == "Bottom"
+    assert 24.0 < slabs[0]["level"] < 28.0
+
+
+def test_the_location_is_the_site_on_the_grid_with_north_kept() -> None:
+    from sun_study.archicad.context_model import set_project_location
+
+    connection, transport_ = connect({"SetGeoLocation": {"success": True}})
+    geo = set_project_location(connection, KOGARAH, (LON, LAT), ground_m=26.0)
+    sent = transport_.parameters_for("SetGeoLocation")
+    assert sent["projectLocation"]["latitude"] == LAT
+    assert sent["projectLocation"]["north"] == pytest.approx(KOGARAH.north_radians)
+    assert sent["surveyPoint"]["geoReferencingParameters"]["crsName"] == "EPSG:7856"
+    assert 300_000 < sent["surveyPoint"]["position"]["eastings"] < 400_000
+    assert geo.altitude_m == 26.0 and geo.project_north_bearing_deg == pytest.approx(319.052)

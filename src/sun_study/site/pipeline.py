@@ -217,6 +217,7 @@ class SiteBundle:
     roads: tuple[nsw.Road, ...] = ()
     rail_lines: nsw.RailLines = field(default_factory=nsw.RailLines)
     zoning: FeatureCollection = field(default_factory=empty)
+    height_of_building: FeatureCollection = field(default_factory=empty)
     contours: tuple[nsw.Contour, ...] = ()
     neighbours: tuple[nsw.Neighbour, ...] = ()
     furniture: osm.Furniture = field(default_factory=osm.Furniture)
@@ -247,6 +248,7 @@ class SiteBundle:
             "roads": [r.as_dict() for r in self.roads],
             "rail_lines": self.rail_lines.as_dict(),
             "zoning": self.zoning,
+            "height_of_building": self.height_of_building,
             "contours": [c.as_dict() for c in self.contours],
             "neighbours": [n.as_dict() for n in self.neighbours],
             "furniture": self.furniture.as_dict(),
@@ -273,6 +275,7 @@ class SiteBundle:
             roads=tuple(nsw.Road.from_dict(r) for r in data.get("roads") or []),
             rail_lines=nsw.RailLines.from_dict(data.get("rail_lines") or {}),
             zoning=data.get("zoning") or empty(),
+            height_of_building=data.get("height_of_building") or empty(),
             contours=tuple(nsw.Contour.from_dict(c) for c in data.get("contours") or []),
             neighbours=tuple(nsw.Neighbour.from_dict(n) for n in data.get("neighbours") or []),
             furniture=osm.Furniture.from_dict(data.get("furniture") or {}),
@@ -589,6 +592,7 @@ def run_site(
         f_roads = soft.submit("roads", lambda: nsw.roads(extent), [])
         f_rail = soft.submit("rail lines", lambda: nsw.rail_lines(extent), nsw.RailLines())
         f_zoning = soft.submit("zoning", lambda: nsw.zoning(extent), empty())
+        f_hob = soft.submit("height of building", lambda: nsw.height_of_building(extent), empty())
         f_neighbours = soft.submit(
             "neighbour addresses", lambda: nsw.neighbour_addresses(extent), []
         )
@@ -625,6 +629,7 @@ def run_site(
             roads=tuple(roads),
             rail_lines=soft.take(f_rail),
             zoning=soft.take(f_zoning),
+            height_of_building=soft.take(f_hob),
             contours=tuple(contours),
             neighbours=tuple(neighbours),
             furniture=soft.take(f_furniture),
