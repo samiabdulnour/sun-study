@@ -13,13 +13,25 @@ the argv it produces is the argv a colleague's click produces.
 from __future__ import annotations
 
 import sys
-import tkinter as tk
 from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+# Skipped, not collected into an error, where Tk cannot be had: the Linux
+# runners ship no tkinter at all, so a plain import failed the whole module
+# before a single assertion ran. Under TYPE_CHECKING the real import still
+# stands, so the annotations below stay checked instead of going Any.
+#
+# It has to come before the imports underneath: `sun_study.app.window` imports
+# tkinter itself, so leaving this below them would raise on the runner exactly
+# as the plain import did.
+if TYPE_CHECKING:
+    import tkinter as tk
+else:
+    tk = pytest.importorskip("tkinter", reason="this machine has no tkinter")
 
 from sun_study.app import preferences, probe, window
 from sun_study.app.runner import CLI_MARKER, child_environment, command_prefix
@@ -877,7 +889,10 @@ def test_the_icon_ships_with_every_size_windows_asks_for() -> None:
 def test_a_checkout_with_no_icon_still_opens(monkeypatch: pytest.MonkeyPatch) -> None:
     """How the window looks, not whether the study runs."""
     monkeypatch.setattr(window, "icon_path", lambda: None)
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover - Tk present but with no init.tcl
+        pytest.skip("no display for Tk")
     root.withdraw()
     try:
         window.wear_the_icon(root)

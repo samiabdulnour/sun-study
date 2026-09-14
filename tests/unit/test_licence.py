@@ -27,6 +27,21 @@ from sun_study.cli import app
 runner = CliRunner()
 
 
+# Two of the tests below reach the window, and reaching it imports tkinter,
+# which the Linux runners do not carry. The rest of this module is about the
+# term and has nothing to do with Tk, so the skip is per test rather than over
+# the file.
+def _tkinter_imports() -> bool:
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+needs_tk = pytest.mark.skipif(not _tkinter_imports(), reason="this machine has no tkinter")
+
+
 def test_the_build_runs_up_to_the_last_day_of_its_term() -> None:
     assert not licence.has_expired(dt.date(2026, 12, 31))
 
@@ -172,6 +187,7 @@ def test_the_window_child_process_refuses_too() -> None:
     assert "exit 4" in finished.stdout
 
 
+@needs_tk
 def test_the_window_says_it_in_a_box_and_never_opens(monkeypatch: pytest.MonkeyPatch) -> None:
     """The half a print cannot reach.
 
@@ -195,6 +211,7 @@ def test_the_window_says_it_in_a_box_and_never_opens(monkeypatch: pytest.MonkeyP
     assert not opened, "an expired build must not get as far as a window"
 
 
+@needs_tk
 def test_the_window_opens_as_normal_inside_the_term(monkeypatch: pytest.MonkeyPatch) -> None:
     """The other side of it, so a broken check cannot lock everybody out."""
     from sun_study.app import __main__ as entry
