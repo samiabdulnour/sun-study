@@ -572,6 +572,51 @@ def test_a_refused_creation_falls_back_to_tapir_and_a_refused_entry_says_what_to
     assert transport_.all_parameters_for("SetCurrentDatabase")[0]["databaseId"] == {"guid": "NEW"}
 
 
+def test_a_worksheet_the_refused_creation_left_behind_is_found_rather_than_made_twice() -> None:
+    """The bug measured live at Bondi on 14 September 2026, and the reason
+    every site sheet ended up with two worksheets of one name in the Project
+    Map. ``CreateWorksheet`` makes the worksheet and *then* enters it, so a
+    refusal at the entering step fails the call with the worksheet already
+    made. The run saw only the refusal, believed nothing existed, and let
+    Tapir's fallback make a second one.
+
+    The first look finds nothing, because at that point there is nothing. The
+    second look -- after the refusal -- is the whole fix: it finds what the
+    refused call left, reports it as reused, and never reaches
+    ``CreateWorksheets``.
+    """
+    from sun_study.archicad.site_analysis import ensure_worksheet
+
+    connection, transport_ = connect(
+        {
+            # Standing in the worksheet the refused call left. The second
+            # answer is only reached by the old behaviour, which makes a
+            # second worksheet and then enters that instead -- scripted so
+            # the regression fails on the assertion below rather than on an
+            # unscripted command, which says nothing about what went wrong.
+            "GetCurrentDatabase": Sequential(
+                {"databaseId": {"guid": "WS"}, "windowType": "Worksheet"},
+                {"databaseId": {"guid": "SECOND"}, "windowType": "Worksheet"},
+            ),
+            # Empty when the run first looks, holding the worksheet once the
+            # refused creation has quietly made it.
+            "GetNavigatorItemTree": Sequential(
+                navigator_tree(),
+                navigator_tree((f"{SS} Site Analysis", "NAV")),
+            ),
+            "CreateWorksheet": {"error": {"code": -2130313110, "message": "refused to move"}},
+            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "WS"}}]},
+            "CreateWorksheets": {"databases": [{"databaseId": {"guid": "SECOND"}}]},
+            "SetCurrentDatabase": {"success": True},
+        }
+    )
+
+    assert ensure_worksheet(connection, f"{SS} Site Analysis", wait_s=0.0) == ("WS", "NAV", True)
+    assert "CreateWorksheets" not in transport_.commands(), (
+        "a second worksheet was made over the one the refused creation left behind"
+    )
+
+
 def test_a_worksheet_already_in_front_is_drawn_into_without_a_move() -> None:
     """The way through the refusal: a person opens the worksheet, and the run
     finds itself standing in it."""
