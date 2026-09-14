@@ -50,11 +50,17 @@ from sun_study.archicad.layout import (
     LayoutReport,
     LayoutSheet,
     _drawings_by_name,
-    _walk,
     layout_from_views,
     layout_sheet,
+    remove_stale_layouts,
 )
 from sun_study.archicad.read import GeoLocation, layer_names, zones
+from sun_study.archicad.sheeting import (
+    DEFAULT_SHEET_MODE,
+    cells_for,
+    sheet_chunks,
+    sheet_title,
+)
 from sun_study.archicad.views import (
     ModelSource,
     StoreyView,
@@ -68,8 +74,8 @@ from sun_study.archicad.views import (
 from sun_study.core.solar import solar_position
 
 __all__ = [
+    "DEFAULT_SHEETS",
     "DOCUMENT_SCALE",
-    "PER_SHEET",
     "TITLE_BLOCK_MM",
     "SunEye",
     "SunEyeSettings",
@@ -92,9 +98,10 @@ __all__ = [
 #: practice asked for 1:500 back, which shows the street around the building.
 DOCUMENT_SCALE = 500.0
 
-#: How many hours share a sheet. Four puts 9am to noon on one and the
-#: afternoon on the next, which reads as a morning and an afternoon.
-PER_SHEET = 4
+#: How the hours are dealt onto sheets. Two puts 9am to noon on one and the
+#: afternoon on the next, which reads as a morning and an afternoon; the
+#: other modes are ``sheeting``'s.
+DEFAULT_SHEETS = DEFAULT_SHEET_MODE
 
 #: Between a drawing's clip frame and the edge of its cell, in millimetres.
 #: Room for the drawing title Archicad puts under each.
@@ -467,24 +474,24 @@ def make_sun_eye_documents(
 def sheet_groups(
     made: Sequence[tuple[SunEye, StoreyView, bool]],
     *,
-    per_sheet: int = PER_SHEET,
+    sheets: str = DEFAULT_SHEETS,
     stem: str | None = None,
 ) -> list[tuple[str, list[tuple[str, str]]]]:
-    """The documents split across sheets, each sheet named by the hours on it.
+    """The documents dealt onto sheets, each sheet named by the hours on it.
 
     ``(layout name, [(navigator id, drawing name), ...])`` per sheet, in the
-    shape ``layout_from_views`` takes. Seven documents in fours is a morning
+    shape ``layout_from_views`` takes. Seven documents in two is a morning
     sheet and an afternoon sheet -- ``09:00-12:00`` and ``13:00-15:00`` --
-    rather than seven stamps on one.
+    rather than seven stamps on one; one sheet keeps the plain name; a
+    sheet each is named for its hour.
     """
-    if per_sheet <= 0:
-        raise ValueError(f"per_sheet must be positive, not {per_sheet}")
     stem = stem or naming.named(SET_WORD)
+    chunks = sheet_chunks(len(made), sheets)
     groups: list[tuple[str, list[tuple[str, str]]]] = []
-    for start in range(0, len(made), per_sheet):
-        chunk = made[start : start + per_sheet]
-        first, last = chunk[0][0].when, chunk[-1][0].when
-        name = f"{stem} {first:%H:%M}-{last:%H:%M}" if len(made) > per_sheet else stem
+    for start, stop in chunks:
+        chunk = made[start:stop]
+        labels = [f"{eye.when:%H:%M}" for eye, _, _ in chunk]
+        name = stem if len(chunks) == 1 else f"{stem} {sheet_title(labels)}"
         groups.append((name, [(view.navigator_id, view.name) for _, view, _ in chunk]))
     return groups
 
@@ -593,7 +600,7 @@ def make_sun_eye_sheets(
     made: Sequence[tuple[SunEye, StoreyView, bool]],
     *,
     scale: float,
-    per_sheet: int = PER_SHEET,
+    sheets: str = DEFAULT_SHEETS,
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
 ) -> tuple[list[LayoutReport], list[str]]:
@@ -612,29 +619,12 @@ def make_sun_eye_sheets(
     its cell. Without the add-on the sheet is still made, and said to be the
     rough one.
     """
-    groups = sheet_groups(made, per_sheet=per_sheet)
+    groups = sheet_groups(made, sheets=sheets)
+    cells = cells_for(sheet_chunks(len(made), sheets))
     wanted = {name for name, _ in groups}
     stem = naming.named(SET_WORD)
 
-    removed: list[str] = []
-    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})
-    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
-    if isinstance(root, dict):
-        stale = [
-            item
-            for item in _walk(root)
-            if item.kind == "LayoutItem" and item.name.startswith(stem) and item.name not in wanted
-        ]
-        if stale:
-            connection.run_tapir(
-                "DeleteNavigatorItems",
-                {
-                    "navigatorItemIds": [
-                        {"navigatorItemId": {"guid": item.identifier}} for item in stale
-                    ]
-                },
-            )
-            removed = [item.name for item in stale]
+    removed = remove_stale_layouts(connection, stem, wanted)
 
     reports: list[LayoutReport] = []
     for name, views in groups:
@@ -646,13 +636,13 @@ def make_sun_eye_sheets(
             continue
         sheet, _ = layout_sheet(connection, report.database_id)
         placed = _drawings_by_name(connection, report.database_id)
-        # The grid of a full sheet, whatever this one holds: an afternoon of
-        # three drawings sits in the morning's two-by-two with one cell empty,
-        # not in a row of three at a different size.
-        cells = sheet_cells_for(sheet, per_sheet, title_block_mm=title_block_mm)[: len(views)]
+        # The grid of the fullest sheet, whatever this one holds: an afternoon
+        # of three drawings sits in the morning's two-by-two with one cell
+        # empty, not in a row of three at a different size.
+        grid = sheet_cells_for(sheet, cells, title_block_mm=title_block_mm)[: len(views)]
         placements = [
             (str(placed[drawing_name]["elementId"]["guid"]), cell)
-            for (_, drawing_name), cell in zip(views, cells, strict=True)
+            for (_, drawing_name), cell in zip(views, grid, strict=True)
             if drawing_name in placed
         ]
         arrange_drawings(connection, report.database_id, placements)

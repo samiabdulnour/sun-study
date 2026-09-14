@@ -168,7 +168,7 @@ def test_seven_documents_become_a_morning_sheet_and_an_afternoon_sheet() -> None
     eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=range(9, 16), timezone="Australia/Sydney")
     made = [(eye, StoreyView(0, f"doc {eye.stamp}", f"ID{eye.stamp}"), False) for eye in eyes]
 
-    groups = sheet_groups(made, per_sheet=4)
+    groups = sheet_groups(made, sheets="two")
 
     assert [name for name, _ in groups] == [
         f"{SS} Sun Views 09:00-12:00",
@@ -180,10 +180,32 @@ def test_seven_documents_become_a_morning_sheet_and_an_afternoon_sheet() -> None
     ]
 
 
-def test_a_set_that_fits_one_sheet_keeps_the_plain_name() -> None:
+def test_one_sheet_keeps_the_plain_name_and_a_sheet_each_is_named_for_its_hour() -> None:
     eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=[9, 12], timezone="Australia/Sydney")
     made = [(eye, StoreyView(0, "doc", f"ID{eye.stamp}"), False) for eye in eyes]
-    assert [name for name, _ in sheet_groups(made, per_sheet=4)] == [f"{SS} Sun Views"]
+    assert [name for name, _ in sheet_groups(made, sheets="one")] == [f"{SS} Sun Views"]
+    assert [name for name, _ in sheet_groups(made, sheets="each")] == [
+        f"{SS} Sun Views 09:00",
+        f"{SS} Sun Views 12:00",
+    ]
+    # Two drawings in two: one each, named for the hour, not "09:00-09:00".
+    assert [name for name, _ in sheet_groups(made, sheets="two")] == [
+        f"{SS} Sun Views 09:00",
+        f"{SS} Sun Views 12:00",
+    ]
+
+
+def test_nine_hours_in_two_is_five_and_four() -> None:
+    """8am to 4pm, which some councils ask for: the first sheet takes the
+    larger half, and both are laid out on a grid of five."""
+    eyes = sun_eyes(KOGARAH, date=MIDWINTER, hours=range(8, 17), timezone="Australia/Sydney")
+    made = [(eye, StoreyView(0, f"doc {eye.stamp}", f"ID{eye.stamp}"), False) for eye in eyes]
+    groups = sheet_groups(made, sheets="two")
+    assert [name for name, _ in groups] == [
+        f"{SS} Sun Views 08:00-12:00",
+        f"{SS} Sun Views 13:00-16:00",
+    ]
+    assert [len(views) for _, views in groups] == [5, 4]
 
 
 B1 = LayoutSheet(width_mm=1000.0, height_mm=707.0)

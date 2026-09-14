@@ -118,9 +118,19 @@ from sun_study.archicad.series import (
     restore_after,
 )
 from sun_study.archicad.shadows import (
+    DEFAULT_SHEETS as SHADOW_SHEETS,
+)
+from sun_study.archicad.shadows import (
     build_shadow_sheets,
     draw_shadow_series,
     project_frame,
+)
+from sun_study.archicad.sheeting import (
+    SHEETS_HELP,
+    cells_for,
+    parse_sheet_mode,
+    sheet_chunks,
+    sheet_title,
 )
 from sun_study.archicad.sheets import (
     TableRow,
@@ -129,8 +139,10 @@ from sun_study.archicad.sheets import (
     straighten_and_tile,
 )
 from sun_study.archicad.sun_eyes import (
+    DEFAULT_SHEETS as SUN_VIEW_SHEETS,
+)
+from sun_study.archicad.sun_eyes import (
     DOCUMENT_SCALE,
-    PER_SHEET,
     TITLE_BLOCK_MM,
     SunEyeSettings,
     make_sun_eye_documents,
@@ -1082,6 +1094,7 @@ def report_zone_bands(
     subset: str = "",
     also_hide: Sequence[str] = (),
     max_residual_m: float = MAX_FIT_RESIDUAL_M,
+    sheets_mode: str = "one",
 ) -> bool:
     """Draw the measured Zones on the plan, banded by hours of sun.
 
@@ -1341,6 +1354,7 @@ def report_zone_bands(
                 labels=[name for name, _ in times],
                 layers=[layer for _, layer in times],
                 per_storey=True,
+                sheets=sheets_mode,
                 every_sheet_table=by_hour,
                 every_sheet_title=(
                     f"Sunlit communal open space by hour, {result.assessment_date:%d %B}"
@@ -2047,6 +2061,7 @@ def report_penetration(
     also_hide: Sequence[str] = (),
     instant_subset: str = "",
     analysis_subset: str = "",
+    sheets_mode: str = "each",
 ) -> bool:
     """Draw the study diagram on the floor plan. True if anything is wrong."""
     series = result.instants
@@ -2144,6 +2159,7 @@ def report_penetration(
             folder=folder,
             instant_subset=instant_subset,
             analysis_subset=analysis_subset,
+            sheets=sheets_mode,
         )
     return not drawn.complete
 
@@ -2171,6 +2187,35 @@ def assessed_extent(
         max(xs) + margin_m,
         max(ys) + margin_m,
     )
+
+
+def _sheet_table(
+    labels: Sequence[str],
+    tables: dict[str, Sequence[TableRow]] | None,
+    titles: dict[str, str] | None,
+    every_sheet_table: Sequence[TableRow] | None,
+    every_sheet_title: str,
+    name: str,
+) -> tuple[Sequence[TableRow] | None, str]:
+    """The figures table for one sheet, and its title.
+
+    One instant on the sheet: its own table and title. Several: their tables
+    stacked, each under a heading that names its instant, titled for the
+    sheet. ``every_sheet_table`` overrides both, being the whole day.
+    """
+    if every_sheet_table:
+        return every_sheet_table, every_sheet_title or name
+    by_label = tables or {}
+    named = titles or {}
+    if len(labels) == 1:
+        return by_label.get(labels[0]), every_sheet_title or named.get(labels[0], labels[0])
+    stacked: list[TableRow] = []
+    for label in labels:
+        rows = by_label.get(label)
+        if rows:
+            stacked.append(TableRow(named.get(label, label), 0.0, 0.0, heading=True))
+            stacked.extend(rows)
+    return (stacked or None), every_sheet_title or name
 
 
 def _storey_label(item: NavigatorItem | None, storey: int) -> str:
@@ -2208,8 +2253,14 @@ def _sheet_per_instant(
     per_storey: bool = False,
     every_sheet_table: Sequence[TableRow] | None = None,
     every_sheet_title: str = "",
+    sheets: str = "each",
 ) -> None:
-    """A layer combination, a set of views and a Layout for each instant.
+    """A layer combination, a set of views and the Layouts ``sheets`` says.
+
+    ``sheets`` deals the instants onto layouts -- all on one, split in two on
+    one grid, or one each (the default here, which is what the study sheets
+    were before there was a choice). With ``per_storey`` it deals each
+    storey's hours the same way.
 
     ``folder`` and the clearing out of the last run both belong to the *run*,
     not to this call: a study makes two sets of sheets and each of them
@@ -2242,7 +2293,7 @@ def _sheet_per_instant(
     # again would delete the sheets the first one had just made, which is
     # exactly what happened when the whole-day sheets were added beside the
     # instants.
-    finished: list[tuple[str, str]] = []
+    finished: list[tuple[str, str, list[str], int]] = []
     if not labels:
         typer.secho(
             "  nothing was drawn, so there are no sheets to make",
@@ -2290,19 +2341,38 @@ def _sheet_per_instant(
     # morning with three in the afternoon by moving their eyes rather than by
     # finding another sheet. Seven sheets of one drawing each is the same
     # information and nobody reads it.
+    # Then dealt onto sheets: a set per storey or one set for the run, each
+    # set's instants chunked as ``sheets`` says, every sheet of a set laid
+    # out on the fullest sheet's grid.
+    mode = parse_sheet_mode(sheets)
+    sets: list[tuple[str, list[tuple[str, list[StoreyView]]]]]
     if per_storey:
-        by_storey: dict[int, list[StoreyView]] = {}
-        for views in made_views.values():
+        by_storey: dict[int, list[tuple[str, list[StoreyView]]]] = {}
+        for label, views in made_views.items():
             for view in views:
-                by_storey.setdefault(view.storey_index, []).append(view)
-        grouped = [
-            (_storey_label(items.get(storey), storey), views)
-            for storey, views in sorted(by_storey.items())
+                by_storey.setdefault(view.storey_index, []).append((label, [view]))
+        sets = [
+            (_storey_label(items.get(storey), storey), units)
+            for storey, units in sorted(by_storey.items())
         ]
     else:
-        grouped = list(made_views.items())
+        sets = [("", list(made_views.items()))]
 
-    for name, views in grouped:
+    grouped: list[tuple[str, list[str], list[StoreyView], int]] = []
+    for prefix, units in sets:
+        chunks = sheet_chunks(len(units), mode)
+        per_unit = max((len(views) for _, views in units), default=1)
+        cells = cells_for(chunks) * per_unit
+        for start, stop in chunks:
+            chunk_labels = [label for label, _ in units[start:stop]]
+            chunk_views = [view for _, views in units[start:stop] for view in views]
+            if prefix and len(chunks) == 1:
+                name = prefix
+            else:
+                name = f"{prefix} {sheet_title(chunk_labels)}".strip()
+            grouped.append((name, chunk_labels, chunk_views, cells))
+
+    for name, chunk_labels, views, cells in grouped:
         try:
             placed = layout_from_views(
                 connection,
@@ -2310,12 +2380,13 @@ def _sheet_per_instant(
                 layout_name=naming.named(f"Sun Study {name}"),
                 scale=scale,
                 master_layout=master_layout,
+                cells=cells,
             )
         except ArchicadError as error:
             typer.secho(f"  {name}: {error}", fg=typer.colors.RED, err=True)
             continue
         typer.echo(f"  {name}: {placed.describe().splitlines()[0]}")
-        finished.append((name, placed.database_id))
+        finished.append((name, placed.database_id, chunk_labels, cells))
 
     if not finished:
         return
@@ -2343,19 +2414,23 @@ def _sheet_per_instant(
             err=True,
         )
         return
-    for label, database_id in finished:
+    for label, database_id, chunk_labels, cells in finished:
         try:
             sheet, _ = layout_sheet(connection, database_id)
-            pass_over = straighten_and_tile(connection, database_id, sheet)
+            pass_over = straighten_and_tile(connection, database_id, sheet, cells=cells)
             # ``every_sheet_table`` wins where it is given: a per-storey sheet
             # is not one instant, so there is no per-label table to look up --
             # what belongs on it is the whole day, the same on each storey.
-            rows = every_sheet_table or (tables or {}).get(label)
+            # A sheet carrying several instants stacks their tables, each
+            # under its own heading.
+            rows, title = _sheet_table(
+                chunk_labels, tables, titles, every_sheet_table, every_sheet_title, label
+            )
             drawn = (
                 draw_table(
                     connection,
                     database_id,
-                    title=every_sheet_title or (titles or {}).get(label, label),
+                    title=title,
                     rows=rows,
                     beside=table_beside,
                     height_mm=table_height_mm,
@@ -2371,13 +2446,20 @@ def _sheet_per_instant(
             + pass_over.describe()
             + (f", table of {drawn} rows on the sheet" if drawn else "")
         )
+
     # File the sheets where the practice keeps this kind of drawing, rather
     # than at the root of a book of 299 layouts. Split by what the sheet is:
     # a clock time is a shadow diagram, everything else -- the banded plan,
     # the two-hour plan, the facade -- is an ADG diagram.
+    def is_instant(labels: Sequence[str]) -> bool:
+        return any(_CLOCK.fullmatch(label) for label in labels)
+
     for subset, chosen in (
-        (instant_subset, [label for label, _ in finished if _CLOCK.fullmatch(label)]),
-        (analysis_subset, [label for label, _ in finished if not _CLOCK.fullmatch(label)]),
+        (instant_subset, [name for name, _, labels, _ in finished if is_instant(labels)]),
+        (
+            analysis_subset,
+            [name for name, _, labels, _ in finished if not is_instant(labels)],
+        ),
     ):
         if not subset or not chosen:
             continue
@@ -2981,6 +3063,7 @@ def massing(
             ),
         ),
     ] = None,
+    sheets: Annotated[str, typer.Option("--sheets", help=SHEETS_HELP)] = "one",
     zone_hourly: Annotated[
         bool,
         typer.Option(
@@ -3422,6 +3505,7 @@ def massing(
             sheet=zone_sheet,
             stats=zone_stats,
             csv_out=zone_csv,
+            sheets_mode=sheets,
             # The plan the diagrams sit on. Without it each run snapshots
             # whatever the last one left applied, and the sheets lose the
             # building a storey at a time.
@@ -4989,6 +5073,7 @@ def archicad_run(
             ),
         ),
     ] = None,
+    sheets: Annotated[str, typer.Option("--sheets", help=SHEETS_HELP)] = "each",
     plan_ground: Annotated[
         float | None,
         typer.Option(
@@ -5410,6 +5495,7 @@ def archicad_run(
                     also_hide=tuple(hide_layer or ()),
                     instant_subset=layout_subset,
                     analysis_subset=adg_subset,
+                    sheets_mode=sheets,
                 )
                 or partial
             )
@@ -5834,6 +5920,7 @@ def shadows(
     drawing_scale: Annotated[float, typer.Option("--drawing-scale")] = 1000.0,
     master_layout: Annotated[str | None, typer.Option("--master-layout")] = None,
     shadow_subset: Annotated[str | None, typer.Option("--shadow-subset")] = None,
+    sheets: Annotated[str, typer.Option("--sheets", help=SHEETS_HELP)] = SHADOW_SHEETS,
     ifc_out: Annotated[Path | None, typer.Option("--ifc-out")] = None,
     ifc_in: Annotated[
         Path | None,
@@ -5901,6 +5988,7 @@ def shadows(
             shadow_favourite=shadow_favourite,
             terrain_floor=shadow_terrain_floor,
             edge_tolerance=shadow_edge,
+            sheets=sheets,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -5933,6 +6021,7 @@ def shadows(
             shadow_favourite=shadow_favourite,
             terrain_floor=shadow_terrain_floor,
             edge_tolerance=shadow_edge,
+            sheets=sheets,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -6008,6 +6097,7 @@ def shadows(
             shadow_favourite=shadow_favourite,
             terrain_floor=shadow_terrain_floor,
             edge_tolerance=shadow_edge,
+            sheets=sheets,
             drawing_scale=drawing_scale,
             master_layout=master_layout,
             shadow_subset=shadow_subset,
@@ -6037,6 +6127,7 @@ def _shadow_report(
     shadow_subset: str | None,
     check_georeferencing: bool,
     from_views: Path | None = None,
+    sheets: str = SHADOW_SHEETS,
 ) -> None:
     """Measure one exported model and say what it shows. Draws only if asked.
 
@@ -6225,6 +6316,7 @@ def _shadow_report(
                 drawing_scale=drawing_scale,
                 master_layout=master_layout,
                 subset=shadow_subset,
+                sheets=sheets,
             )
             typer.echo("")
             typer.echo(built.describe())
@@ -6305,13 +6397,7 @@ def sun_eye_views(
     layout: Annotated[
         bool, typer.Option("--layout/--no-layout", help="Place the documents on layouts.")
     ] = True,
-    per_sheet: Annotated[
-        int,
-        typer.Option(
-            "--per-sheet",
-            help="Documents per layout. Four splits the day into a morning and an afternoon.",
-        ),
-    ] = PER_SHEET,
+    sheets: Annotated[str, typer.Option("--sheets", help=SHEETS_HELP)] = SUN_VIEW_SHEETS,
     master_layout: Annotated[str | None, typer.Option("--master-layout")] = None,
     title_block_mm: Annotated[
         float,
@@ -6440,7 +6526,7 @@ def sun_eye_views(
             connection,
             made,
             scale=scale,
-            per_sheet=per_sheet,
+            sheets=sheets,
             master_layout=master_layout,
             title_block_mm=title_block_mm,
         )

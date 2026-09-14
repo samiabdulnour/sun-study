@@ -68,9 +68,11 @@ from sun_study.archicad.layout import (
     Filing,
     file_under_subset,
     layout_from_views,
+    remove_stale_layouts,
     storey_items,
 )
 from sun_study.archicad.read import elements_by_ifc_ids
+from sun_study.archicad.sheeting import DEFAULT_SHEET_MODE, cells_for, sheet_chunks
 from sun_study.archicad.views import views_for_storeys
 from sun_study.core.geometry import PlanTransform, rotation_about_z
 from sun_study.core.patches import Ring
@@ -83,7 +85,7 @@ from sun_study.core.shadow import (
 
 __all__ = [
     "BASELINE_RAMP",
-    "DEFAULT_PER_SHEET",
+    "DEFAULT_SHEETS",
     "SCENARIO_RAMP",
     "ShadowDrawReport",
     "ShadowSheetReport",
@@ -369,6 +371,8 @@ class ShadowSheetReport:
     sheets: tuple[str, ...]
     drawings: int
     filing: Filing | None
+    removed: tuple[str, ...] = ()
+    """Earlier sheets under the same stem this run did not remake."""
 
     def describe(self) -> str:
         lines = [
@@ -376,6 +380,7 @@ class ShadowSheetReport:
             f"carrying {self.drawings} drawings"
         ]
         lines.extend(f"  {name}" for name in self.sheets)
+        lines.extend(f"  removed {name!r}, a sheet of an earlier run" for name in self.removed)
         if self.filing is not None:
             lines.append("  " + self.filing.describe())
         return "\n".join(lines)
@@ -636,11 +641,12 @@ def instant_captions(series: ShadowSeries) -> dict[str, str]:
     return {instant.label: instant.caption for instant in series.instants}
 
 
-#: Drawings to a sheet. Four is what the reference sheets carry -- 9, 10, 11
-#: and 12 on one, 1, 2 and 3 on the next -- and it is a real constraint rather
-#: than a preference: a site plan at 1:1000 on an A1 sheet is about half the
-#: page in each direction, so four fit and five do not.
-DEFAULT_PER_SHEET = 4
+#: How a day's drawings are dealt onto sheets. Two is what the reference
+#: sheets carry -- 9, 10, 11 and 12 on one, 1, 2 and 3 on the next -- and
+#: it is a real constraint as much as a preference: a site plan at 1:1000 on
+#: an A1 sheet is about half the page in each direction, so four fit and
+#: five do not. The other modes are ``sheeting``'s.
+DEFAULT_SHEETS = DEFAULT_SHEET_MODE
 
 
 def _by_date(series: ShadowSeries) -> dict[str, list[Any]]:
@@ -656,15 +662,20 @@ def _by_date(series: ShadowSeries) -> dict[str, list[Any]]:
     return days
 
 
-def sheet_name(date_label: str, part: int, parts: int) -> str:
+def sheet_name(date_label: str, part: int, parts: int, labels: Sequence[str] = ()) -> str:
     """What one sheet of shadow diagrams is called.
 
     Numbered only when there is more than one, because *SHADOW DIAGRAMS - JUNE
     21 (1 of 1)* is a sheet number nobody wants and a title block nobody wants
-    to read.
+    to read. A sheet of one drawing is named for its hour -- *JUNE 21 9AM* --
+    because *(3 of 7)* says nothing a reader is looking for.
     """
     stem = f"{naming.SHADOW_WORD}s - {date_label}"
-    return naming.named(stem if parts == 1 else f"{stem} ({part} of {parts})")
+    if parts == 1:
+        return naming.named(stem)
+    if len(labels) == 1:
+        return naming.named(f"{stem} {labels[0]}")
+    return naming.named(f"{stem} ({part} of {parts})")
 
 
 def build_shadow_sheets(
@@ -675,10 +686,10 @@ def build_shadow_sheets(
     drawing_scale: float = 1000.0,
     master_layout: str | None = None,
     subset: str | None = None,
-    per_sheet: int = DEFAULT_PER_SHEET,
+    sheets: str = DEFAULT_SHEETS,
     zoom: tuple[float, float, float, float] | None = None,
 ) -> ShadowSheetReport:
-    """One View per hour, then one Layout per four of them, filed.
+    """One View per hour, then the day's Layouts as ``sheets`` says, filed.
 
     The View is the piece that makes this work: it is a view of the *site
     plan*, pinned to that hour's Layer Combination, so the drawing carries the
@@ -715,31 +726,37 @@ def build_shadow_sheets(
         )
         made.extend((view.navigator_id, instant.caption) for view in views)
 
-    sheets: list[str] = []
+    names: list[str] = []
     placed = 0
     position = 0
     for date_label, instants in _by_date(series).items():
-        chunks = [
-            instants[start : start + per_sheet] for start in range(0, len(instants), per_sheet)
-        ]
-        for part, chunk in enumerate(chunks, start=1):
-            on_this_sheet = made[position : position + len(chunk)]
-            position += len(chunk)
-            name = sheet_name(date_label, part, len(chunks))
+        chunks = sheet_chunks(len(instants), sheets)
+        cells = cells_for(chunks)
+        for part, (start, stop) in enumerate(chunks, start=1):
+            on_this_sheet = made[position : position + (stop - start)]
+            position += stop - start
+            name = sheet_name(
+                date_label, part, len(chunks), [i.label for i in instants[start:stop]]
+            )
             report = layout_from_views(
                 connection,
                 on_this_sheet,
                 layout_name=name,
                 scale=drawing_scale,
                 master_layout=master_layout,
+                cells=cells,
             )
-            sheets.append(name)
+            names.append(name)
             placed += report.drawings_placed
 
-    filing = file_under_subset(connection, sheets, subset) if subset else None
+    # The sheets an earlier run made under another mode -- ``(1 of 2)``
+    # beside a new ``JUNE 21`` -- would otherwise stand looking as current.
+    removed = remove_stale_layouts(connection, naming.named(f"{naming.SHADOW_WORD}s - "), names)
+    filing = file_under_subset(connection, names, subset) if subset else None
     return ShadowSheetReport(
         views=tuple(name for _, name in made),
-        sheets=tuple(sheets),
+        sheets=tuple(names),
         drawings=placed,
         filing=filing,
+        removed=tuple(removed),
     )

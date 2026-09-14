@@ -360,7 +360,7 @@ What it makes, all under the tool's prefix:
 | `14 \| Sun Views` | one view of the 3D window per hour, 9am to 3pm on the assessment day, aimed along the sun |
 | `14 \| Sun View 21 Jun 09:00` ... | seven 3D Documents in the Project Map, each with its own projection and sun |
 | `14 \| Sun View Documents` | a view of each document at 1:500 |
-| `14 \| Sun Views 09:00-12:00`, `13:00-15:00` layouts | the documents on two sheets, a morning and an afternoon, four to a sheet |
+| `14 \| Sun Views 09:00-12:00`, `13:00-15:00` layouts | the documents on two sheets, a morning and an afternoon, on one grid (`--sheets two`) |
 | `14 \| Sun Views` layer combination | `04 \| Shadow Diagrams` with every zone-carrying layer hidden |
 
 Every view is pinned to the `Sun Eye Views` graphic override, the planned
@@ -374,7 +374,7 @@ origin at the centre of its cell and its frame clipped to the cell, so each
 is a window around the building rather than the whole site. The content fills
 the frame once Archicad has regenerated it, which happens when the layout is
 next opened. `--scale`,
-`--per-sheet` and `--title-block-mm` change the size, the split and the strip
+`--sheets` and `--title-block-mm` change the size, the split and the strip
 kept clear.
 
 Two things to know. **Save before closing**: views, documents and combinations
@@ -382,6 +382,29 @@ made through the API are ordinary project changes, and an unsaved close loses
 them. And **nothing here can be deleted or re-aimed by the tool** -- a second
 run keeps what is already there under its names and fills only the gaps, so
 to redo an hour, delete its view and document in the Navigator first.
+
+## The sheets
+
+Every solar tool deals its drawings onto layouts the same three ways, and
+the choice is one word: `--sheets one`, `two` or `each` on `archicad-run`,
+`massing`, `shadows` and `sun-views`, or the **Sheets** box in the
+window's General tab, which sends the one choice to all four.
+
+| mode | what it makes |
+|---|---|
+| `one` | every drawing of a set on one layout |
+| `two` | the first half on one layout, the rest on a second, both on the same grid: seven is four and three with one cell empty, nine (8am to 4pm) is five and four |
+| `each` | a layout per drawing, at full size |
+
+The set is the instants of one tool: a day of shadow diagrams, the sun
+views, the apartment plans at their times, each storey's communal plans
+by the hour. Sheets are named for what is on them -- `Sun Views
+09:00-12:00`, `Shadow Diagrams - JUNE 21 (2 of 2)`, `Sun Study 15:00` --
+and a sheet whose name no longer matches is replaced on the next run.
+On a sheet carrying several apartment-plan instants the figures tables
+are stacked under a heading each. The command-line defaults are what
+each tool did before: `two` for the shadow diagrams and the sun views,
+`each` for the apartment plans, `one` for the communal plans.
 
 ## The day
 

@@ -1463,7 +1463,7 @@ def test_the_sun_eye_run_sends_what_is_filled_in_and_nothing_else(hidden_window:
     assert job.args[job.args.index("--port") + 1] == "19723"
     assert job.args[job.args.index("--pen-set") + 1] == "00 FA Pens"
     assert job.args[job.args.index("--scale") + 1] == "500"
-    assert job.args[job.args.index("--per-sheet") + 1] == "4"
+    assert job.args[job.args.index("--sheets") + 1] == "two"
     assert job.args[job.args.index("--override") + 1] == "Sun Eye Views"
     # Blank hours: the ruleset's own window, not an empty flag.
     assert "--hour" not in job.args

@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -432,6 +432,7 @@ def layout_from_views(
     layout_name: str,
     scale: float = DEFAULT_LAYOUT_SCALE,
     master_layout: str | None = None,
+    cells: int | None = None,
 ) -> LayoutReport:
     """Put one Drawing per given View onto a new Layout.
 
@@ -440,6 +441,10 @@ def layout_from_views(
     is the difference between this and ``layout_results``: this places views
     somebody else has prepared, so a sheet titled 09:00 shows the 09:00 layer
     and nothing else.
+
+    ``cells`` lays the sheet out as one carrying that many drawings, when it
+    is more than there are: the second sheet of a split set takes the first
+    cells of the first sheet's grid, so the two read alike.
     """
     connection.require_tapir_at_least(
         LAYOUT_MINIMUM_TAPIR_VERSION, because="CreateLayout and CreateDrawings"
@@ -458,12 +463,13 @@ def layout_from_views(
     # A view covering 53 m drawn at 1:200 is 0.266 m on the sheet. In metres,
     # because that is what a Drawing's position is measured in.
     extents = view_extents(connection, [identifier for identifier, _ in views])
+    count = max(cells or 0, len(views))
     if extents:
         widest = max(width for width, _ in extents.values()) / scale
         tallest = max(height for _, height in extents.values()) / scale
-        positions = sheet_positions(sheet, len(views), (widest, tallest))
+        positions = sheet_positions(sheet, count, (widest, tallest))[: len(views)]
     else:
-        positions = [(x / MM_PER_M, y / MM_PER_M) for x, y in sheet.grid(len(views))]
+        positions = [(x / MM_PER_M, y / MM_PER_M) for x, y in sheet.grid(count)][: len(views)]
 
     # Only what is not already on the sheet. A Drawing made from a 3D view or
     # a 3D Document is created at a placeholder extent -- 59 mm square on this
@@ -861,6 +867,36 @@ def _parents(root: dict[str, Any]) -> dict[str, tuple[str, str]]:
 
     walk(root, "")
     return found
+
+
+def remove_stale_layouts(
+    connection: ArchicadConnection, stem: str, keep: Collection[str]
+) -> list[str]:
+    """Delete the tool's layouts under ``stem`` that this run is not remaking.
+
+    A layout *can* be deleted, unlike a view, and a sheet whose name no
+    longer matches its drawings -- the ``(1 of 2)`` a split run made, once
+    the set is on one sheet -- is worse than none: it stays in the Layout
+    Book beside the current ones, looking equally current. Returns the names
+    of what went, for the run to say.
+    """
+    response = connection.run_tapir("GetNavigatorItemTree", {"navigatorMapId": "LayoutBook"})
+    root = response.get("navigatorItemTree") if isinstance(response, dict) else None
+    if not isinstance(root, dict):
+        return []
+    wanted = set(keep)
+    stale = [
+        item
+        for item in _walk(root)
+        if item.kind == "LayoutItem" and item.name.startswith(stem) and item.name not in wanted
+    ]
+    if not stale:
+        return []
+    connection.run_tapir(
+        "DeleteNavigatorItems",
+        {"navigatorItemIds": [{"navigatorItemId": {"guid": item.identifier}} for item in stale]},
+    )
+    return [item.name for item in stale]
 
 
 def file_under_subset(connection: ArchicadConnection, names: Sequence[str], subset: str) -> Filing:

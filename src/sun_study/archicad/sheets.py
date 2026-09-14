@@ -210,8 +210,13 @@ def straighten_and_tile(
     *,
     gap_m: float = 0.012,
     tolerance_rad: float = 1e-4,
+    cells: int | None = None,
 ) -> SheetReport:
     """Turn every Drawing upright, size it to the page, and lay them out.
+
+    ``cells`` fits and tiles the sheet as one carrying that many drawings,
+    when it is more than are on it, so a short second sheet keeps the
+    first sheet's grid and size.
 
     The sheet is described in millimetres and the drawings live in metres,
     which is the unit everything here works in.
@@ -259,14 +264,16 @@ def straighten_and_tile(
                 f"since it was made."
             )
 
-    magnification, tiling = _fit_to_page(connection, placements, sheet, gap_m)
+    magnification, tiling = _fit_to_page(
+        connection, placements, sheet, gap_m, max(cells or 0, len(placements))
+    )
 
     # The arrangement comes from the same tiling that chose the magnification,
     # and the sheet is deliberately not re-measured to check it. A drawing's
     # bounds do not follow its magnification until Archicad regenerates it, so
     # a read here would answer with the size from before the change and put
     # the grid back where it was.
-    moves = _moves_onto(placements, tiling.positions)
+    moves = _moves_onto(placements, tiling.positions[: len(placements)])
     if moves:
         connection.run_tapir("MoveElements", {"elementsWithMoveVectors": moves})
     return SheetReport(len(crooked), len(moves), magnification or 1.0)
@@ -277,6 +284,7 @@ def _fit_to_page(
     placements: Sequence[DrawingPlacement],
     sheet: LayoutSheet,
     gap_m: float,
+    count: int | None = None,
 ) -> tuple[float | None, Tiling]:
     """Set every Drawing to the one magnification that fits the sheet.
 
@@ -323,14 +331,14 @@ def _fit_to_page(
         # proportions.
         return None, tile_positions(
             sheet,
-            len(placements),
+            count or len(placements),
             (max(p.width for p in placements), max(p.height for p in placements)),
             gap_m,
         )
 
     tiling = tile_positions(
         sheet,
-        len(placements),
+        count or len(placements),
         (
             max(p.width / p.ratio for p in placements),
             max(p.height / p.ratio for p in placements),
@@ -391,6 +399,9 @@ class TableRow:
     share: float
     fill_pen: int | None = None
     background_pen: int = 19
+    heading: bool = False
+    """A line that names the drawing the rows under it belong to, on a
+    sheet carrying several drawings' figures: the label alone, no numbers."""
 
 
 #: Archicad takes a Text's height in the database's own length unit, which on
@@ -525,6 +536,16 @@ def draw_table(
     ]
     for index, row in enumerate(rows):
         bottom = top - index * step_m
+        if row.heading:
+            texts.append(
+                {
+                    "coordinate": {"x": left, "y": bottom, "z": 0.0},
+                    "text": row.label,
+                    "height": height_mm * 1.15 * MM,
+                    "justification": "Left",
+                }
+            )
+            continue
         if row.fill_pen is not None:
             fills.append(
                 {

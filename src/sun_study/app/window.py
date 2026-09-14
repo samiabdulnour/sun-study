@@ -744,6 +744,22 @@ class Window:
             "keeps this strip clear: the site sheets, the sun views, the "
             "shadow and solar diagrams.",
         )
+        self.sheets, row = self._combo(
+            frame,
+            row,
+            "Sheets",
+            "How a tool's drawings are dealt onto layouts.",
+            "The same for every solar tool: the shadow diagrams, the sun "
+            "views, the apartment plans at their times and the communal "
+            "plans by the hour. One layout carries every drawing of a set; "
+            "two layouts split them, the first half on one and the rest on "
+            "the second laid out on the same grid, so seven is four and "
+            "three with one cell empty and nine is five and four; a layout "
+            "per drawing gives each its full sheet. A sheet whose name no "
+            "longer matches is replaced on the next run.",
+        )
+        self.sheets["values"] = [title for title, _ in self.SHEET_CHOICES]
+        self.sheets.set(self.SHEET_CHOICES[1][0])
         self.year, row = self._entry(
             frame,
             row,
@@ -1390,16 +1406,6 @@ class Window:
             "1:500 shows the street around the building, which is what the "
             "practice's sheets do. The views of the 3D window itself are at "
             "1:1 whatever this says; a document is the drawing.",
-        )
-        self.eye_per_sheet, row = self._entry(
-            frame,
-            row,
-            "Per sheet",
-            "4",
-            "Documents on each layout. Four is a morning sheet and an afternoon sheet.",
-            "Seven hours in fours is 9am to noon on one sheet and 1pm to 3pm "
-            "on the next, in the same grid with one cell empty. Every sheet "
-            "is laid out as a full one so the two match.",
         )
         self.eye_hours, row = self._entry(
             frame,
@@ -2071,7 +2077,7 @@ class Window:
             "eye_override": self.eye_override,
             "eye_base_combination": self.eye_base_combination,
             "eye_scale": self.eye_scale,
-            "eye_per_sheet": self.eye_per_sheet,
+            "sheets": self.sheets,
             "eye_title_block": self.eye_title_block,
             "eye_hours": self.eye_hours,
             "site_address": self.site_address,
@@ -2467,6 +2473,24 @@ class Window:
         named = [name for name in self.options.zone_layers if "Zone." in name]
         return named or list(self.options.zone_layers)
 
+    #: What the Sheets box offers, and the word each sends.
+    SHEET_CHOICES = (
+        ("One layout, all drawings", "one"),
+        ("Two layouts, half each", "two"),
+        ("A layout per drawing", "each"),
+    )
+
+    def _sheet_args(self) -> list[str]:
+        """``--sheets`` for the mode chosen in General. A title from the list
+        becomes its word; anything else is sent as typed."""
+        chosen = self.sheets.get().strip()
+        if not chosen:
+            return []
+        for title, word in self.SHEET_CHOICES:
+            if chosen == title:
+                return ["--sheets", word]
+        return ["--sheets", chosen]
+
     def _day_args(self) -> list[str]:
         """``--date`` for the day chosen in General, or nothing on the
         ruleset's own day so the command's names are the ones it has always
@@ -2552,6 +2576,7 @@ class Window:
                 args += ["--master-layout", self.master.get()]
             args += ["--year", self.year.get().strip() or "2024"]
             args += self._day_args()
+            args += self._sheet_args()
             made.append(Job(FACADE_JOB, args))
 
         if self.do_plans.get():
@@ -2600,6 +2625,7 @@ class Window:
                 args += ["--adg-subset", self.adg_subset.get()]
             args += ["--year", self.year.get().strip() or "2024"]
             args += self._day_args()
+            args += self._sheet_args()
             made.append(Job(PLANS_JOB, args))
 
         if self.do_communal.get():
@@ -2649,6 +2675,7 @@ class Window:
                 args += ["--zone-hourly"]
             args += ["--year", self.year.get().strip() or "2024"]
             args += self._day_args()
+            args += self._sheet_args()
             made.append(Job(COMMUNAL_JOB, args))
 
         if self.do_shadows.get():
@@ -2683,6 +2710,7 @@ class Window:
             if self.shadow_study_subset.get():
                 args += ["--shadow-subset", self.shadow_study_subset.get()]
             args += ["--year", self.year.get().strip() or "2024"]
+            args += self._sheet_args()
             made.append(Job(SHADOW_JOB, args))
 
         if self.do_sun_eyes.get():
@@ -2696,7 +2724,6 @@ class Window:
                 ("--override", self.eye_override),
                 ("--base-combination", self.eye_base_combination),
                 ("--scale", self.eye_scale),
-                ("--per-sheet", self.eye_per_sheet),
                 ("--title-block-mm", self.eye_title_block),
                 ("--hour", self.eye_hours),
             ):
@@ -2706,6 +2733,7 @@ class Window:
                 args += ["--master-layout", self.master.get()]
             args += ["--year", self.year.get().strip() or "2024"]
             args += self._day_args()
+            args += self._sheet_args()
             made.append(Job(SUN_EYE_JOB, args))
 
         if self.do_site.get() and self.site_address.get().strip():

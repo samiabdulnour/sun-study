@@ -2805,3 +2805,43 @@ zoning too, and the cadastre carries its lot ids so the slabs are named
 for their lots. The Summary of Controls gains the 3F separation row the
 envelopes use. Not yet run live against Kogarah; the tests stand a 30 m
 square under 25 m at 1.5:1 and get four storeys, FSR binding.
+
+### D91 — Drawings are dealt onto sheets one way, chosen once: one, two, or each
+
+Asked 14 September 2026: "there should be 3 modes in terms of solar
+tools. 1 layout - all 7 drawings on one layout, 2 layouts half of
+drawings on 1 layout, second half, or less on 2nd layout - both layouts
+will have the same composition, with 1 drawing possibly missing on second
+layout. 3. option is drawing per layout ... applicable for all solar
+tools drawings".
+
+Four builders had four answers to how many drawings share a sheet: the
+shadow diagrams a fixed four, the sun views four with a `--per-sheet`
+knob, the apartment plans one per instant, the communal plans every hour
+on one sheet per storey. Two of them chunked the same way in two copies
+with two naming rules and two tilers -- the D53 shape again. So the
+answer is one module, `archicad/sheeting.py`, and one word on every
+solar command and one box in the window's General tab: `--sheets one`,
+`two` or `each`.
+
+`two` deals the larger half first, so seven is four and three and nine
+(8am to 4pm, which some councils ask for) is five and four. The second
+sheet is laid out on the first's grid: `layout_from_views` and
+`straighten_and_tile` take `cells`, the fullest sheet's count, and tile
+for that many, so three drawings sit in the two-by-two's first three
+cells at the two-by-two's size rather than in a row of three at another.
+The sun views already did this for their own four; now every tool does.
+
+Names follow the drawings on the sheet: one sheet keeps the plain name;
+a split is `09:00-12:00` and `13:00-15:00` (the shadow diagrams keep their
+`(1 of 2)`); a sheet of one is named for its hour, because `(3 of 7)`
+says nothing a reader is looking for. A sheet carrying several instants
+of the apartment plans stacks their figures tables under a heading each,
+since two tables on one sheet would overwrite each other.
+
+Defaults on the command line are what each tool did before -- the shadow
+diagrams and the sun views `two`, the apartment plans `each`, the
+communal plans `one` -- so a script keeps its sheets. The window sends
+one choice to all four, `two` unless changed, because that is the
+question the office asks once per set of drawings, not once per tool.
+`--per-sheet` is gone; a saved `eye_per_sheet` setting is ignored.

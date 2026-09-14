@@ -301,7 +301,7 @@ with the headers: a 3D style belongs to a view, not to a document. And the
 office's *existing* views cover three instants per date, at 9am, 12pm and 3pm,
 across 21 June, 21 September and 21 December. A sun eye set is hourly instead,
 seven instants from 09:00 to 15:00 on 21 June, matching the assessment window
-rather than the three-per-sheet layout the shadow diagrams use.
+rather than the three instants the office's shadow views cover.
 
 The important one is what is missing from that list. Every setting a sun eye
 view needs is already reachable through Tapir except the projection itself.
