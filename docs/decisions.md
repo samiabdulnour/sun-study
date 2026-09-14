@@ -2845,3 +2845,32 @@ communal plans `one` -- so a script keeps its sheets. The window sends
 one choice to all four, `two` unless changed, because that is the
 question the office asks once per set of drawings, not once per tool.
 `--per-sheet` is gone; a saved `eye_per_sheet` setting is ignored.
+
+### D92 — A Drawing cannot be pointed at a file, so the orthophoto is drawn into one
+
+Asked 14 September 2026, after the first live Bondi run: "the ortophoto
+map. is it possible to place it like a drawing?"
+
+It is not, in the sense meant. A Drawing linked to the JPEG on disk, that
+refreshes when the imagery is refetched, is not something an add-on can
+make: `API_DrawingType` carries no path, `linkUId` is documented "not used
+yet", and `API_DrawingLinkInfo` has a getter and no setter. Developers ask
+on the Graphisoft forum and the answer does not change.
+
+What is possible is a Drawing whose content is its own captured data. The
+add-on starts a capture, creates the picture inside it, stops the capture
+and hands the result to a Drawing element -- the kit's `Element_Test`
+example is the pattern. That gives a real Drawing: a clip frame, a ratio, a
+name, a row in the Drawing Manager, placeable in the model or on a layout.
+It does not give a link. The image still travels inside the project, the
+same weight as the Figure.
+
+So both are offered and neither is a default surprise: `--aerial-as figure`
+is what the sheets have always done and stays the default, `--aerial-as
+drawing` uses the new command. The Python side is one branch in `_figures`,
+because the two requests differ only in the command, the key, and the
+anchor a Drawing does not take.
+
+Placed at the site's own altitude like everything else (D-datum above), and
+the run says which add-on command is missing if the installed build is
+older than this one.

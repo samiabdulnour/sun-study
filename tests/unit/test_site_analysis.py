@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from sun_study.archicad import naming
+from sun_study.archicad.connection import ArchicadError
 from sun_study.archicad.read import GeoLocation
 from sun_study.archicad.site_analysis import (
     CONTEXT_WORD,
@@ -668,7 +669,7 @@ def test_the_aerial_lands_under_the_cadastre_as_a_turned_figure(tmp_path: Path) 
     from sun_study.archicad.site_analysis import Drawing, _aerial, _figures
     from sun_study.site.imagery import Aerial, Tile
 
-    (tmp_path / "aerial_0_0.jpg").write_bytes(b"\xff\xd8 not really a jpeg")
+    (tmp_path / "aerial_0_0.jpg").write_bytes(bytes([0xFF, 0xD8]) + b" not really a jpeg")
     bundle = context_bundle()
     bundle.aerial = Aerial((Tile("aerial_0_0.jpg", 0.0, 0.0, 1.0, 1.0),), 3200, 2755, str(tmp_path))
     frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
@@ -1241,3 +1242,48 @@ def test_a_datum_given_outright_beats_the_projects_own_altitude() -> None:
     model_context(connection, bundle, frame, datum_m=0.0)
     slab = transport_.parameters_for("CreateSlabs")["slabs"][0]
     assert 24.0 < slab["level"] < 28.0, "true AHD, as it was before the datum existed"
+
+
+def tmp_jpeg() -> Path:
+    """A file on disk for the picture commands to read and base64. The bytes
+    are not a real JPEG; nothing here decodes them."""
+    import tempfile
+
+    path = Path(tempfile.gettempdir()) / "loriini_test_tile.jpg"
+    path.write_bytes(bytes([0xFF, 0xD8, 0xFF, 0xE0]) + b" not really a jpeg")
+    return path
+
+
+def test_the_orthophoto_goes_down_as_a_figure_or_as_a_drawing() -> None:
+    """Same picture, same box, two commands. A Figure is anchored by a
+    corner; a Drawing is positioned by its box and has no anchor."""
+    from sun_study.archicad.site_analysis import Drawing, _figures
+
+    picture = tmp_jpeg()
+    for wanted, command, key in (
+        ("figure", "PlaceFigures", "figures"),
+        ("drawing", "PlaceDrawings", "drawings"),
+    ):
+        drawing = Drawing(200.0, "Site Analysis", pictures_as=wanted)
+        drawing.figure("Aerial", str(picture), (1.0, 2.0), 30.0, 20.0, name="aerial")
+        connection, transport_ = connect({command: {"elements": [{"guid": "PIC"}]}})
+        placed = _figures(connection, drawing.figures, {drawing.layer("Aerial"): 7}, wanted)
+
+        assert placed == 1
+        sent = transport_.parameters_for(command)[key][0]
+        assert sent["box"] == {"xMin": 1.0, "yMin": 2.0, "xMax": 31.0, "yMax": 22.0}
+        assert sent["layerIndex"] == 7 and sent["name"] == "aerial"
+        assert sent["format"] == "jpg"
+        assert ("anchor" in sent) is (wanted == "figure")
+
+
+def test_an_add_on_without_the_command_says_which_one_is_missing() -> None:
+    from sun_study.archicad.site_analysis import Drawing, _figures
+
+    drawing = Drawing(200.0, "Site Analysis", pictures_as="drawing")
+    drawing.figure("Aerial", str(tmp_jpeg()), (0.0, 0.0), 10.0, 10.0)
+    connection, _ = connect(
+        {"PlaceDrawings": ArchicadError("Archicad does not have the registered command")}
+    )
+    with pytest.raises(ArchicadError, match="no PlaceDrawings command"):
+        _figures(connection, drawing.figures, {drawing.layer("Aerial"): 7}, "drawing")

@@ -258,6 +258,25 @@ fallback for an add-on built before this command existed, with the layer
 move after it (D60, D62); on Archicad 26 that fallback still writes one
 character, which is Tapir's to fix.
 
+### `Loriini.PlaceDrawings`
+
+The same picture as a Drawing rather than a Figure, for a sheet that wants a
+frame, a ratio and a row in the Drawing Manager.
+
+A Drawing cannot be pointed at a file. `API_DrawingType` has no path,
+`linkUId` is documented "not used yet", and `API_DrawingLinkInfo` has a
+getter and no setter; the question is asked on the Graphisoft forum and the
+answer has always been no. So the picture is drawn *into* the drawing's own
+captured data, between `APIDb_StartDrawingDataID` and `StopDrawingDataID`,
+which is what the kit's own `Element_Test` example does with a circle. The
+capture is stopped whatever happens inside it: leaving Archicad in capture
+mode would take every element created afterwards.
+
+Takes the same `data`, `format` and `box` as `PlaceFigures`, plus `name`,
+`angle`, `border` and the usual `layerIndex` and `floorIndex`. No `anchor`:
+a Drawing is positioned by its box. The image travels inside the project as
+a Figure's does, and there is no link that updates from the file later.
+
 ### `Loriini.PlaceFigures`
 
 A picture on the drawing, for the orthophoto under a site sheet. No command

@@ -6703,6 +6703,17 @@ def site_analysis(
         ),
     ] = future_context.DEFAULT_FRONT_SETBACK_M,
     datum: Annotated[str, typer.Option("--datum", help=context_model.DATUM_HELP)] = "project",
+    aerial_as: Annotated[
+        str,
+        typer.Option(
+            "--aerial-as",
+            help=(
+                "What the orthophoto is placed as: 'figure', a picture on the sheet, or "
+                "'drawing', which has a frame, a ratio and a row in the Drawing Manager. "
+                "Neither links to the file; the API has no way to."
+            ),
+        ),
+    ] = "figure",
     future_zones: Annotated[
         str,
         typer.Option(
@@ -6944,6 +6955,10 @@ def site_analysis(
     # The future context is worked out once, in the frame the sheets and the
     # model share, so the outline on the sheet and the slab in the model are
     # the same envelope.
+    if aerial_as not in ("figure", "drawing"):
+        raise typer.BadParameter(
+            "--aerial-as takes 'figure' or 'drawing'.", param_hint="--aerial-as"
+        )
     try:
         datum_m = context_model.parse_datum(datum)
     except ValueError as error:
@@ -7010,6 +7025,7 @@ def site_analysis(
                 layout=layout,
                 master_layout=master_layout,
                 title_block_mm=title_block_mm,
+                pictures_as=aerial_as,
             )
             typer.echo(report.describe())
             unplaced |= any("PlaceFigures" in note for note in report.notes)
@@ -7026,6 +7042,7 @@ def site_analysis(
                 master_layout=master_layout,
                 title_block_mm=title_block_mm,
                 future=future_report.envelopes if future_report is not None else (),
+                pictures_as=aerial_as,
             )
             typer.echo(report.describe())
             unplaced |= any("PlaceFigures" in note for note in report.notes)

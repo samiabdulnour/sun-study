@@ -589,6 +589,10 @@ class Drawing:
     lines: list[Line] = field(default_factory=list)
     texts: list[Text] = field(default_factory=list)
     figures: list[Figure] = field(default_factory=list)
+    pictures_as: str = "figure"
+    """``figure`` or ``drawing``: what the orthophoto is placed as. A Figure
+    is a picture on the sheet; a Drawing has a frame, a ratio and a row in
+    the Drawing Manager. Neither links to the file (D92)."""
 
     def mm(self, value: float) -> float:
         """Millimetres on paper at this drawing's scale, as ground metres."""
@@ -2430,7 +2434,10 @@ def _texts(
 
 
 def _figures(
-    connection: ArchicadConnection, figures: Sequence[Figure], indices: dict[str, int]
+    connection: ArchicadConnection,
+    figures: Sequence[Figure],
+    indices: dict[str, int],
+    pictures_as: str = "figure",
 ) -> int:
     """Place the pictures through the add-on. Returns how many were placed.
 
@@ -2438,38 +2445,44 @@ def _figures(
     4000-pixel JPEG tile is a few megabytes; no command can point Archicad at
     a path. An add-on without the command costs the sheet its photo and says
     so, not the run.
+
+    ``pictures_as`` chooses the element: a Figure, which is what the sheets
+    have always used, or a Drawing through ``PlaceDrawings`` -- a frame, a
+    ratio and a row in the Drawing Manager. Neither links to the file: the
+    API has no way to (D92).
     """
+    command = "PlaceDrawings" if pictures_as == "drawing" else "PlaceFigures"
     placed = 0
     for figure in figures:
         try:
             data = base64.b64encode(Path(figure.path).read_bytes()).decode("ascii")
         except OSError:
             continue
-        request = {
-            "figures": [
-                {
-                    "data": data,
-                    "format": Path(figure.path).suffix.lstrip(".").lower() or "jpeg",
-                    "box": {
-                        "xMin": figure.at[0],
-                        "yMin": figure.at[1],
-                        "xMax": figure.at[0] + figure.width_m,
-                        "yMax": figure.at[1] + figure.height_m,
-                    },
-                    "angle": figure.angle_rad,
-                    "anchor": "LeftBottom",
-                    "layerIndex": indices[figure.layer],
-                    "name": figure.name or Path(figure.path).name,
-                }
-            ]
+        one: dict[str, Any] = {
+            "data": data,
+            "format": Path(figure.path).suffix.lstrip(".").lower() or "jpeg",
+            "box": {
+                "xMin": figure.at[0],
+                "yMin": figure.at[1],
+                "xMax": figure.at[0] + figure.width_m,
+                "yMax": figure.at[1] + figure.height_m,
+            },
+            "angle": figure.angle_rad,
+            "layerIndex": indices[figure.layer],
+            "name": figure.name or Path(figure.path).name,
         }
+        if command == "PlaceFigures":
+            # A Figure is anchored by a corner; a Drawing is positioned by
+            # its box and needs no anchor.
+            one["anchor"] = "LeftBottom"
+        request = {"figures" if command == "PlaceFigures" else "drawings": [one]}
         try:
-            _created(connection.run_loriini("PlaceFigures", request), "PlaceFigures")
+            _created(connection.run_loriini(command, request), command)
         except ArchicadError as error:
             if "not have the registered" in str(error):
                 raise ArchicadError(
-                    "The installed Loriini add-on has no PlaceFigures command, so the aerial "
-                    "cannot be placed; install the current build."
+                    f"The installed Loriini add-on has no {command} command, so the aerial "
+                    f"cannot be placed; install the current build."
                 ) from error
             raise
         placed += 1
@@ -2485,7 +2498,7 @@ def _flush(
     """
     indices = {name: ensure_layer(connection, name).index for name in drawing.layers}
 
-    _figures(connection, drawing.figures, indices)
+    _figures(connection, drawing.figures, indices, drawing.pictures_as)
 
     fills: list[dict[str, Any]] = []
     for fill in drawing.fills:
@@ -2751,7 +2764,9 @@ def _draw(
     site_centre: Point = (0.0, 0.0),
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
+    pictures_as: str = "figure",
 ) -> WorksheetReport:
+    drawing.pictures_as = pictures_as
     attributes = _attributes(connection)
     notes: list[str] = []
     if attributes.solid_fill is None:
@@ -2842,6 +2857,7 @@ def draw_context(
     layout: bool = False,
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
+    pictures_as: str = "figure",
 ) -> WorksheetReport:
     return _draw(
         connection,
@@ -2854,6 +2870,7 @@ def draw_context(
         site_centre=frame.project(*bundle.centre_lonlat),
         master_layout=master_layout,
         title_block_mm=title_block_mm,
+        pictures_as=pictures_as,
     )
 
 
@@ -2869,6 +2886,7 @@ def draw_site(
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
     future: Sequence[Envelope] = (),
+    pictures_as: str = "figure",
 ) -> WorksheetReport:
     return _draw(
         connection,
@@ -2881,6 +2899,7 @@ def draw_site(
         site_centre=frame.project(*bundle.centre_lonlat),
         master_layout=master_layout,
         title_block_mm=title_block_mm,
+        pictures_as=pictures_as,
     )
 
 
