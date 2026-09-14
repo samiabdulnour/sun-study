@@ -10,6 +10,8 @@ microns from the true curve.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 
@@ -25,11 +27,11 @@ def lattice() -> np.ndarray:
     return np.column_stack([xs.ravel(), ys.ravel(), np.zeros(xs.size)])
 
 
-def disc(centre: tuple[float, float], radius: float):  # type: ignore[no-untyped-def]
+def disc(centre: tuple[float, float], radius: float) -> Callable[[np.ndarray], np.ndarray]:
     middle = np.array(centre, dtype=float)
 
     def shaded(points: np.ndarray) -> np.ndarray:
-        return np.linalg.norm(np.asarray(points)[:, :2] - middle, axis=1) <= radius
+        return np.asarray(np.linalg.norm(np.asarray(points)[:, :2] - middle, axis=1) <= radius)
 
     return shaded
 
@@ -72,7 +74,7 @@ def test_a_hole_comes_back_clockwise_inside_an_anticlockwise_outline() -> None:
 
     def annulus(points: np.ndarray) -> np.ndarray:
         radius = np.linalg.norm(np.asarray(points)[:, :2] - middle, axis=1)
-        return (radius <= 14.0) & (radius >= 6.0)
+        return np.asarray((radius <= 14.0) & (radius >= 6.0))
 
     rings = traced(annulus)
     areas = sorted(signed_area(ring) for ring in rings)
@@ -86,7 +88,7 @@ def test_two_patches_meeting_nowhere_are_two_rings() -> None:
     left, right = disc((11.0, 20.0), 6.0), disc((29.0, 20.0), 6.0)
 
     def both(points: np.ndarray) -> np.ndarray:
-        return left(points) | right(points)
+        return np.asarray(left(points) | right(points))
 
     rings = traced(both)
 
@@ -169,12 +171,13 @@ def test_a_seamed_hole_is_a_simple_polygon() -> None:
 
     def annulus(points: np.ndarray) -> np.ndarray:
         radius = np.linalg.norm(np.asarray(points)[:, :2] - middle, axis=1)
-        return (radius <= 14.0) & (radius >= 6.0)
+        return np.asarray((radius <= 14.0) & (radius >= 6.0))
 
     outer, holes = group_regions(traced(annulus))[0]
     assert holes, "an annulus has one"
 
     seamed = bridged(outer, holes)
+    assert seamed is not None
 
     assert len(seamed) == len(set(seamed)), "no vertex is visited twice"
     assert signed_area(seamed) == pytest.approx(float(np.pi * (14.0**2 - 6.0**2)), rel=0.002)

@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from sun_study.core.geometry import TriangleMesh, box, prism, triangulate
+from sun_study.core.sampling import SamplePoints
 from sun_study.core.shadow import (
     ADDITIONAL,
     BASELINE,
@@ -39,7 +40,7 @@ WEST_45 = np.array([[-1.0, 0.0, 1.0]]) / np.sqrt(2.0)
 NOON = dt.datetime(2024, 6, 21, 12, 0, tzinfo=dt.UTC)
 
 
-def plane(spacing: float = 1.0) -> object:
+def plane(spacing: float = 1.0) -> SamplePoints:
     """A grid wide enough that nothing in these tests reaches its edge."""
     return ground_plane_grid(
         (np.array([-40.0, -5.0, 0.0]), np.array([10.0, 5.0, 20.0])),
@@ -213,7 +214,7 @@ def test_a_site_boundary_is_triangulated_whatever_shape_the_land_is() -> None:
 
     def area(triangle: np.ndarray) -> float:
         a, b, c = triangle
-        return abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2.0
+        return float(abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2.0)
 
     polygon = (
         abs(

@@ -386,6 +386,7 @@ def test_massing_run_reports_bands_for_both_surfaces() -> None:
     assert result.threshold_minutes == 120.0
     assert result.sun_position_count == 37
     for banded in (result.facade, result.ground):
+        assert banded is not None
         assert len(banded.bands) == 7
         assert sum(b.share for b in banded.bands) == pytest.approx(1.0)
 
@@ -402,6 +403,7 @@ def test_the_south_facade_receives_nothing() -> None:
         timezone="Australia/Sydney",
         massing_config=MassingConfig(timezone="Australia/Sydney", facade_spacing_m=1.0),
     )
+    assert result.facade is not None
     assert result.facade.zero_share > 0.4, (
         f"only {result.facade.zero_share:.1%} of the facade is in permanent shade; "
         f"a Sydney box should have roughly half its envelope facing away from "
@@ -424,6 +426,7 @@ def test_grid_spacing_barely_moves_the_headline_share() -> None:
                 timezone="Australia/Sydney", facade_spacing_m=spacing, ground_spacing_m=2.0
             ),
         )
+        assert result.facade is not None
         shares.append(result.facade.at_or_above_threshold_share)
 
     assert abs(shares[0] - shares[1]) < 0.03, (
@@ -694,7 +697,7 @@ def _tilted_slab(fall_m: float, size_m: float = 10.0) -> IfcElement:
             [3, 0, 4],
             [3, 4, 7],
         ],
-        dtype=np.int32,
+        dtype=np.int64,
     )
     return IfcElement(
         global_id="tilted",
