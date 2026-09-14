@@ -31,7 +31,7 @@ import numpy.typing as npt
 import typer
 
 from sun_study import AUTHOR, PRODUCT, STOP_FILE_VAR, __version__, licence
-from sun_study.archicad import context_model, naming
+from sun_study.archicad import context_model, future_context, naming
 from sun_study.archicad import site_analysis as site_drawing
 from sun_study.archicad.connection import (
     DEFAULT_PORT,
@@ -155,7 +155,6 @@ from sun_study.archicad.views import (
 from sun_study.archicad.write import (
     APARTMENT_PROPERTIES,
     NOT_ASSESSED_HOURS,
-    PROPERTY_GROUP_NAME,
     ApartmentMatch,
     WriteReport,
     all_properties,
@@ -166,6 +165,7 @@ from sun_study.archicad.write import (
     enum_values,
     init_properties,
     match_apartments,
+    property_group_name,
     write_assessment,
 )
 from sun_study.core.analysis import (
@@ -223,6 +223,7 @@ from sun_study.report.bands_out import (
 from sun_study.report.csv_out import write_csv
 from sun_study.report.header import build_header
 from sun_study.report.json_out import write_json
+from sun_study.rules.days import DAY_HELP, day_tag, day_title, parse_day, with_day
 from sun_study.rules.ruleset import BUILTIN_RULESETS, Ruleset, RulesetError, load_ruleset
 from sun_study.site import pipeline as site_pipeline
 
@@ -308,8 +309,13 @@ def run(
         str, typer.Option("--ruleset", help="Built-in ruleset name, or a path to a YAML file.")
     ] = "nsw_adg",
     year: Annotated[
-        int, typer.Option("--year", help="Which year's 21 June to assess. Fixed for repeatability.")
+        int,
+        typer.Option("--year", help="Which year's assessment day to use. Fixed for repeatability."),
     ] = 2024,
+    date: Annotated[
+        str | None,
+        typer.Option("--date", "--day", help=DAY_HELP),
+    ] = None,
     living_room: Annotated[
         list[str] | None,
         typer.Option(
@@ -424,9 +430,10 @@ def run(
         exclude_above=exclude_above,
     )
 
+    rules = _ruleset_for(ruleset, date=date)
     try:
         result = run_assessment(
-            ifc, timezone=timezone, ruleset=ruleset, area=area, year=year, scene_config=config
+            ifc, timezone=timezone, ruleset=rules, area=area, year=year, scene_config=config
         )
     except GeoreferencingError as error:
         typer.secho(f"Georeferencing error: {error}", fg=typer.colors.RED, err=True)
@@ -1592,6 +1599,71 @@ def _zone_statistics_sheet(
         except ArchicadError as error:
             typer.secho(f"  {error}", fg=typer.colors.YELLOW, err=True)
     return False
+
+
+def _ruleset_for(
+    ruleset: str, *, date: str | None, window_start: str = "", window_end: str = ""
+) -> Ruleset:
+    """The rules a run assesses against, with the day and window it asked for.
+
+    Loads the ruleset, applies ``--date`` and the window overrides, and
+    stamps the day on every name this run makes when the day is not the
+    ruleset's own. Either override is said loudly, because each is the one
+    setting that silently makes a figure answer a different question from the
+    one it appears to answer: a summer figure against a midwinter criterion
+    is not that criterion's.
+    """
+    try:
+        loaded = load_ruleset(ruleset)
+    except RulesetError as error:
+        typer.secho(f"Ruleset error: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+    rules = loaded
+    naming.set_day("")
+    if date:
+        try:
+            mmdd = parse_day(date)
+        except ValueError as error:
+            raise typer.BadParameter(str(error), param_hint="--date") from error
+        if mmdd != loaded.assessment.date:
+            rules = with_day(rules, mmdd)
+            naming.set_day(day_tag(mmdd))
+            typer.secho(
+                f"  assessed on {day_title(mmdd)}; {loaded.name} itself says "
+                f"{day_title(loaded.assessment.date)}. These figures are not that "
+                f"ruleset's criterion, and every name this run makes says "
+                f"{day_tag(mmdd)!r}.",
+                fg=typer.colors.YELLOW,
+                bold=True,
+            )
+
+    if window_start or window_end:
+        window = loaded.assessment
+        rules = rules.model_copy(
+            update={
+                "assessment": rules.assessment.model_copy(
+                    update={
+                        "window_start": window_start or window.window_start,
+                        "window_end": window_end or window.window_end,
+                    }
+                )
+            }
+        )
+        try:
+            _check_window(rules)
+        except ValueError as error:
+            raise typer.BadParameter(str(error), param_hint="--window-start") from error
+        typer.secho(
+            f"  assessment window overridden to "
+            f"{rules.assessment.window_start}-{rules.assessment.window_end}; "
+            f"{loaded.name} itself says "
+            f"{window.window_start}-{window.window_end}. These figures are not "
+            f"that ruleset's criterion.",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+    return rules
 
 
 def _check_window(rules: Ruleset) -> None:
@@ -2799,9 +2871,11 @@ def massing(
     ruleset: Annotated[
         str, typer.Option("--ruleset", help="Built-in ruleset name, or a path to a YAML file.")
     ] = "nsw_adg",
-    year: Annotated[
-        int, typer.Option("--year", help="Which year's assessment date to use.")
-    ] = 2024,
+    year: Annotated[int, typer.Option("--year", help="Which year's assessment day to use.")] = 2024,
+    date: Annotated[
+        str | None,
+        typer.Option("--date", "--day", help=DAY_HELP),
+    ] = None,
     facade_grid: Annotated[
         float, typer.Option("--facade-grid", help="Facade sample spacing in metres.")
     ] = DEFAULT_MASSING_SPACING_M,
@@ -3206,6 +3280,9 @@ def massing(
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--layer-prefix") from error
 
+    # Likewise the day: on any but the ruleset's own it goes into every name.
+    rules = _ruleset_for(ruleset, date=date, window_start=window_start, window_end=window_end)
+
     model_layer = model_layer or naming.layer("Facade")
 
     if not timezone:
@@ -3260,40 +3337,6 @@ def massing(
         zone_height_m=zone_height,
         zone_spacing_m=zone_grid,
     )
-
-    rules: str | Ruleset = ruleset
-    if window_start or window_end:
-        try:
-            loaded = load_ruleset(ruleset)
-        except RulesetError as error:
-            typer.secho(f"Ruleset error: {error}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=2) from error
-        window = loaded.assessment
-        rules = loaded.model_copy(
-            update={
-                "assessment": window.model_copy(
-                    update={
-                        "window_start": window_start or window.window_start,
-                        "window_end": window_end or window.window_end,
-                    }
-                )
-            }
-        )
-        try:
-            _check_window(rules)
-        except ValueError as error:
-            raise typer.BadParameter(str(error), param_hint="--window-start") from error
-        # Loudly, because it is the one setting that silently makes a figure
-        # answer a different question from the one it appears to answer.
-        typer.secho(
-            f"  assessment window overridden to "
-            f"{rules.assessment.window_start}-{rules.assessment.window_end}; "
-            f"{loaded.name} itself says "
-            f"{window.window_start}-{window.window_end}. These figures are not "
-            f"that ruleset's criterion.",
-            fg=typer.colors.YELLOW,
-            bold=True,
-        )
 
     try:
         result = run_massing(
@@ -3855,7 +3898,7 @@ def init_properties_command(
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
 
-    typer.secho(f"{PROPERTY_GROUP_NAME}: {len(properties)} properties ready", bold=True)
+    typer.secho(f"{property_group_name()}: {len(properties)} properties ready", bold=True)
     for spec in APARTMENT_PROPERTIES:
         typer.echo(f"  {spec.name:34} {spec.data_type}")
 
@@ -4414,7 +4457,7 @@ def archicad_probe(
         typer.echo("")
 
         group_id = ensure_property_group(connection)
-        typer.echo(f"  group {PROPERTY_GROUP_NAME!r} is {group_id}")
+        typer.echo(f"  group {property_group_name()!r} is {group_id}")
         typer.echo("")
         _run_probe(connection, group_id, items)
     except ArchicadError as error:
@@ -4617,7 +4660,7 @@ def archicad_selftest(
         if properties:
             classified = classification_items_of(connection, [zone.guid for zone in chosen])
             init_properties(connection, classified)
-            typer.echo(f"  properties ready in group {PROPERTY_GROUP_NAME!r}")
+            typer.echo(f"  properties ready in group {property_group_name()!r}")
 
             written = write_assessment(
                 connection, assessment, match=match, run_stamp="SELFTEST -- not a measurement"
@@ -4741,7 +4784,11 @@ def archicad_run(
     ruleset: Annotated[
         str, typer.Option("--ruleset", help="Built-in ruleset name, or a path to a YAML file.")
     ] = "nsw_adg",
-    year: Annotated[int, typer.Option("--year", help="Which year's 21 June to assess.")] = 2024,
+    year: Annotated[int, typer.Option("--year", help="Which year's assessment day to use.")] = 2024,
+    date: Annotated[
+        str | None,
+        typer.Option("--date", "--day", help=DAY_HELP),
+    ] = None,
     living_room: Annotated[
         list[str] | None,
         typer.Option("--living-room", help="Zone name identifying a living room. Repeatable."),
@@ -5107,6 +5154,11 @@ def archicad_run(
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--layer-prefix") from error
 
+    # Likewise the day: on any but the ruleset's own it goes into every name,
+    # the property group included, so a summer run stands beside the
+    # midwinter one instead of over it.
+    rules = _ruleset_for(ruleset, date=date)
+
     layer = layer or default_layer_name()
     sheet_name = sheet_name or naming.named(naming.GROUP_WORD)
 
@@ -5209,7 +5261,7 @@ def archicad_run(
             result = run_assessment(
                 exported,
                 timezone=timezone,
-                ruleset=ruleset,
+                ruleset=rules,
                 area=area,
                 year=year,
                 scene_config=config,
@@ -5536,10 +5588,11 @@ def _shadow_moments(
     labels: list[str] = []
     for day in (part.strip() for part in dates.split(",") if part.strip()):
         try:
-            month, number = (int(piece) for piece in day.split("-"))
+            month, number = (int(piece) for piece in parse_day(day).split("-"))
         except ValueError as bad:
             raise typer.BadParameter(
-                f"--shadow-date takes MM-DD, comma separated. {day!r} is not that."
+                f"--shadow-date takes winter, equinox, summer or MM-DD, comma separated. "
+                f"{day!r} is none of those."
             ) from bad
         for text in (part.strip() for part in hours.split(",") if part.strip()):
             try:
@@ -6190,13 +6243,17 @@ def sun_eye_views(
     timezone: Annotated[str, typer.Option("--timezone")] = "Australia/Sydney",
     year: Annotated[
         int | None,
-        typer.Option("--year", help="Year of the assessment date. This year by default."),
+        typer.Option("--year", help="Year of the assessment day. This year by default."),
+    ] = None,
+    date: Annotated[
+        str | None,
+        typer.Option("--date", "--day", help=DAY_HELP),
     ] = None,
     ruleset: Annotated[
         str,
         typer.Option(
             "--ruleset",
-            help="Where the date and the hours come from: the ruleset's own assessment window.",
+            help="Where the day and the hours come from: the ruleset's own assessment window.",
         ),
     ] = "nsw_adg",
     hour: Annotated[
@@ -6281,6 +6338,7 @@ def sun_eye_views(
     """
     banner()
     naming.set_prefix(layer_prefix)
+    rules = _ruleset_for(ruleset, date=date)
     connection = _connect(port, timeout, switch_database=False)
 
     # A floor plan in front, and nothing moved under it. The zone read needs
@@ -6302,19 +6360,18 @@ def sun_eye_views(
         )
         raise typer.Exit(code=2)
 
-    rules = load_ruleset(ruleset)
     when_year = year or dt.date.today().year
-    date = rules.assessment.date_in(when_year)
+    when = rules.assessment.date_in(when_year)
     if hour:
         hours = [int(part) for part in hour.split(",") if part.strip()]
     else:
         hours = list(range(rules.assessment.start_time.hour, rules.assessment.end_time.hour + 1))
 
     geo = read_geo_location(connection)
-    eyes = sun_eyes(geo, date=date, hours=hours, timezone=timezone)
+    eyes = sun_eyes(geo, date=when, hours=hours, timezone=timezone)
     turn = (eyes[0].project_bearing_deg - eyes[0].true_bearing_deg) % 360.0 if eyes else 0.0
     typer.echo(
-        f"  {date:%d %B %Y}, {len(eyes)} instants; project +Y at true bearing "
+        f"  {when:%d %B %Y}, {len(eyes)} instants; project +Y at true bearing "
         f"{(270.0 + math.degrees(geo.north_radians)) % 360.0:.3f}, so bearings turn by {turn:.3f}"
     )
     typer.echo("    hour   altitude   true bearing   project frame")
@@ -6531,6 +6588,44 @@ def site_analysis(
             help="Metres each way around the site the model covers. 0: the site sheet's extent.",
         ),
     ] = 500.0,
+    future: Annotated[
+        bool,
+        typer.Option(
+            "--future/--no-future",
+            help=(
+                "The future context: what the LEP height, the FSR and the ADG's separation "
+                "would let a flat building be on each lot near the site. Drawn on the site "
+                "sheet and stood as slabs on the LORIINI FUTURE layer."
+            ),
+        ),
+    ] = False,
+    future_reach: Annotated[
+        float,
+        typer.Option(
+            "--future-reach",
+            help="Metres from the site's boundary a lot is still its future context.",
+        ),
+    ] = future_context.DEFAULT_REACH_M,
+    future_setback: Annotated[
+        float,
+        typer.Option(
+            "--future-setback",
+            help=(
+                "The street setback, metres: the council's DCP figure, which the register "
+                "does not carry. Side and rear setbacks are the ADG's, by height."
+            ),
+        ),
+    ] = future_context.DEFAULT_FRONT_SETBACK_M,
+    future_zones: Annotated[
+        str,
+        typer.Option(
+            "--future-zones",
+            help=(
+                "LEP zones a flat building may stand in, comma separated. Lots zoned "
+                "otherwise keep their houses."
+            ),
+        ),
+    ] = ",".join(future_context.DEFAULT_ZONES),
     set_location: Annotated[
         bool | None,
         typer.Option(
@@ -6579,9 +6674,9 @@ def site_analysis(
             "  Give an address, or --from a folder of saved bundles.", fg=typer.colors.RED, err=True
         )
         raise typer.Exit(code=2)
-    if not (context or site or summary or model):
+    if not (context or site or summary or model or future):
         typer.secho(
-            "  Nothing to do: every sheet and the model are switched off.",
+            "  Nothing to do: every sheet, the model and the future context are switched off.",
             fg=typer.colors.RED,
             err=True,
         )
@@ -6665,7 +6760,7 @@ def site_analysis(
             typer.secho(f"  WARN {warning}", fg=typer.colors.YELLOW)
 
     model_bundle = site_bundle
-    if model and model_radius > 0:
+    if (model or future) and model_radius > 0:
         model_bundle = fetch_or_load(
             "model",
             True,
@@ -6759,6 +6854,34 @@ def site_analysis(
             )
         return frame
 
+    # The future context is worked out once, in the frame the sheets and the
+    # model share, so the outline on the sheet and the slab in the model are
+    # the same envelope.
+    future_options = future_context.FutureOptions(
+        reach_m=future_reach,
+        front_setback_m=future_setback,
+        zones=tuple(z.strip().upper() for z in future_zones.split(",") if z.strip()),
+    )
+    future_report: future_context.FutureReport | None = None
+    if future:
+        source = model_bundle if model_bundle is not None else site_bundle
+        if source is None:
+            typer.secho(
+                "  nothing to work the future context from; no bundle.", fg=typer.colors.YELLOW
+            )
+        else:
+            typer.echo("working out the future context from the controls...")
+            future_report = future_context.future_envelopes(
+                source, frame_and_offset(source), future_options
+            )
+            typer.echo(future_report.describe())
+            if not source.floor_space_ratio.get("features"):
+                typer.secho(
+                    "  no floor-space ratio in the bundle (fetched before it was read, or none "
+                    "at this site); the envelopes are capped by height alone.",
+                    fg=typer.colors.YELLOW,
+                )
+
     # The photo is placed by the add-on; only an add-on without the command
     # leaves the tiles for a person, and only then is the hint worth printing.
     unplaced = False
@@ -6810,6 +6933,7 @@ def site_analysis(
                 layout=layout,
                 master_layout=master_layout,
                 title_block_mm=title_block_mm,
+                future=future_report.envelopes if future_report is not None else (),
             )
             typer.echo(report.describe())
             unplaced |= any("PlaceFigures" in note for note in report.notes)
@@ -6835,6 +6959,23 @@ def site_analysis(
                 typer.echo(built.describe())
             except ArchicadError as error:
                 typer.secho(f"  the model was not made: {error}", fg=typer.colors.RED, err=True)
+
+    if future and future_report is not None and model_bundle is not None:
+        typer.echo("standing the future context in the model...")
+        try:
+            stood = future_context.model_future(
+                connection,
+                model_bundle,
+                frame_and_offset(model_bundle),
+                options=future_options,
+                found=future_report,
+                say=say,
+            )
+            typer.echo(stood.describe())
+        except ArchicadError as error:
+            typer.secho(
+                f"  the future context was not made: {error}", fg=typer.colors.RED, err=True
+            )
 
     if context or site or summary:
         typer.echo(

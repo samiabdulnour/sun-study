@@ -61,6 +61,36 @@ SHADOW_WORD = "Shadow Diagram"
 #: in would also match a layer somebody named ``14 |Something``.
 _prefix = DEFAULT_PREFIX
 
+#: The day a run is for, when it is not the ruleset's own: ``21 Dec``. Empty
+#: on the assessment day, so every name the tool has always made is unchanged
+#: and a summer run cannot overwrite the midwinter one somebody is reading.
+_day = ""
+
+
+def set_day(tag: str | None) -> str:
+    """Stamp the day on everything this run creates. Returns what was set.
+
+    Pass the empty string, or ``None``, for the ruleset's own day: the names
+    then say nothing about it, as they did before the option existed.
+    """
+    global _day
+    if tag is None:
+        return _day
+    _day = " ".join(tag.split())
+    return _day
+
+
+def day() -> str:
+    """The day tag in force, or the empty string on the assessment day."""
+    return _day
+
+
+def _stamped(name: str) -> str:
+    """``name`` with the day on the end, unless it already says the day."""
+    if not _day or _day in name:
+        return name
+    return f"{name} {_day}"
+
 
 def set_prefix(value: str | None) -> str:
     """Choose the prefix for everything this run creates. Returns what was set.
@@ -108,8 +138,11 @@ def group(word: str = GROUP_WORD) -> str:
     different people for different reasons. It defaults to the solar analysis
     because most of the tool is that; the shadow drawings pass
     ``SHADOW_WORD``.
+
+    On a day other than the ruleset's the group carries it -- ``14 | Solar
+    Analysis 21 Dec.Results`` -- so both days' layers stand side by side.
     """
-    return f"{_prefix} {word}"
+    return _stamped(f"{_prefix} {word}")
 
 
 def layer(part: str, word: str = GROUP_WORD) -> str:
@@ -118,5 +151,9 @@ def layer(part: str, word: str = GROUP_WORD) -> str:
 
 
 def named(what: str) -> str:
-    """A combination, view, layout or surface this tool makes."""
-    return f"{_prefix} {what}"
+    """A combination, view, layout or surface this tool makes.
+
+    Carries the day when the run is not on the ruleset's own, unless the
+    name already says it, as a sun view named for its instant does.
+    """
+    return _stamped(f"{_prefix} {what}")

@@ -913,3 +913,174 @@ def test_the_ground_index_answers_like_the_scan_and_the_contours_thin_to_a_limit
     thinned = _thinned(many, limit=600)
     assert sum(len(p) for _, p in thinned) <= 600
     assert all(e % 2 == 0 for e, _ in thinned) or all(e % 4 == 0 for e, _ in thinned)
+
+
+# -- the future context -------------------------------------------------------------
+
+
+def future_bundle() -> SiteBundle:
+    """The site bundle with a cadastre and the controls a future context
+    reads: the site's lot, an R4 lot east of it under a 25 m control at
+    1.5:1, and an R2 lot west of it that keeps its house."""
+    east, west = LON + 0.0004, LON - 0.0004
+    site_ring = square(LON, LAT, 20.0)
+    cadastre = collection(
+        polygon(site_ring, lotidstring="1//DP1"),
+        polygon(square(east, LAT, 30.0), lotidstring="2//DP1"),
+        polygon(square(west, LAT, 30.0), lotidstring="3//DP1"),
+    )
+    return replace(
+        site_bundle(),
+        all_lots=cadastre,
+        zoning=collection(
+            polygon(square(LON + 0.0002, LAT, 100.0), SYM_CODE="R4"),
+            polygon(square(west, LAT, 40.0), SYM_CODE="R2"),
+        ),
+        height_of_building=collection(polygon(square(LON, LAT, 400.0), MAX_B_H=25.0)),
+        floor_space_ratio=collection(polygon(square(LON, LAT, 400.0), FSR=1.5)),
+    )
+
+
+def test_the_lots_are_read_with_their_controls_and_the_envelopes_follow() -> None:
+    from sun_study.archicad.future_context import FutureOptions, future_envelopes, lots_of
+
+    bundle = future_bundle()
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    lots = {lot.identifier: lot for lot in lots_of(bundle, frame)}
+    assert set(lots) == {"1//DP1", "2//DP1", "3//DP1"}
+    assert lots["2//DP1"].zone == "R4" and lots["2//DP1"].height_m == 25.0
+    assert lots["2//DP1"].fsr == 1.5 and lots["3//DP1"].zone == "R2"
+    assert lots["2//DP1"].area_m2 == pytest.approx(900.0, rel=0.01)
+
+    report = future_envelopes(bundle, frame, FutureOptions(reach_m=60.0))
+    assert [e.lot.identifier for e in report.envelopes] == ["2//DP1"]
+    assert report.on_site == 1 and report.other_zones == 1
+    (built,) = report.envelopes
+    # A 30 m square with no other lot on any side fronts four streets at
+    # 6 m: an 18 m square lower tier. 1.5:1 on 900 sqm is 1,350 sqm: four
+    # storeys of 324 is 1,296, five would be 1,620.
+    assert built.street_edges == 4
+    assert built.storeys == 4 and built.binding == "fsr"
+    assert built.tiers[0].area_m2 == pytest.approx(18.0 * 18.0, rel=0.01)
+
+
+def test_the_site_sheet_draws_the_envelope_dashed_with_its_storeys_written_in() -> None:
+    from sun_study.archicad.future_context import FutureOptions, future_envelopes
+
+    bundle = future_bundle()
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    report = future_envelopes(bundle, frame, FutureOptions(reach_m=60.0))
+    drawing = site_drawing(bundle, frame, future=report.envelopes)
+
+    outlines = [
+        line
+        for line in drawing.lines
+        if line.colour == "#c2189a" and line.dashed and line.layer.endswith(".Context")
+    ]
+    assert len(outlines) == 1, "four storeys is one tier, so one outline"
+    caption = next(t for t in drawing.texts if t.text.startswith("FUTURE"))
+    assert caption.text == "FUTURE 4 STOREY\n12.4 m\nFSR 1.5:1 BINDS"
+    assert any("FUTURE CONTEXT" in t.text for t in drawing.texts), "the legend says what it is"
+    assert len(drawing.layers) <= 5, drawing.layers
+
+    plain = site_drawing(bundle, frame)
+    assert not any(t.text.startswith("FUTURE") for t in plain.texts)
+    assert not any("FUTURE CONTEXT" in t.text for t in plain.texts)
+
+
+def test_the_envelopes_stand_as_slabs_on_their_own_layer_and_a_rerun_replaces_them() -> None:
+    from sun_study.archicad.future_context import FutureOptions, model_future
+
+    bundle = future_bundle()
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    connection, transport_ = connect(
+        {
+            "GetAttributesByType": {
+                "attributes": [
+                    {"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}},
+                    {"name": "LORIINI FUTURE", "index": 10, "attributeId": {"guid": "L10"}},
+                ]
+            },
+            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+            "GetLayers": {
+                "layers": [
+                    {
+                        "layerAttribute": {
+                            "name": "LORIINI FUTURE",
+                            "isHidden": False,
+                            "isLocked": False,
+                        }
+                    },
+                ]
+            },
+            "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
+            "GetDetailsOfElements": {
+                "detailsOfElements": [
+                    {"id": "SA FUTURE 9//DP9 2 STOREY 0-6.2 m", "layerIndex": 10},
+                    {"id": "SA NEIGHBOUR 2 STOREY (OSM)", "layerIndex": 9},
+                ]
+            },
+            "GetElementsByType": {
+                "elements": [{"elementId": {"guid": "OLD"}}, {"elementId": {"guid": "KEEP"}}]
+            },
+            "DeleteElements": {"success": True},
+            "GetStories": {"stories": [{"index": 0, "level": 0.0}, {"index": 5, "level": 4.6}]},
+            "SetPropertyValuesOfElements": {"executionResults": [{"success": True}]},
+            "GetAllProperties": {"properties": []},
+            "GetPropertyValuesOfElements": {"propertyValuesForElements": []},
+        }
+    )
+    report = model_future(connection, bundle, frame, options=FutureOptions(reach_m=60.0))
+
+    assert report.layer == "LORIINI FUTURE" and report.slabs == 1
+    assert len(report.future.envelopes) == 1
+    # Only the last run's future slabs go; the context model's neighbour stays.
+    doomed = transport_.parameters_for("DeleteElements")["elements"]
+    assert [e["elementId"]["guid"] for e in doomed] == ["OLD", "OLD"], doomed
+    slabs = transport_.parameters_for("CreateSlabs")["slabs"]
+    # Four storeys under a 25 m control: one tier, 0 to 12.4 m, on the ground.
+    assert len(slabs) == 1
+    assert slabs[0]["layerIndex"] == 10 and slabs[0]["floorIndex"] == 0
+    assert slabs[0]["thickness"] == pytest.approx(12.4)
+    assert 24.0 < slabs[0]["level"] < 28.0, "on the ground the contours give"
+    assert slabs[0]["elementId"] == "SA FUTURE 2//DP1 4 STOREY 0-12.4 m FSR"
+    assert "1 envelopes, 1 capped by the FSR" in report.describe()
+
+
+def test_the_ratio_survives_the_round_trip_and_an_old_bundle_reads_as_none(
+    tmp_path: Path,
+) -> None:
+    bundle = future_bundle()
+    again = load_site(save(bundle, tmp_path / "data" / "site.json"))
+    assert again.floor_space_ratio == bundle.floor_space_ratio
+    old = bundle.as_dict()
+    del old["floor_space_ratio"]
+    assert SiteBundle.from_dict(old).floor_space_ratio == {
+        "type": "FeatureCollection",
+        "features": [],
+    }
+
+
+def test_the_summary_of_controls_states_the_separation_the_envelopes_use() -> None:
+    bundle = SummaryBundle(
+        address="1 Test St",
+        site_address="1 TEST STREET",
+        lot_description="LOT 1 - DP 1",
+        site_area_m2=1000.0,
+        controls=nsw.SiteControls(
+            epi_name=None,
+            lga_name=None,
+            zone_code=None,
+            zone_purpose=None,
+            max_height_m=None,
+            fsr=None,
+            min_lot_size_m2=None,
+            heritage=(),
+        ),
+    )
+    by_label = {label: controls for _, label, controls in summary_rows(bundle)}
+    assert by_label["3F. VISUAL PRIVACY / BUILDING SEPARATION"] == [
+        "up to 4 storeys: 12 m between habitable rooms, 6 m to a side or rear boundary",
+        "5 to 8 storeys: 18 m between habitable rooms, 9 m to a side or rear boundary",
+        "9 storeys and over: 24 m between habitable rooms, 12 m to a side or rear boundary",
+    ]

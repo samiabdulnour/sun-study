@@ -2715,3 +2715,93 @@ and ID with the outline, holes allowed -- in one pass where Tapir needed
 three; 480 slabs in 19 s against 100. `CreateMesh` takes holes now too.
 And the IFC reader loads on first use instead of with every command and
 the window: 0.2 s to start rather than the geometry kernel's several.
+
+### D89 — Every solar tool takes a day, and a day that is not the ruleset's is stamped on everything
+
+Asked 14 September 2026: "add option to all solar tools. the summer
+solstice and spring equinox". The shadow diagram already drew three days;
+the apartment plans, the facade bands, the communal study and the sun
+views read the one day in `nsw_adg.yaml` and offered no other, on the
+argument (D16, `docs/addon.md`) that a study on the wrong day is a
+plausible picture of the wrong day.
+
+That argument stands, so the option keeps it honest in three ways. The
+vocabulary is one module, `rules/days.py`: `winter` (21 June), `equinox`
+(21 September), `summer` (21 December), or any `MM-DD`, with the aliases
+people type -- `midwinter`, `spring`, `midsummer`. The 21st is the drawing
+convention every council set is drawn to, not the astronomical instant,
+which drifts a day either way; a council that wants the 22nd types it.
+The window, the step and the thresholds stay the ruleset's, and a run on
+another day says so in yellow, in the same words the window override
+uses: *these figures are not that ruleset's criterion*.
+
+And the names. A summer run of the apartment plans would otherwise have
+written its hours into the same Zone properties the ADG schedule reads,
+and its bands onto the same layer. So `naming.set_day` stamps the day on
+every name a run makes when the day is not the ruleset's own -- `14 |
+Solar Analysis 21 Dec.Results`, `14 | Sun Views 21 Dec`, the property
+group `Solar Analysis 21 Dec` -- and leaves every name alone on 21 June,
+so nothing anybody has written moves. A name that already says the day,
+as a sun view named for its instant does, is not told twice.
+
+In the window it is one box, Day, in General beside Year, read by the
+four solar tools; the shadow diagram keeps its own list of days because it
+draws all three at once. 21 December in Sydney is on daylight saving;
+`ZoneInfo` gives the right offset and 09:00 stays the clock hour a
+council names, which is now said in `core.solar` where D3 had assumed
+AEST.
+
+### D90 — The future context is the lot set back by the ADG, stepped, and capped by the LEP
+
+Asked 14 September 2026: "possibility of showing future context in site
+analysis and model it into 3d geometry with help of understanding of
+ADG". The site sheet and the context model show what stands next door.
+What a design lives beside is what the controls allow there, and a
+Kogarah cottage on an R4 lot under a 25 m control is an eight-storey
+neighbour whether or not it has been sold.
+
+The envelope is worked out lot by lot in `site/envelope.py`, pure metres:
+
+- **Set back** by the ADG's Part 3F separation, halved to the boundary:
+  6 m for the first four storeys, 9 m for the next four, 12 m above. The
+  street setback is the DCP's and the register does not carry it, so it
+  is an option with a stated default of 6 m. Which edges are the street
+  is read off the cadastre -- an edge no other lot shares fronts the road
+  reserve -- because the cadastre is complete and the centrelines are
+  not.
+- **Stepped** on storey lines, not on the band's metres: a fourth storey
+  at 3.1 m ends at 12.4 m and is still in the first band. The first cut
+  stepped at 12 m and left a 0.4 m sliver at 9 m in.
+- **Capped** by the height control, and then by the floor-space ratio:
+  storeys come off the top until the envelope's gross floor area, counted
+  storey by storey on the tier each stands in, fits the ratio times the
+  lot. The caption says which bound it: `FUTURE 4 STOREY / 12.4 m / FSR
+  1.5:1 BINDS`.
+
+The inset is a true erosion traced by the shadow tool's own edge tracer
+(D79): a lattice at half a metre, a point kept when it is inside and at
+least its edge's setback from that edge as a segment, the outline bisected
+onto the setback line with the corners recovered. The first cut clipped
+the lot by one half-plane per edge, which is exact for a rectangle and
+lost a battleaxe's head to its handle's edge; the erosion keeps the head,
+keeps an L's arm, and gives a re-entrant corner the arc a setback really
+leaves there. Rectangles come out within 4 mm; a turned lot's corners
+within half a metre.
+
+Which lots: within a reach of the site (100 m), zoned where a flat
+building or shop-top housing is permitted (R1, R3, R4, the B and E centre
+zones, MU1), with a height control, and not the site's own. A lot zoned
+R2 keeps its house. Amalgamation is not attempted; two small lots that
+would be developed together are two small envelopes, or none, and the
+report says how many were too small once set back.
+
+Where it goes: dashed magenta on the Site Analysis sheet's Context layer
+with the caption in it, and one slab per tier on a layer of its own,
+`LORIINI FUTURE`, not the context model's, because a saved view says what
+stands (D78) and a future neighbour is a question a view answers -- with,
+without -- not a fact the model asserts. The FSR is now fetched by extent
+for the site and model bundles (`EPI/1`), the model bundle fetches the
+zoning too, and the cadastre carries its lot ids so the slabs are named
+for their lots. The Summary of Controls gains the 3F separation row the
+envelopes use. Not yet run live against Kogarah; the tests stand a 30 m
+square under 25 m at 1.5:1 and get four storeys, FSR binding.

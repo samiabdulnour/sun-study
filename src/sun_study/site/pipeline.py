@@ -219,6 +219,9 @@ class SiteBundle:
     rail_lines: nsw.RailLines = field(default_factory=nsw.RailLines)
     zoning: FeatureCollection = field(default_factory=empty)
     height_of_building: FeatureCollection = field(default_factory=empty)
+    floor_space_ratio: FeatureCollection = field(default_factory=empty)
+    """The LEP's FSR polygons, for the future context; empty in a bundle saved
+    before it was fetched, which the envelopes then read as no ratio."""
     contours: tuple[nsw.Contour, ...] = ()
     neighbours: tuple[nsw.Neighbour, ...] = ()
     furniture: osm.Furniture = field(default_factory=osm.Furniture)
@@ -250,6 +253,7 @@ class SiteBundle:
             "rail_lines": self.rail_lines.as_dict(),
             "zoning": self.zoning,
             "height_of_building": self.height_of_building,
+            "floor_space_ratio": self.floor_space_ratio,
             "contours": [c.as_dict() for c in self.contours],
             "neighbours": [n.as_dict() for n in self.neighbours],
             "furniture": self.furniture.as_dict(),
@@ -277,6 +281,7 @@ class SiteBundle:
             rail_lines=nsw.RailLines.from_dict(data.get("rail_lines") or {}),
             zoning=data.get("zoning") or empty(),
             height_of_building=data.get("height_of_building") or empty(),
+            floor_space_ratio=data.get("floor_space_ratio") or empty(),
             contours=tuple(nsw.Contour.from_dict(c) for c in data.get("contours") or []),
             neighbours=tuple(nsw.Neighbour.from_dict(n) for n in data.get("neighbours") or []),
             furniture=osm.Furniture.from_dict(data.get("furniture") or {}),
@@ -594,6 +599,7 @@ def run_site(
         f_rail = soft.submit("rail lines", lambda: nsw.rail_lines(extent), nsw.RailLines())
         f_zoning = soft.submit("zoning", lambda: nsw.zoning(extent), empty())
         f_hob = soft.submit("height of building", lambda: nsw.height_of_building(extent), empty())
+        f_fsr = soft.submit("floor space ratio", lambda: nsw.floor_space_ratio(extent), empty())
         f_neighbours = soft.submit(
             "neighbour addresses", lambda: nsw.neighbour_addresses(extent), []
         )
@@ -631,6 +637,7 @@ def run_site(
             rail_lines=soft.take(f_rail),
             zoning=soft.take(f_zoning),
             height_of_building=soft.take(f_hob),
+            floor_space_ratio=soft.take(f_fsr),
             contours=tuple(contours),
             neighbours=tuple(neighbours),
             furniture=soft.take(f_furniture),
@@ -700,7 +707,8 @@ def run_model(
 ) -> SiteBundle:
     """What a context model needs, for a square of ``radius_m`` each way
     around the site: the contours, every building footprint, the height
-    control, and the site itself. Saved as ``data/model.json``.
+    control, the zoning and the floor-space ratio for the future context,
+    and the site itself. Saved as ``data/model.json``.
 
     A ``SiteBundle`` rather than a fourth kind, with the sheet fields left
     empty: the model reads the same five things off it as off a site
@@ -721,12 +729,16 @@ def run_model(
     _, lat = mercator_to_lonlat(*centre)
     half = radius_m * scale_factor(lat)
     extent = Extent(centre[0] - half, centre[1] - half, centre[0] + half, centre[1] + half)
-    say(f"fetching contours, footprints and height controls {radius_m:.0f} m around the site...")
+    say(f"fetching contours, footprints and controls {radius_m:.0f} m around the site...")
 
     soft = _Soft(say)
     try:
         f_contours = soft.submit("contours", lambda: nsw.contours(extent), [])
         f_hob = soft.submit("height of building", lambda: nsw.height_of_building(extent), empty())
+        # The zoning and the ratio are what the future context reads; the
+        # sheet fields stay empty.
+        f_zoning = soft.submit("zoning", lambda: nsw.zoning(extent), empty())
+        f_fsr = soft.submit("floor space ratio", lambda: nsw.floor_space_ratio(extent), empty())
         f_lots = soft.submit("cadastre", lambda: nsw.all_lots(extent), empty())
         f_buildings = soft.submit(
             "building footprints (OSM)", lambda: osm.buildings(extent, log=say), ()
@@ -742,7 +754,9 @@ def run_model(
             site_lots=site,
             site_rings=tuple(tuple(ring) for ring in rings),
             all_lots=soft.take(f_lots),
+            zoning=soft.take(f_zoning),
             height_of_building=soft.take(f_hob),
+            floor_space_ratio=soft.take(f_fsr),
             contours=tuple(contours),
             furniture=osm.Furniture(buildings=tuple(footprints)),
         )

@@ -1509,3 +1509,70 @@ def test_the_site_analysis_waits_for_an_address(hidden_window: Any) -> None:
     assert hidden_window.jobs() == []
     assert "study_site" in hidden_window.settings()
     assert hidden_window.settings()["site_anchor"] == "Project location"
+
+
+def test_the_day_in_general_reaches_every_solar_tool_but_the_shadow_diagram(
+    hidden_window: Any,
+) -> None:
+    """One box, and the plans, the facade, the communal study and the sun
+    views all run on that day. The shadow diagram keeps its own list of days,
+    because it is drawn for all three at once."""
+    hidden_window.do_plans.set(True)
+    hidden_window.do_communal.set(True)
+    hidden_window.do_shadows.set(True)
+    hidden_window.do_sun_eyes.set(True)
+    hidden_window.day.set("Summer solstice, 21 December")
+
+    by_name = {job.label: job.args for job in hidden_window.jobs()}
+    assert flag(by_name["solar analysis: facade"], "--date") == ["summer"]
+    assert flag(by_name["solar analysis: apartments"], "--date") == ["summer"]
+    assert flag(by_name["solar analysis: communal open space"], "--date") == ["summer"]
+    assert flag(by_name["sun views"], "--date") == ["summer"]
+    assert "--date" not in by_name["shadow diagram"]
+
+
+def test_the_rulesets_own_day_sends_nothing_so_the_names_stay_as_they_were(
+    hidden_window: Any,
+) -> None:
+    hidden_window.do_plans.set(True)
+    facade, plans = hidden_window.jobs()
+    assert "--date" not in facade.args
+    assert "--date" not in plans.args
+
+    hidden_window.day.set("06-21")
+    assert "--date" not in hidden_window.jobs()[0].args
+
+
+def test_a_typed_day_is_sent_as_typed_and_the_command_line_judges_it(hidden_window: Any) -> None:
+    hidden_window.day.set("9-22")
+    (facade,) = hidden_window.jobs()
+    assert flag(facade.args, "--date") == ["09-22"]
+
+    hidden_window.day.set("autumn")
+    (facade,) = hidden_window.jobs()
+    assert flag(facade.args, "--date") == ["autumn"]
+
+
+def test_the_future_context_tick_reaches_the_site_command_with_its_settings(
+    hidden_window: Any,
+) -> None:
+    """The reach and the street setback are the two things a designer
+    changes; the zones and the separation are the ADG's and stay put."""
+    hidden_window.do_site.set(True)
+    hidden_window.site_address.insert(0, "1 Test St, Kogarah NSW")
+    hidden_window.do_site_future.set(True)
+    hidden_window.site_future_reach.delete(0, "end")
+    hidden_window.site_future_reach.insert(0, "80")
+    hidden_window.site_future_setback.delete(0, "end")
+    hidden_window.site_future_setback.insert(0, "7.5")
+
+    site = next(job for job in hidden_window.jobs() if job.args[0] == "site")
+    assert "--future" in site.args
+    assert flag(site.args, "--future-reach") == ["80"]
+    assert flag(site.args, "--future-setback") == ["7.5"]
+    assert flag(site.args, "--model-radius") == ["500"], "the model's square is what it reads"
+    assert "--model" not in site.args
+
+    hidden_window.do_site_future.set(False)
+    site = next(job for job in hidden_window.jobs() if job.args[0] == "site")
+    assert "--future" not in site.args

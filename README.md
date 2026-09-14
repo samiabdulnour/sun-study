@@ -25,7 +25,8 @@ hand-typed document.
 ## What it does
 
 Computes how many hours of direct sunlight each apartment's living room windows and
-private open space receive on 21 June between 09:00 and 15:00, assesses that against
+private open space receive on 21 June between 09:00 and 15:00 (or on the equinox or
+midsummer, asked for by day), assesses that against
 the NSW Apartment Design Guide, and writes the result back into the Archicad project
 as Zone property values.
 

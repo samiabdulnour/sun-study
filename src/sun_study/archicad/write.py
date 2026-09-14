@@ -41,6 +41,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.read import NULL_GUID, disambiguated, elements_by_ifc_ids
 from sun_study.rules.assessment import BuildingAssessment
@@ -63,11 +64,24 @@ __all__ = [
     "existing_properties",
     "init_properties",
     "match_apartments",
+    "property_group_name",
     "property_groups",
     "write_assessment",
 ]
 
 PROPERTY_GROUP_NAME = "Solar Analysis"
+
+
+def property_group_name() -> str:
+    """The group the written properties belong to.
+
+    ``PROPERTY_GROUP_NAME`` on the ruleset's own day, which is every value
+    anybody has written so far. On another day the group carries it --
+    ``Solar Analysis 21 Dec`` -- because a schedule of midwinter figures must
+    not be overwritten by a summer run made to look at the same apartments.
+    """
+    tag = naming.day()
+    return f"{PROPERTY_GROUP_NAME} {tag}" if tag else PROPERTY_GROUP_NAME
 
 
 @dataclass(frozen=True)
@@ -337,7 +351,7 @@ def existing_properties(connection: ArchicadConnection) -> dict[str, str]:
     return {
         entry.name: entry.identifier
         for entry in all_properties(connection)
-        if entry.group == PROPERTY_GROUP_NAME
+        if entry.group == property_group_name()
     }
 
 
@@ -430,7 +444,7 @@ def property_groups(connection: ArchicadConnection) -> dict[str, str]:
 
 def ensure_property_group(connection: ArchicadConnection) -> str:
     """This tool's property group, created only if it is genuinely missing."""
-    existing = property_groups(connection).get(PROPERTY_GROUP_NAME)
+    existing = property_groups(connection).get(property_group_name())
     if existing is not None:
         return existing
 
@@ -440,7 +454,7 @@ def ensure_property_group(connection: ArchicadConnection) -> str:
             "propertyGroups": [
                 {
                     "propertyGroup": {
-                        "name": PROPERTY_GROUP_NAME,
+                        "name": property_group_name(),
                         "description": (
                             "Direct sunlight hours and ADG assessment written by "
                             "sun-study. Values are only as current as the run that "
@@ -456,17 +470,17 @@ def ensure_property_group(connection: ArchicadConnection) -> str:
         if "error" in created[0]:
             error = created[0]["error"] or {}
             raise ArchicadError(
-                f"Could not create the {PROPERTY_GROUP_NAME!r} property group: "
+                f"Could not create the {property_group_name()!r} property group: "
                 f"{error.get('message', 'no message')} (code {error.get('code', 'none')})"
             )
         identifier = (created[0].get("propertyGroupId") or {}).get("guid")
         if identifier:
             return str(identifier)
 
-    resolved = property_groups(connection).get(PROPERTY_GROUP_NAME)
+    resolved = property_groups(connection).get(property_group_name())
     if resolved is None:
         raise ArchicadError(
-            f"Created the {PROPERTY_GROUP_NAME!r} property group but Archicad does "
+            f"Created the {property_group_name()!r} property group but Archicad does "
             f"not list it, so property definitions have nowhere to go."
         )
     return resolved
@@ -575,7 +589,7 @@ def init_properties(
     if problems:
         raise ArchicadError(
             f"Archicad refused to create {len(problems)} of {len(missing)} property "
-            f"definitions in group {PROPERTY_GROUP_NAME!r} "
+            f"definitions in group {property_group_name()!r} "
             f"(id {group_id}, availability {len(availability)} classification "
             f"items):\n  " + "\n  ".join(problems)
         )

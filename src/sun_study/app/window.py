@@ -77,6 +77,7 @@ from sun_study.archicad import naming
 from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS
 from sun_study.cli import DEFAULT_SHADOW_DATES, DEFAULT_SHADOW_HOURS
 from sun_study.disclaimer import STATUS
+from sun_study.rules.days import ASSESSMENT_DAYS, day_name, parse_day
 
 PAD = 8
 HINT = "#5a5a5a"
@@ -748,12 +749,29 @@ class Window:
             row,
             "Year",
             "2024",
-            "Which year's midwinter date to assess.",
-            "The assessment runs on 21 June, the shortest day, which is the "
-            "worst case the ADG asks about. The year only shifts the date and "
-            "the sun positions slightly; it is here so a study can be repeated "
-            "against the same day as an earlier report.",
+            "Which year's assessment day to use.",
+            "The assessment runs on the day chosen below, 21 June unless "
+            "another is picked. The year only shifts the sun positions "
+            "slightly; it is here so a study can be repeated against the "
+            "same day as an earlier report.",
         )
+        self.day, row = self._combo(
+            frame,
+            row,
+            "Day",
+            "Winter solstice unless a council asks for another.",
+            "The day every solar tool studies: the apartment plans, the "
+            "facade bands, the communal open space and the sun views. 21 June "
+            "is the shortest day, the worst case the ADG assesses, and the "
+            "only day its two-hour test means anything. The equinox and "
+            "midsummer show the year; a run on either carries the day in "
+            "every layer, view, sheet and property it makes, so it stands "
+            "beside the midwinter one rather than over it. The shadow "
+            "diagram has its own list of days and does not read this one. "
+            "Type a date as MM-DD for any other day.",
+        )
+        self.day["values"] = [title for _, title in ASSESSMENT_DAYS.values()]
+        self.day.set(ASSESSMENT_DAYS["winter"][1])
 
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
         row += 1
@@ -1479,8 +1497,22 @@ class Window:
             Tooltip(tick, detail)
             row += 1
         self.do_site_model = tk.BooleanVar(value=False)
+        self.do_site_future = tk.BooleanVar(value=False)
         self.do_site_location = tk.BooleanVar(value=True)
         for variable, label, detail in (
+            (
+                self.do_site_future,
+                "Future Context (what the controls allow next door)",
+                "Each lot near the site, zoned for flats and under a height "
+                "control, set back by the ADG's separation (6, 9 and 12 m by "
+                "height band), stepped, and capped by the LEP's height and "
+                "floor-space ratio. Drawn dashed in magenta on the Site "
+                "Analysis sheet with its storeys written in, and stood as "
+                "slabs on the LORIINI FUTURE layer -- a layer of its own, so a "
+                "shadow diagram can be cast with the neighbours as they are or "
+                "as they could be. The street setback is the council's; 6 m "
+                "unless the run folder's settings say otherwise.",
+            ),
             (
                 self.do_site_model,
                 "Context Model in 3D (terrain, blocks, neighbours)",
@@ -1510,6 +1542,7 @@ class Window:
             self.do_site_site,
             self.do_site_summary,
             self.do_site_aerial,
+            self.do_site_future,
             self.do_site_model,
             self.do_site_location,
         ]
@@ -1549,6 +1582,28 @@ class Window:
             "the contours, every building footprint and the height controls. "
             "500 m is a neighbourhood; the fetch and the slabs both grow with the "
             "square of it.",
+        )
+        self.site_future_reach, row = self._entry(
+            frame,
+            row,
+            "Future reach (m)",
+            "100",
+            "How far from the site's boundary a lot is still its future context.",
+            "The lots across the street and the two behind are what cast a "
+            "shadow on the site or take one from it; a hundred metres is "
+            "those. The envelopes are worked out from the model's square, so "
+            "the reach cannot exceed the model radius.",
+        )
+        self.site_future_setback, row = self._entry(
+            frame,
+            row,
+            "Street setback (m)",
+            "6",
+            "The council's DCP street setback for a flat building.",
+            "The register carries the LEP's height and floor-space ratio but "
+            "not the DCP's setbacks. Side and rear setbacks are the ADG's, by "
+            "height; the street setback is the council's, and 6 m is the "
+            "common figure in a Sydney DCP. Check the DCP.",
         )
         self.site_out, row = self._folder_row(
             frame,
@@ -1988,6 +2043,7 @@ class Window:
             "communal_window": self.communal_window,
             "communal_hours": self.communal_hours,
             "communal_height": self.communal_height,
+            "day": self.day,
             "communal_grid": self.communal_grid,
             "communal_csv": self.communal_csv,
             "master_layout": self.master,
@@ -2023,6 +2079,8 @@ class Window:
             "site_anchor": self.site_anchor,
             "site_out": self.site_out,
             "site_radius": self.site_radius,
+            "site_future_reach": self.site_future_reach,
+            "site_future_setback": self.site_future_setback,
             "adg_subset": self.adg_subset,
             "layer_prefix": self.prefix,
             "archicad_wait_minutes": self.wait_min,
@@ -2045,6 +2103,7 @@ class Window:
             "site_summary": self.do_site_summary,
             "site_aerial": self.do_site_aerial,
             "site_model": self.do_site_model,
+            "site_future": self.do_site_future,
             "site_location": self.do_site_location,
         }
 
@@ -2408,6 +2467,23 @@ class Window:
         named = [name for name in self.options.zone_layers if "Zone." in name]
         return named or list(self.options.zone_layers)
 
+    def _day_args(self) -> list[str]:
+        """``--date`` for the day chosen in General, or nothing on the
+        ruleset's own day so the command's names are the ones it has always
+        made. A title from the list becomes its short name; anything else is
+        sent as typed and the command line says what it makes of it."""
+        chosen = self.day.get().strip()
+        if not chosen:
+            return []
+        for name, (_, title) in ASSESSMENT_DAYS.items():
+            if chosen == title:
+                return [] if name == "winter" else ["--date", name]
+        try:
+            mmdd = parse_day(chosen)
+        except ValueError:
+            return ["--date", chosen]
+        return [] if mmdd == ASSESSMENT_DAYS["winter"][0] else ["--date", day_name(mmdd)]
+
     def _window(self) -> tuple[str, str]:
         """The communal study's assessment window, as start and end.
 
@@ -2475,6 +2551,7 @@ class Window:
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             args += ["--year", self.year.get().strip() or "2024"]
+            args += self._day_args()
             made.append(Job(FACADE_JOB, args))
 
         if self.do_plans.get():
@@ -2522,6 +2599,7 @@ class Window:
             if self.adg_subset.get():
                 args += ["--adg-subset", self.adg_subset.get()]
             args += ["--year", self.year.get().strip() or "2024"]
+            args += self._day_args()
             made.append(Job(PLANS_JOB, args))
 
         if self.do_communal.get():
@@ -2570,6 +2648,7 @@ class Window:
             if self.do_hourly.get():
                 args += ["--zone-hourly"]
             args += ["--year", self.year.get().strip() or "2024"]
+            args += self._day_args()
             made.append(Job(COMMUNAL_JOB, args))
 
         if self.do_shadows.get():
@@ -2626,6 +2705,7 @@ class Window:
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             args += ["--year", self.year.get().strip() or "2024"]
+            args += self._day_args()
             made.append(Job(SUN_EYE_JOB, args))
 
         if self.do_site.get() and self.site_address.get().strip():
@@ -2639,6 +2719,14 @@ class Window:
                 args += ["--model"]
                 if self.site_radius.get().strip():
                     args += ["--model-radius", self.site_radius.get().strip()]
+            if self.do_site_future.get():
+                args += ["--future"]
+                if not self.do_site_model.get() and self.site_radius.get().strip():
+                    args += ["--model-radius", self.site_radius.get().strip()]
+                if self.site_future_reach.get().strip():
+                    args += ["--future-reach", self.site_future_reach.get().strip()]
+                if self.site_future_setback.get().strip():
+                    args += ["--future-setback", self.site_future_setback.get().strip()]
             if not self.do_site_location.get():
                 args += ["--keep-location"]
             if self.site_scale.get().strip():

@@ -252,14 +252,21 @@ class _Heights:
 # -- the model ----------------------------------------------------------------------
 
 
-def _clear_previous(connection: ArchicadConnection) -> int:
+#: What the context model's own elements are marked with.
+OWN_IDS: tuple[str, ...] = ("SA NEIGHBOUR", "SA TERRAIN", "SA BLOCK")
+
+
+def _clear_previous(connection: ArchicadConnection, prefixes: Sequence[str] = OWN_IDS) -> int:
     """Delete the slabs and meshes of the last run: what sits on the tool's
     layer and carries its ID. Returns how many went.
 
     By the ID alone: the ID is the tool's own mark, and a slab a failed
     move left off the layer still carries it. Three runs had stacked ninety
-    slabs before this existed.
+    slabs before this existed. ``prefixes`` says whose: the context model's
+    by default, the future context's when that is what is being remade, so
+    neither run deletes the other's.
     """
+    wanted = tuple(prefixes)
     doomed: list[dict[str, Any]] = []
     for kind in ("Slab", "Mesh"):
         found = connection.run_tapir("GetElementsByType", {"elementType": kind})
@@ -274,8 +281,7 @@ def _clear_previous(connection: ArchicadConnection) -> int:
         doomed.extend(
             element
             for element, row in zip(elements, rows, strict=True)
-            if isinstance(row, dict)
-            and str(row.get("id", "")).startswith(("SA NEIGHBOUR", "SA TERRAIN", "SA BLOCK"))
+            if isinstance(row, dict) and str(row.get("id", "")).startswith(wanted)
         )
     if doomed:
         connection.run_tapir("DeleteElements", {"elements": doomed})

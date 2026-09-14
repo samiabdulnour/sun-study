@@ -98,8 +98,12 @@ def rail_corridors(extent: Extent) -> FeatureCollection:
 
 
 def all_lots(extent: Extent) -> FeatureCollection:
-    """Every lot boundary in the extent, drawn as a thin cadastral overlay."""
-    return query_by_extent(f"{CADASTRE}/8", extent, "objectid")
+    """Every lot boundary in the extent, drawn as a thin cadastral overlay.
+
+    With its lot and plan, so a future envelope can be named for the lot it
+    stands on: ``1//DP212120``.
+    """
+    return query_by_extent(f"{CADASTRE}/8", extent, "objectid,lotidstring")
 
 
 def properties_at(points: Sequence[tuple[float, float]]) -> FeatureCollection:
@@ -120,6 +124,11 @@ def zoning(extent: Extent) -> FeatureCollection:
 
 def height_of_building(extent: Extent) -> FeatureCollection:
     return query_by_extent(f"{EPI}/5", extent, "MAX_B_H,UNITS,LAY_CLASS")
+
+
+def floor_space_ratio(extent: Extent) -> FeatureCollection:
+    """The LEP's floor-space ratio, as polygons: ``FSR`` is the ratio to one."""
+    return query_by_extent(f"{EPI}/1", extent, "FSR,LAY_CLASS")
 
 
 def heritage(extent: Extent) -> FeatureCollection:

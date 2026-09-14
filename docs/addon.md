@@ -366,9 +366,10 @@ instants a study draws, at the reference project's latitude:
 | 14:00 | 25.7 | 328.6 | 9.6 |
 | 15:00 | 18.1 | 316.3 | 357.2 |
 
-21 June and 09:00 to 15:00 are not a choice. They are the ruleset's own
-assessment date and window, in `nsw_adg.yaml`, and the same seven hours the
-shadow diagrams already default to.
+21 June and 09:00 to 15:00 are the ruleset's own assessment date and
+window, in `nsw_adg.yaml`, and the same seven hours the shadow diagrams
+already default to. `--date equinox` or `--date summer` runs the views on
+another day (D89), named for it.
 
 ### What the first live write taught
 

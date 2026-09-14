@@ -357,7 +357,7 @@ What it makes, all under the tool's prefix:
 
 | | |
 |---|---|
-| `14 \| Sun Views` | one view of the 3D window per hour, 9am to 3pm on 21 June, aimed along the sun |
+| `14 \| Sun Views` | one view of the 3D window per hour, 9am to 3pm on the assessment day, aimed along the sun |
 | `14 \| Sun View 21 Jun 09:00` ... | seven 3D Documents in the Project Map, each with its own projection and sun |
 | `14 \| Sun View Documents` | a view of each document at 1:500 |
 | `14 \| Sun Views 09:00-12:00`, `13:00-15:00` layouts | the documents on two sheets, a morning and an afternoon, four to a sheet |
@@ -382,6 +382,19 @@ made through the API are ordinary project changes, and an unsaved close loses
 them. And **nothing here can be deleted or re-aimed by the tool** -- a second
 run keeps what is already there under its names and fills only the gaps, so
 to redo an hour, delete its view and document in the Navigator first.
+
+## The day
+
+Every solar tool runs on the ruleset's day, 21 June, unless told
+otherwise. `--date winter|equinox|summer` (or any `MM-DD`) on `run`,
+`massing`, `archicad-run` and `sun-views` -- the **Day** box in the
+window's General tab -- runs the same study on 21 September or 21
+December. The figures are then not the ADG's criterion, and the run says
+so in yellow; every layer, view, sheet and property it makes carries the
+day (`14 | Solar Analysis 21 Dec.Results`, the property group `Solar
+Analysis 21 Dec`), so it stands beside the midwinter set rather than over
+it. The shadow diagram keeps its own list of days (`--shadow-date`, all
+three by default) and takes the same words.
 
 ## What this still needs
 

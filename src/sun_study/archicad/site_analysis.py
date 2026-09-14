@@ -77,6 +77,7 @@ from sun_study.archicad.views import (
 )
 from sun_study.site import curate
 from sun_study.site.arcgis import rings_of
+from sun_study.site.envelope import ADG_SEPARATION, Envelope
 from sun_study.site.geo import (
     Point,
     convex_hull,
@@ -150,6 +151,9 @@ WIND_BLUE = "#2f9fd6"
 SUN_YELLOW = "#feefab"
 CADASTRE_GREY = "#6f6f6f"
 ROAD_GREY = "#8a8a8a"
+#: The future context: what the controls would allow next door, drawn in a
+#: colour nothing existing is drawn in.
+FUTURE_MAGENTA = "#c2189a"
 RAIL_BLACK = "#3b3b3b"
 TRAM_PINK = "#d5006d"
 BUS_BLUE = "#2f7fd6"
@@ -459,6 +463,7 @@ LAYER_GROUPS: dict[str, dict[str, str]] = {
         "Contours": "Context",
         "Roads": "Context",
         "Buildings": "Context",
+        "Future": "Context",
         "Noise": "Furniture",
         "Traffic": "Furniture",
         "Utilities": "Furniture",
@@ -1367,9 +1372,15 @@ def _level_at(point: Point, contours: Sequence[tuple[float, list[Point]]]) -> fl
     return (e1 / d1 + e2 / d2) / (1 / d1 + 1 / d2)
 
 
-def site_drawing(bundle: SiteBundle, frame: Frame) -> Drawing:
+def site_drawing(bundle: SiteBundle, frame: Frame, *, future: Sequence[Envelope] = ()) -> Drawing:
     """The site sheet: boundary with dimensions and levels, fall, sun path,
-    prevailing winds, neighbours, street furniture, noise and access."""
+    prevailing winds, neighbours, street furniture, noise and access.
+
+    ``future`` is the future context, already worked out in this frame: each
+    envelope's footprint is drawn dashed in magenta with what the controls
+    allow written in it, on the Context layer with the buildings that stand
+    there today.
+    """
     drawing = Drawing(bundle.scale, SITE_WORD)
     placer = Placer()
     mm = drawing.mm
@@ -1560,6 +1571,28 @@ def site_drawing(bundle: SiteBundle, frame: Frame) -> Drawing:
     for building in bundle.furniture.buildings:
         if len(building.ring) >= 3:
             drawing.line("Buildings", frame.ring(building.ring), colour=ROAD_GREY, closed=True)
+    # The future context: the lowest tier's footprint, which is the largest,
+    # and the upper tiers inside it where the envelope steps.
+    for envelope in future:
+        for tier in envelope.tiers:
+            for outline in tier.rings:
+                drawing.line(
+                    "Future",
+                    list(outline),
+                    colour=FUTURE_MAGENTA,
+                    dashed=True,
+                    weight_mm=0.5,
+                    closed=True,
+                )
+        lines = envelope.caption.split("\n")
+        at = ring_centroid(list(envelope.footprint))
+        width = _text_width_m(drawing, max(lines, key=len), NEIGHBOUR_MM)
+        height = mm(NEIGHBOUR_MM * 1.3) * len(lines)
+        spot = placer.place(at[0], at[1], width, height, step=mm(2), max_radius=mm(12))
+        if spot:
+            drawing.text(
+                "Future", "\n".join(lines), spot, height_mm=NEIGHBOUR_MM, colour=FUTURE_MAGENTA
+            )
     for stop in bundle.bus_stops:
         at = frame.project(stop.lon, stop.lat)
         drawing.circle("Bus stops", at, mm(4), colour=BUS_BLUE, fill="#ffffff")
@@ -1840,6 +1873,8 @@ def site_drawing(bundle: SiteBundle, frame: Frame) -> Drawing:
         rows.append(("text", "B", None, "BUS STOPS"))
     if bundle.furniture.buildings:
         rows.append(("line", ROAD_GREY, None, "BUILDING FOOTPRINTS (OSM)"))
+    if future:
+        rows.append(("dashed", FUTURE_MAGENTA, None, "FUTURE CONTEXT: LEP + ADG 3F ENVELOPE"))
     rows.append(("line", NOISE_BLUE, None, "NOISE SOURCE"))
     rows.append(("fill", "#ffffff", WIND_BLUE, "PREVAILING BREEZES"))
     rows.append(("fill", SUN_YELLOW, "#e0c860", "WINTER / SUMMER SUN (AM/PM)"))
@@ -1950,6 +1985,17 @@ def summary_rows(bundle: SummaryBundle) -> list[tuple[str, str, list[str]]]:
 
     rows.append(("section", "APARTMENT DESIGN GUIDE", []))
     rows.append(("head", "", ["CONTROLS"]))
+    rows.append(
+        (
+            "row",
+            "3F. VISUAL PRIVACY / BUILDING SEPARATION",
+            [
+                f"{band.storeys}: {band.between_m:g} m between habitable rooms, "
+                f"{band.boundary_m:g} m to a side or rear boundary"
+                for band in ADG_SEPARATION
+            ],
+        )
+    )
     rows.append(
         (
             "row",
@@ -2811,10 +2857,11 @@ def draw_site(
     layout: bool = False,
     master_layout: str | None = None,
     title_block_mm: float = TITLE_BLOCK_MM,
+    future: Sequence[Envelope] = (),
 ) -> WorksheetReport:
     return _draw(
         connection,
-        site_drawing(bundle, frame),
+        site_drawing(bundle, frame, future=future),
         naming.named(SITE_WORD),
         view=view,
         wait_s=wait_s,

@@ -373,9 +373,12 @@ def assessment_times(
     in a 360 minute window; see ``core.analysis``.
 
     The returned datetimes are localised with fold=0. On a DST transition day a
-    repeated local hour therefore resolves to the first occurrence. NSW is on
-    AEST through the 21 June assessment date, so this does not arise for the
-    ADG case, but it is recorded here rather than left to be discovered.
+    repeated local hour therefore resolves to the first occurrence. None of
+    the days a study is made for -- 21 June, 21 September, 21 December -- is
+    a transition day in NSW, so this does not arise, but it is recorded here
+    rather than left to be discovered. The December day is on daylight
+    saving time; ``ZoneInfo`` gives it the right offset, and the clock hours
+    of the window are the clock hours a council names.
     """
     if timestep_minutes <= 0:
         raise ValueError(f"timestep_minutes must be positive, got {timestep_minutes}")

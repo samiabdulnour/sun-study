@@ -125,7 +125,7 @@ a context sheet.
 |---|---|
 | geocoding | NSW Spatial `NSW_Geocoded_Addressing_Theme`, with the register's quirks handled: ranged parents, unit noise, suffixes, locality mismatches |
 | lot boundary, rail corridor, property parcels | `NSW_Land_Parcel_Property_Theme` 8, 7, 12 |
-| zoning, height, FSR, lot size, heritage | ePlanning `EPI_Primary_Planning_Layers` 2, 5, 1, 4, 0 |
+| zoning, height, FSR, lot size, heritage | ePlanning `EPI_Primary_Planning_Layers` 2, 5, 1, 4, 0 -- the FSR by extent as well as at the site, for the future context |
 | roads with names, hierarchy and lanes; railways | `NSW_Transport_Theme` 5, 7 |
 | stations, parks, named building complexes, named areas | `NSW_Features_of_Interest_Category` and `NSW_FOI_Transport_Facilities` |
 | contours, neighbour address points | `NSW_Elevation_and_Depth_Theme` 2, `NSW_Geocoded_Addressing_Theme` 1 |
@@ -229,3 +229,47 @@ bundles. The ground level under each slab comes from a grid index of the
 contour vertices -- the site sheet's inverse-distance rule, without its scan
 of every vertex for every footprint. A rerun deletes the last run's slabs
 and mesh by their IDs first, so the model is replaced, not stacked.
+
+## The future context
+
+`--future` (the **Future Context** tick in the window) shows what the
+controls would let a neighbour build, rather than what stands there: each
+lot near the site, set back by the ADG's building separation, stepped, and
+capped by the LEP's height and floor-space ratio. D90 has the reasoning;
+this is what comes out.
+
+- **On the Site Analysis sheet**: each envelope's footprint, and the
+  smaller footprints of its upper tiers, dashed in magenta on the Context
+  layer, with `FUTURE 6 STOREY / 18.6 m / FSR 2:1` written in it and
+  `BINDS` after the ratio where the ratio, not the height, set the top.
+  A legend row names it.
+- **In the model**: one slab per tier on `LORIINI FUTURE`, a layer of its
+  own so a shadow diagram's saved view can include the neighbours as they
+  are or as they could be. Element IDs read `SA FUTURE 2//DP1 8 STOREY
+  12.4-24.8 m`, with `FSR` on the end where it bound. A rerun deletes
+  the last run's future slabs by that ID and leaves the context model's.
+- **On the Summary of Controls**: the ADG 3F separation row the envelopes
+  use, under the ADG section.
+
+The rules, in the order they apply:
+
+| step | rule | source |
+|---|---|---|
+| which lots | within `--future-reach` (100 m) of the site's boundary; zoned in `--future-zones` (R1, R3, R4, B1-B4, E1, E2, MU1); with a height control; not the site's own | the cadastre and `EPI` 2, 5 |
+| street edges | an edge no other lot shares fronts the road reserve | the cadastre |
+| street setback | `--future-setback`, 6 m by default; the DCP's figure, which the register does not carry | the council's DCP |
+| side and rear setbacks | 6 m for storeys 1-4, 9 m for 5-8, 12 m for 9 and over | ADG 3F, half the separation between habitable rooms |
+| storeys | the height control over 3.1 m, rounded down | `EPI` 5, the context model's storey |
+| the ratio | storeys off the top until the gross floor area, tier by tier, fits FSR x lot area | `EPI` 1 |
+
+The inset is a true erosion, traced with the shadow tool's edge tracer, so
+a battleaxe keeps its head and an L its arm. What is not done: lot
+amalgamation (two small lots that would be developed together are two
+small envelopes, or none), DCP side setbacks that differ from the ADG's,
+and the ADG's lower separation to non-habitable rooms. The report prints
+how many lots were passed over and why: on the site, zoned for houses,
+without a control, too small once set back.
+
+Not yet run live. The tests stand a 30 m square lot under a 25 m control
+at 1.5:1 beside the Kogarah fixture and get four storeys with the ratio
+binding; the first live run is the next thing to do.
