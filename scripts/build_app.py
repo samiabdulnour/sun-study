@@ -21,7 +21,6 @@ minutes, which is the right way round.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -45,6 +44,12 @@ NAME = "Loriini"
 #: switcher. An .ico with only the big one in it is resampled down to a smear
 #: at the size somebody actually sees most often.
 ICON = ROOT / "assets" / "loriini.ico"
+
+#: The build recipe itself, tracked rather than regenerated. PyInstaller writes
+#: a .spec from whatever flags it is given, so building from flags overwrote
+#: this file on every run and threw away the trimming in it -- 11 MB back onto
+#: the executable, silently. docs/restructure.md has the measurement.
+SPEC = ROOT / "Loriini.spec"
 
 #: Windows reads this out of the .exe for its Properties > Details tab, and
 #: shows it in the UAC prompt and the task manager. Without it the file claims
@@ -91,6 +96,13 @@ def main() -> int:
         )
         return 2
 
+    if not SPEC.is_file():
+        # Buildable without it -- PyInstaller would happily infer a spec from
+        # flags -- but the result would be the untrimmed executable wearing the
+        # same name, which is the failure this is here to prevent.
+        print(f"No build recipe at {SPEC}.", file=sys.stderr)
+        return 2
+
     if not ICON.is_file():
         # Named rather than shrugged at. PyInstaller falls back to its own
         # icon without comment, and the first anybody knows of a missing file
@@ -102,55 +114,35 @@ def main() -> int:
     version_file.parent.mkdir(parents=True, exist_ok=True)
     version_file.write_text(VERSION_INFO, encoding="utf-8")
 
+    # Everything below used to be spelled out as flags here, and PyInstaller
+    # rewrote Loriini.spec from them each time. The spec carries the trimming
+    # now, so the flags would undo it; what they encoded is recorded here
+    # because it is no longer visible at the call.
+    #
+    #   --onefile, --windowed  what is handed over is a file, not a folder to
+    #       keep together, and a console flashing up reads as an error.
+    #   --icon and --add-data  two separate jobs, both wanted. The icon is
+    #       carved in as a Windows resource for Explorer, the task bar and
+    #       Alt-Tab; it does not reach Tk, so the same file rides inside as
+    #       data for the window to load, or it opens wearing the Tk feather.
+    #   collect_all ifcopenshell  it imports its schema rules by name at read
+    #       time, so a static scan never sees ifcopenshell.express.rules.
+    #       --collect-data alone was the first guess: the app got as far as
+    #       opening an IFC and died on a missing ifc2x3.exp. Measured, twice.
+    #   collect_data tzdata  Windows ships no system tz database, which is why
+    #       tzdata is a runtime dependency rather than a nicety.
+    #   collect_data sun_study  the rulesets are YAML. Nothing imports them, so
+    #       gathering code is not enough and the app dies on "No ruleset at".
+    #   collect_submodules typer  its runtime hides behind lazy imports.
+    #   exclude PIL  it builds the icon and nothing imports it at run time, but
+    #       a dependency scan finds it and bundles 8 MB of image codecs.
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
-        "--version-file",
-        str(version_file),
         "--noconfirm",
         "--clean",
-        "--onefile",
-        "--windowed",
-        "--name",
-        NAME,
-        # Two separate jobs, and both are wanted. --icon carves it into the
-        # .exe as a Windows resource, which is what Explorer, the task bar and
-        # the Alt-Tab switcher read. It does *not* reach Tk: the window would
-        # still come up wearing the Tk feather, so the same file is carried
-        # inside as data for the window to load at startup.
-        "--icon",
-        str(ICON),
-        "--add-data",
-        f"{ICON}{os.pathsep}assets",
-        # Everything of ifcopenshell: submodules, data and binaries. Not
-        # --collect-data, which was the first guess and is not enough --
-        # ifcopenshell imports its schema rules by name at read time, so a
-        # static scan never sees ifcopenshell.express.rules, and the packaged
-        # app got as far as opening an IFC before dying on a missing
-        # ifc2x3.exp. Measured, twice.
-        "--collect-all",
-        "ifcopenshell",
-        # Likewise the tz database. Windows ships no system one, which is why
-        # tzdata is a runtime dependency rather than a nicety.
-        "--collect-data",
-        "tzdata",
-        # The rulesets. --collect-submodules gathers code; a YAML file is not
-        # code, and nothing imports it, so without this the packaged app
-        # builds cleanly and dies on the first run with "No ruleset at ...".
-        "--collect-data",
-        "sun_study",
-        # Pillow builds the icon and nothing imports it at runtime, but it is
-        # in the environment, so a dependency scan finds it and bundles 8 MB
-        # of image codecs into a program that draws no images.
-        "--exclude-module",
-        "PIL",
-        # Typer's runtime lives behind lazy imports that a static scan misses.
-        "--collect-submodules",
-        "typer",
-        "--collect-submodules",
-        "sun_study",
-        str(ROOT / "src" / "sun_study" / "app" / "__main__.py"),
+        str(SPEC),
     ]
     print(" ".join(command))
     finished = subprocess.run(command, cwd=ROOT, check=False)
