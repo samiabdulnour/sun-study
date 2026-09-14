@@ -113,6 +113,34 @@ public:
 };
 
 
+// The orthophoto as a Drawing rather than a Figure, for a sheet that wants
+// a frame, a scale and a row in the Drawing Manager.
+//
+// A Drawing cannot be pointed at a file: `API_DrawingType` has no path,
+// `linkUId` is "not used yet" in the API and `API_DrawingLinkInfo` has a
+// getter and no setter. So the picture is drawn into the drawing's own
+// captured data (`APIDb_StartDrawingDataID` .. `StopDrawingDataID`, the
+// kit's own `Element_Test` example is the model). The image travels in the
+// project, as a Figure's does; what is gained is the frame and the ratio,
+// what is not is a link that updates from the file afterwards.
+class PlaceDrawingsCommand : public Command {
+public:
+	virtual GS::String						GetName () const override;
+	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
+	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
+
+	virtual API_AddOnCommandExecutionPolicy	GetExecutionPolicy () const override
+	{
+		return API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread;
+	}
+
+	virtual bool							IsProcessWindowVisible () const override { return true; }
+
+	virtual GS::ObjectState					Execute (const GS::ObjectState& parameters,
+													 GS::ProcessControl& processControl) const override;
+};
+
+
 // The terrain: one Mesh from contours.
 //
 // Tapir's `CreateMeshes` answers APIERR_BADINDEX (-2130313114) on Archicad

@@ -202,6 +202,7 @@ GSErrCode __ACENV_CALL Initialize (void)
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateFillsCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateTextsCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::PlaceFiguresCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::PlaceDrawingsCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateMeshCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::CreateSlabsCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::GetCurrentDatabaseCommand> ()); },

@@ -879,6 +879,255 @@ GS::ObjectState PlaceFiguresCommand::Execute (const GS::ObjectState& parameters,
 }		// namespace Loriini
 
 
+// -- PlaceDrawings ----------------------------------------------------------------
+
+namespace Loriini {
+
+GS::String PlaceDrawingsCommand::GetName () const			{ return "PlaceDrawings"; }
+
+GS::Optional<GS::UniString> PlaceDrawingsCommand::GetInputParametersSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"drawings": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"data": { "type": "string", "description": "The image file, base64." },
+						"format": { "type": "string", "enum": [ "jpeg", "jpg", "png", "tiff", "tif", "gif", "bmp" ] },
+						"box": {
+							"type": "object",
+							"description": "Where the drawing goes in the current database's units: metres in the model, paper metres on a layout.",
+							"properties": {
+								"xMin": { "type": "number" }, "yMin": { "type": "number" },
+								"xMax": { "type": "number" }, "yMax": { "type": "number" }
+							},
+							"required": [ "xMin", "yMin", "xMax", "yMax" ]
+						},
+						"name": { "type": "string", "description": "The drawing's name, as the Drawing Manager lists it." },
+						"angle": { "type": "number", "description": "Radians, clockwise, as a Drawing measures it." },
+						"layerIndex": { "type": "integer" },
+						"floorIndex": { "type": "integer" },
+						"transparent": { "type": "boolean", "description": "Draw white pixels as clear." },
+						"border": { "type": "boolean", "description": "Show the drawing's border line." }
+					},
+					"required": [ "data", "format", "box" ]
+				},
+				"minItems": 1
+			}
+		},
+		"required": [ "drawings" ],
+		"additionalProperties": false
+	})");
+}
+
+GS::Optional<GS::UniString> PlaceDrawingsCommand::GetResponseSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"success": { "type": "boolean" },
+			"elements": {
+				"type": "array",
+				"items": { "type": "object", "properties": { "guid": { "type": "string" } } }
+			},
+			"error": { "type": "object" }
+		}
+	})");
+}
+
+GS::ObjectState PlaceDrawingsCommand::Execute (const GS::ObjectState& parameters,
+											   GS::ProcessControl& /*processControl*/) const
+{
+	GS::Array<GS::ObjectState> wanted;
+	if (!parameters.Get ("drawings", wanted) || wanted.IsEmpty ()) {
+		return Failed ("Nothing to place: 'drawings' is empty.", APIERR_BADPARS);
+	}
+
+	GS::Array<API_Guid> made;
+	GSErrCode failure = NoError;
+	GS::UniString failureText;
+
+	const GSErrCode err = ACAPI_CallUndoableCommand ("Place site analysis drawings", [&] () -> GSErrCode {
+		for (const GS::ObjectState& one : wanted) {
+			GS::UniString encoded;
+			GS::Array<char> bytes;
+			if (!one.Get ("data", encoded) || !DecodeBase64 (encoded, bytes)) {
+				failure = APIERR_BADPARS;
+				failureText = "A drawing's 'data' is not base64.";
+				return failure;
+			}
+			GS::UniString formatName;
+			API_PictureFormat format = APIPictForm_JPEG;
+			if (!one.Get ("format", formatName) || !ReadFormat (formatName, format)) {
+				failure = APIERR_BADPARS;
+				failureText = "format takes jpeg, png, tiff, gif or bmp.";
+				return failure;
+			}
+			GS::ObjectState box;
+			API_Box where = {};
+			if (!one.Get ("box", box)
+				|| !box.Get ("xMin", where.xMin) || !box.Get ("yMin", where.yMin)
+				|| !box.Get ("xMax", where.xMax) || !box.Get ("yMax", where.yMax)) {
+				failure = APIERR_BADPARS;
+				failureText = "Every drawing needs a box with xMin, yMin, xMax and yMax.";
+				return failure;
+			}
+			const double width = where.xMax - where.xMin;
+			const double height = where.yMax - where.yMin;
+			if (width <= 0.0 || height <= 0.0) {
+				failure = APIERR_BADPARS;
+				failureText = "A drawing's box has no width or no height.";
+				return failure;
+			}
+
+			// The Drawing's own defaults are read before the capture starts,
+			// because between Start and Stop every element created belongs to
+			// the drawing being captured and this one is the container.
+			API_Element element = {};
+			element.header.type = API_DrawingID;
+			GSErrCode step = ACAPI_Element_GetDefaults (&element, nullptr);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Could not read the Drawing tool's defaults.";
+				return step;
+			}
+
+			// The content. A Drawing has no field for a file on disk --
+			// `linkUId` is "not used yet" in the API and `API_DrawingLinkInfo`
+			// has no setter -- so the picture is drawn *into* the drawing's
+			// own captured data instead. That makes a real Drawing, with a
+			// frame, a ratio and a row in the Drawing Manager; what it does
+			// not make is a link that updates from the JPEG later.
+			step = ACAPI_Database (APIDb_StartDrawingDataID);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Archicad would not start capturing a drawing.";
+				return step;
+			}
+
+			API_Element inside = {};
+			API_ElementMemo insideMemo = {};
+			inside.header.type = API_PictureID;
+			step = ACAPI_Element_GetDefaults (&inside, nullptr);
+			if (step == NoError) {
+				API_PictureType& picture = inside.picture;
+				// At its true size, from the drawing's own origin, so the
+				// Drawing's ratio stays 1 and its scale reads honestly.
+				picture.destBox.xMin = 0.0;
+				picture.destBox.yMin = 0.0;
+				picture.destBox.xMax = width;
+				picture.destBox.yMax = height;
+				picture.usePixelSize = false;
+				picture.mirrored = false;
+				picture.rotAngle = 0.0;
+				picture.anchorPoint = APIAnc_LB;
+				picture.storageFormat = format;
+				bool transparent = false;
+				one.Get ("transparent", transparent);
+				picture.transparent = transparent;
+				ReadInt (one, "layerIndex", inside.header.layer);
+
+				insideMemo.pictHdl = BMAllocateHandle (bytes.GetSize (), ALLOCATE_CLEAR, 0);
+				if (insideMemo.pictHdl == nullptr) {
+					step = APIERR_MEMFULL;
+				} else {
+					memcpy (*insideMemo.pictHdl, bytes.GetContent (), bytes.GetSize ());
+					step = ACAPI_Element_Create (&inside, &insideMemo);
+				}
+				ACAPI_DisposeElemMemoHdls (&insideMemo);
+			}
+
+			// Stopped whatever happened above: leaving Archicad in capture
+			// mode would take every element the rest of this run creates.
+			GSPtr drawingData = nullptr;
+			API_Box bounds = {};
+			const GSErrCode stopped = ACAPI_Database (APIDb_StopDrawingDataID, &drawingData, &bounds);
+			if (step != NoError || stopped != NoError || drawingData == nullptr) {
+				failure = step != NoError ? step : (stopped != NoError ? stopped : APIERR_GENERAL);
+				failureText = "Archicad refused to draw the picture into a drawing.";
+				return failure;
+			}
+
+			API_ElementMemo memo = {};
+			memo.drawingData = drawingData;
+
+			GS::UniString name;
+			if (one.Get ("name", name) && !name.IsEmpty ()) {
+				CHTruncate (name.ToCStr ().Get (), element.drawing.name, sizeof (element.drawing.name));
+				element.drawing.nameType = APIName_CustomName;
+			}
+			element.drawing.bounds = bounds;
+			element.drawing.ratio = 1.0;
+			element.drawing.angle = 0.0;
+			one.Get ("angle", element.drawing.angle);
+			element.drawing.anchorPoint = APIAnc_LB;
+			element.drawing.useOwnOrigoAsAnchor = false;
+			element.drawing.pos.x = where.xMin;
+			element.drawing.pos.y = where.yMin;
+			element.drawing.isCutWithFrame = true;
+			bool border = false;
+			one.Get ("border", border);
+			element.drawing.hasBorderLine = border;
+			ReadInt (one, "layerIndex", element.header.layer);
+			ReadShort (one, "floorIndex", element.header.floorInd);
+
+			// The clip frame: the box itself, as a closed rectangle, in the
+			// drawing's own coordinates because that is what the polygon of a
+			// Drawing is measured in.
+			element.drawing.poly.nCoords = 5;
+			element.drawing.poly.nSubPolys = 1;
+			element.drawing.poly.nArcs = 0;
+			memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle (6 * sizeof (API_Coord), ALLOCATE_CLEAR, 0));
+			memo.pends = reinterpret_cast<Int32**> (BMAllocateHandle (2 * sizeof (Int32), ALLOCATE_CLEAR, 0));
+			if (memo.coords == nullptr || memo.pends == nullptr) {
+				ACAPI_DisposeElemMemoHdls (&memo);
+				failure = APIERR_MEMFULL;
+				failureText = "Ran out of memory framing a drawing.";
+				return failure;
+			}
+			(*memo.coords)[1].x = 0.0;			(*memo.coords)[1].y = 0.0;
+			(*memo.coords)[2].x = width;		(*memo.coords)[2].y = 0.0;
+			(*memo.coords)[3].x = width;		(*memo.coords)[3].y = height;
+			(*memo.coords)[4].x = 0.0;			(*memo.coords)[4].y = height;
+			(*memo.coords)[5] = (*memo.coords)[1];
+			(*memo.pends)[1] = 5;
+
+			step = ACAPI_Element_Create (&element, &memo);
+			ACAPI_DisposeElemMemoHdls (&memo);
+			if (step != NoError) {
+				failure = step;
+				failureText = "Archicad refused to place a drawing.";
+				return step;
+			}
+			made.Push (element.header.guid);
+		}
+		return NoError;
+	});
+
+	if (err != NoError) {
+		return Failed (failureText.IsEmpty () ? GS::UniString ("Failed to place the drawings.") : failureText,
+					   failure != NoError ? failure : err);
+	}
+
+	GS::Array<GS::ObjectState> elements;
+	for (const API_Guid& guid : made) {
+		GS::ObjectState one;
+		one.Add ("guid", APIGuidToString (guid));
+		elements.Push (one);
+	}
+	GS::ObjectState result = Succeeded ();
+	result.Add ("elements", elements);
+	return result;
+}
+
+}		// namespace Loriini
+
+
+
+
 // -- CreateMesh -------------------------------------------------------------------
 
 namespace Loriini {
