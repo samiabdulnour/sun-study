@@ -1,8 +1,12 @@
 name: CI
 
+# Every branch, not just main. The work on this repository happens on long-lived
+# branches that are never merged down, so a filter of ["main"] meant the tests
+# last ran on 29 August 2026 and the red badge left behind was four weeks stale
+# while the suite was in fact green. The add-on workflow beside this one already
+# triggers on any push; this matches it.
 on:
   push:
-    branches: ["main"]
   pull_request:
   workflow_dispatch:
 
