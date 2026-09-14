@@ -689,7 +689,14 @@ def cast_shadows(
     # Over the ground that exists, not over the whole rectangle: samples off
     # the survey are drawn nowhere, so counting them as permanently dark would
     # raise an alarm about a region the drawing does not make a claim about.
-    lit_ever = (~before).any(axis=1) if before.size else np.zeros(len(grid), dtype=bool)
+    # Spelled through np.asarray because `.any(axis=...)` is typed as the union
+    # of the scalar and the array overload, and the scalar arm is not
+    # indexable. Without it, mypy rejects the indexing on the next line against
+    # the numpy stubs that come with 3.11, where a newer numpy happens to
+    # narrow the union and hide the complaint.
+    lit_ever: BoolArray = np.asarray(
+        (~before).any(axis=1) if before.size else np.zeros(len(grid), dtype=bool), dtype=bool
+    )
     always_dark = float((~lit_ever[ground]).mean()) if ground.any() else 0.0
     return ShadowSeries(
         instants=tuple(instants),
