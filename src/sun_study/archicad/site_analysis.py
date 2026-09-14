@@ -2329,6 +2329,17 @@ def ensure_worksheet(
             # in; Tapir's own creation is the same call outside one.
             pass
         if not database_id:
+            # Look again before making a second. The add-on creates the
+            # worksheet and *then* enters it, so a refusal at the entering
+            # step leaves a worksheet behind that this call never saw --
+            # and Tapir's fallback below made another, which is how a run
+            # left two of every sheet in the Project Map (measured at
+            # Bondi, 14 September 2026).
+            navigator_id = _worksheet_by_name(connection, name)
+            if navigator_id:
+                database_id = database_of(connection, navigator_id)
+                reused = True
+        if not database_id:
             made = connection.run_tapir(
                 "CreateWorksheets",
                 {"worksheetsData": [{"name": name, "referenceId": name[:31]}]},
