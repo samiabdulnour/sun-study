@@ -32,7 +32,7 @@ from typing import Any
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import ensure_layer, move_to_layer
 from sun_study.archicad.ids import stamp_in_order
-from sun_study.archicad.read import GeoLocation
+from sun_study.archicad.read import GeoLocation, read_geo_location
 from sun_study.archicad.site_analysis import Frame, _clean_ring, _map_rectangle
 from sun_study.site.arcgis import rings_of
 from sun_study.site.geo import (
@@ -486,12 +486,16 @@ def _block_meshes(
     layer_index: int,
     floor_index: int,
     floor_level: float,
+    datum_m: float = 0.0,
 ) -> tuple[int, list[str]]:
     """One kerbed mesh per block. Returns how many were made and what was refused."""
     made = 0
     problems: list[str] = []
     for i, ring in enumerate(blocks):
-        outline = [{"x": x, "y": y, "z": ground.at((x, y)) + KERB_M - floor_level} for x, y in ring]
+        outline = [
+            {"x": x, "y": y, "z": ground.at((x, y)) + KERB_M - floor_level - datum_m}
+            for x, y in ring
+        ]
         lowest = min(p["z"] for p in outline)
         try:
             answer = connection.run_loriini(
@@ -514,6 +518,55 @@ def _block_meshes(
         else:
             problems.append(str(answer))
     return made, problems
+
+
+#: What ``--datum`` takes, and what each means as a level to subtract.
+#: ``project`` reads Project Location's altitude; ``sea`` subtracts nothing,
+#: which puts the model at true AHD and is right for a project whose zero
+#: already is sea level.
+DATUM_CHOICES = ("project", "sea")
+
+DATUM_HELP = (
+    "What project zero stands for, which is what the model is placed against: "
+    "'project' reads Project Location's altitude (the site's ground), 'sea' "
+    "places at true AHD levels, or give the metres yourself."
+)
+
+
+def parse_datum(text: str | None) -> float | None:
+    """``project`` -> ``None`` (read it from the project), ``sea`` -> ``0.0``,
+    or a number of metres. Raises ``ValueError`` naming the words."""
+    wanted = " ".join((text or "").split()).lower()
+    if not wanted or wanted == "project":
+        return None
+    if wanted in ("sea", "ahd", "0", "sealevel", "sea level"):
+        return 0.0
+    try:
+        return float(wanted)
+    except ValueError as bad:
+        raise ValueError(
+            f"--datum takes 'project', 'sea', or a number of metres. {text!r} is none of those."
+        ) from bad
+
+
+def project_datum(connection: ArchicadConnection) -> float:
+    """The RL that project zero stands for: Project Location's altitude.
+
+    The contours are AHD levels and the project's altitude says what RL the
+    project's own zero is, so a model placed at the raw contour level counts
+    the site's height above sea level twice -- at Bondi that stood the whole
+    neighbourhood 75.8 m above the storeys it was supposed to sit around
+    (measured, 14 September 2026). Everything the model places is therefore
+    put at ``level - datum``.
+
+    Zero when the location cannot be read, which is the old behaviour and
+    right for a project whose zero already is sea level.
+    """
+    try:
+        geo = read_geo_location(connection)
+    except ArchicadError:
+        return 0.0
+    return float(geo.altitude_m or 0.0)
 
 
 def _datum_storey(connection: ArchicadConnection) -> tuple[int, float]:
@@ -547,6 +600,7 @@ def _terrain(
     frame: Frame,
     contours: Sequence[tuple[float, list[Point]]],
     layer_index: int,
+    datum_m: float = 0.0,
 ) -> list[dict[str, Any]]:
     """One Mesh: the extent at ground level, with every contour as a level line."""
     # A mesh's levels are relative to its home storey, and the Mesh tool's
@@ -556,13 +610,13 @@ def _terrain(
     floor_index, floor_level = _datum_storey(connection)
     ground = _Ground(contours)
     corners = _map_rectangle(bundle, frame)
-    outline = [{"x": x, "y": y, "z": ground.at((x, y)) - floor_level} for x, y in corners]
+    outline = [{"x": x, "y": y, "z": ground.at((x, y)) - floor_level - datum_m} for x, y in corners]
     sublines: list[dict[str, Any]] = []
     for elevation, points in _thinned(contours):
         run: list[dict[str, float]] = []
         for x, y in points:
             if point_in_ring(x, y, corners):
-                run.append({"x": x, "y": y, "z": elevation - floor_level})
+                run.append({"x": x, "y": y, "z": elevation - floor_level - datum_m})
             elif len(run) >= 2:
                 sublines.append({"coordinates": run})
                 run = []
@@ -641,6 +695,7 @@ def model_context(
     buildings: bool = True,
     blocks: bool = True,
     storey_m: float = STOREY_M,
+    datum_m: float | None = None,
     say: Callable[[str], None] | None = None,
 ) -> ContextModelReport:
     """The terrain and the neighbours, in the model, on the ``LORIINI`` layer."""
@@ -648,8 +703,11 @@ def model_context(
     layer = ensure_layer(connection, LAYER)
     contours = _contours(bundle, frame)
     ground = _Ground(contours)
+    datum = project_datum(connection) if datum_m is None else datum_m
     heights = _Heights(bundle)
     notes: list[str] = []
+    if datum:
+        notes.append(f"placed against a datum of {datum:,.2f} m.")
     removed = _clear_previous(connection)
     if removed:
         notes.append(f"{removed} slabs and meshes from the last run removed first.")
@@ -660,7 +718,7 @@ def model_context(
             notes.append("no contours in the bundle; the terrain is not made.")
         else:
             try:
-                _terrain(connection, bundle, frame, contours, layer.index)
+                _terrain(connection, bundle, frame, contours, layer.index, datum)
                 made_terrain = True
             except ArchicadError as error:
                 notes.append(f"the terrain mesh was refused: {error}")
@@ -673,7 +731,7 @@ def model_context(
         if rings:
             floor_index, floor_level = _datum_storey(connection)
             made_blocks, refused = _block_meshes(
-                connection, rings, ground, layer.index, floor_index, floor_level
+                connection, rings, ground, layer.index, floor_index, floor_level, datum
             )
             if refused:
                 notes.append(f"{len(refused)} block meshes were refused, e.g. {refused[0][:120]}")
@@ -703,7 +761,7 @@ def model_context(
             slabs.append(
                 {
                     "polygonCoordinates": [{"x": x, "y": y} for x, y in ring],
-                    "level": ground.at(centre) + lift,
+                    "level": ground.at(centre) + lift - datum,
                     "thickness": storeys * storey_m,
                     "referencePlaneLocation": "Bottom",
                 }

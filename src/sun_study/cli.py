@@ -6702,6 +6702,7 @@ def site_analysis(
             ),
         ),
     ] = future_context.DEFAULT_FRONT_SETBACK_M,
+    datum: Annotated[str, typer.Option("--datum", help=context_model.DATUM_HELP)] = "project",
     future_zones: Annotated[
         str,
         typer.Option(
@@ -6943,10 +6944,15 @@ def site_analysis(
     # The future context is worked out once, in the frame the sheets and the
     # model share, so the outline on the sheet and the slab in the model are
     # the same envelope.
+    try:
+        datum_m = context_model.parse_datum(datum)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--datum") from error
     future_options = future_context.FutureOptions(
         reach_m=future_reach,
         front_setback_m=future_setback,
         zones=tuple(z.strip().upper() for z in future_zones.split(",") if z.strip()),
+        datum_m=datum_m,
     )
     future_report: future_context.FutureReport | None = None
     if future:
@@ -7040,7 +7046,11 @@ def site_analysis(
             typer.echo("modelling the terrain and the neighbours...")
             try:
                 built = context_model.model_context(
-                    connection, model_bundle, frame_and_offset(model_bundle), say=say
+                    connection,
+                    model_bundle,
+                    frame_and_offset(model_bundle),
+                    datum_m=datum_m,
+                    say=say,
                 )
                 typer.echo(built.describe())
             except ArchicadError as error:

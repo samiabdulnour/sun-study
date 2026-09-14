@@ -28,6 +28,7 @@ from sun_study.archicad.context_model import (
     _Ground,
     _on_the_floor_plan,
     _slabs_through_the_addon,
+    project_datum,
 )
 from sun_study.archicad.draw import ensure_layer
 from sun_study.archicad.site_analysis import Frame, _clean_ring
@@ -74,6 +75,8 @@ class FutureOptions:
     front_setback_m: float = DEFAULT_FRONT_SETBACK_M
     zones: tuple[str, ...] = DEFAULT_ZONES
     storey_m: float = STOREY_M
+    datum_m: float | None = None
+    """What project zero stands for; ``None`` reads it from the project."""
 
 
 @dataclass(frozen=True)
@@ -203,6 +206,9 @@ def model_future(
         notes.append(f"{removed} slabs from the last run removed first.")
 
     report = found if found is not None else future_envelopes(bundle, frame, options)
+    datum = project_datum(connection) if options.datum_m is None else options.datum_m
+    if datum:
+        notes.append(f"placed against a datum of {datum:,.2f} m.")
     contours = _contours(bundle, frame)
     ground = _Ground(contours) if contours else None
     if ground is None:
@@ -211,7 +217,7 @@ def model_future(
     slabs: list[dict[str, Any]] = []
     identifiers: list[str] = []
     for envelope in report.envelopes:
-        base = ground.at(ring_centroid(list(envelope.footprint))) if ground else 0.0
+        base = (ground.at(ring_centroid(list(envelope.footprint))) if ground else 0.0) - datum
         for i, tier in enumerate(envelope.tiers):
             for ring in tier.rings:
                 slabs.append(

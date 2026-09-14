@@ -855,6 +855,16 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
             "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
             "GetElementsByType": {"elements": []},
             "GetStories": {"stories": [{"index": 0, "level": 0.0}, {"index": 5, "level": 4.6}]},
+            # Project zero is sea level here, so the datum takes nothing off
+            # and the levels below are the contours' own.
+            "GetGeoLocation": {
+                "projectLocation": {
+                    "latitude": LAT,
+                    "longitude": LON,
+                    "altitude": 0.0,
+                    "north": 0.0,
+                }
+            },
             "SetPropertyValuesOfElements": {"executionResults": [{"success": True}]},
             "GetAllProperties": {"properties": []},
             "GetPropertyValuesOfElements": {"propertyValuesForElements": []},
@@ -1025,6 +1035,16 @@ def test_the_envelopes_stand_as_slabs_on_their_own_layer_and_a_rerun_replaces_th
             },
             "DeleteElements": {"success": True},
             "GetStories": {"stories": [{"index": 0, "level": 0.0}, {"index": 5, "level": 4.6}]},
+            # Project zero is sea level here, so the datum takes nothing off
+            # and the levels below are the contours' own.
+            "GetGeoLocation": {
+                "projectLocation": {
+                    "latitude": LAT,
+                    "longitude": LON,
+                    "altitude": 0.0,
+                    "north": 0.0,
+                }
+            },
             "SetPropertyValuesOfElements": {"executionResults": [{"success": True}]},
             "GetAllProperties": {"properties": []},
             "GetPropertyValuesOfElements": {"propertyValuesForElements": []},
@@ -1084,3 +1104,140 @@ def test_the_summary_of_controls_states_the_separation_the_envelopes_use() -> No
         "5 to 8 storeys: 18 m between habitable rooms, 9 m to a side or rear boundary",
         "9 storeys and over: 24 m between habitable rooms, 12 m to a side or rear boundary",
     ]
+
+
+def test_the_model_is_placed_against_the_projects_declared_altitude() -> None:
+    """The contours are AHD levels and the project's altitude says what RL
+    project zero is, so placing at the raw contour level counts the site's
+    height above sea level twice. At Bondi that stood the neighbourhood
+    75.8 m above the storeys it was meant to sit around."""
+    from sun_study.archicad.context_model import model_context
+
+    bundle = site_bundle()
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    responses: dict[str, Any] = {
+        "GetAttributesByType": {
+            "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+        },
+        "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+        "GetLayers": {
+            "layers": [
+                {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+            ]
+        },
+        "CreateMesh": {"success": True, "guid": "MESH"},
+        "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
+        "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
+        "GetElementsByType": {"elements": []},
+        "GetStories": {"stories": [{"index": 0, "level": 0.0}]},
+        # Project zero stands for RL 20: the ground at 24-28 must land at 4-8.
+        "GetGeoLocation": {
+            "projectLocation": {
+                "latitude": LAT,
+                "longitude": LON,
+                "altitude": 20.0,
+                "north": 0.0,
+            }
+        },
+    }
+    connection, transport_ = connect(responses)
+    report = model_context(connection, bundle, frame)
+
+    slab = transport_.parameters_for("CreateSlabs")["slabs"][0]
+    assert 4.0 < slab["level"] < 8.0, "the ground is 24-28 AHD and project zero is RL 20"
+    mesh = transport_.parameters_for("CreateMesh")
+    # 4.0 exactly at a corner the contours do not reach, which extrapolates
+    # to the lowest contour, 24 AHD.
+    assert all(4.0 <= point["z"] <= 8.0 for point in mesh["outline"]), mesh["outline"]
+    assert any("datum of 20.00 m" in note for note in report.notes), report.notes
+
+
+def test_a_project_that_will_not_say_its_altitude_is_placed_as_before() -> None:
+    """The old behaviour, which is right for a project whose zero is sea
+    level, and the only safe answer when the location cannot be read."""
+    from sun_study.archicad.context_model import project_datum
+
+    connection, _ = connect({"GetGeoLocation": {"surveyPoint": {}}})
+    assert project_datum(connection) == 0.0
+
+
+def test_the_datum_is_a_choice_of_words_or_a_number() -> None:
+    from sun_study.archicad.context_model import parse_datum
+
+    assert parse_datum(None) is None, "read it from the project"
+    assert parse_datum("project") is None
+    assert parse_datum("sea") == 0.0
+    assert parse_datum("ahd") == 0.0
+    assert parse_datum("12.5") == 12.5
+    with pytest.raises(ValueError, match="'project', 'sea', or a number"):
+        parse_datum("ground")
+
+
+def test_a_datum_given_outright_beats_the_projects_own_altitude() -> None:
+    """So a project whose altitude is wrong, or whose zero means something
+    else, can still be modelled without editing Project Location."""
+    from sun_study.archicad.context_model import model_context
+
+    bundle = site_bundle()
+    frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
+    connection, transport_ = connect(
+        {
+            "GetAttributesByType": {
+                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+            },
+            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+            "GetLayers": {
+                "layers": [
+                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                ]
+            },
+            "CreateMesh": {"success": True, "guid": "MESH"},
+            "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
+            "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
+            "GetElementsByType": {"elements": []},
+            "GetStories": {"stories": [{"index": 0, "level": 0.0}]},
+            # The project says 20; the caller says 26, and the caller wins.
+            "GetGeoLocation": {
+                "projectLocation": {
+                    "latitude": LAT,
+                    "longitude": LON,
+                    "altitude": 20.0,
+                    "north": 0.0,
+                }
+            },
+        }
+    )
+    model_context(connection, bundle, frame, datum_m=26.0)
+    slab = transport_.parameters_for("CreateSlabs")["slabs"][0]
+    assert -2.0 < slab["level"] < 2.0, "24-28 AHD against a datum of 26"
+
+    # And 'sea' puts it back at true AHD, whatever the project says.
+    connection, transport_ = connect(
+        {
+            "GetAttributesByType": {
+                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+            },
+            "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+            "GetLayers": {
+                "layers": [
+                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                ]
+            },
+            "CreateMesh": {"success": True, "guid": "MESH"},
+            "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
+            "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
+            "GetElementsByType": {"elements": []},
+            "GetStories": {"stories": [{"index": 0, "level": 0.0}]},
+            "GetGeoLocation": {
+                "projectLocation": {
+                    "latitude": LAT,
+                    "longitude": LON,
+                    "altitude": 20.0,
+                    "north": 0.0,
+                }
+            },
+        }
+    )
+    model_context(connection, bundle, frame, datum_m=0.0)
+    slab = transport_.parameters_for("CreateSlabs")["slabs"][0]
+    assert 24.0 < slab["level"] < 28.0, "true AHD, as it was before the datum existed"
