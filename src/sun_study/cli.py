@@ -240,6 +240,7 @@ from sun_study.report.json_out import write_json
 from sun_study.rules.days import DAY_HELP, day_tag, day_title, parse_day, with_day
 from sun_study.rules.ruleset import BUILTIN_RULESETS, Ruleset, RulesetError, load_ruleset
 from sun_study.site import pipeline as site_pipeline
+from sun_study.site.geocode import geocode
 
 #: A sheet label that is a time of day. Those are shadow diagrams; the
 #: banded and two-hour plans are not, and the two go to different subsets.
@@ -3692,6 +3693,75 @@ def _warn_if_zone_layers_hidden(
     raise typer.Exit(code=2)
 
 
+@app.command("locate")
+def locate(
+    address: Annotated[
+        str,
+        typer.Argument(help='The site, e.g. "59 Great Buckingham St, Redfern NSW 2016". NSW only.'),
+    ],
+    port: Annotated[int, typer.Option("--port", help="Which Archicad to talk to.")] = DEFAULT_PORT,
+    timeout: Annotated[
+        float, typer.Option("--timeout", help="Seconds to wait for one Archicad command.")
+    ] = DEFAULT_TIMEOUT_SECONDS,
+    altitude: Annotated[
+        float | None,
+        typer.Option(
+            "--altitude",
+            help=(
+                "Metres AHD that project zero stands for. Left alone by default, "
+                "because it is a decision about the model and not about the address."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Tell the project where it is, from an address.
+
+    A project on Archicad's city preset does not know where it stands: the sun
+    is computed for the middle of Sydney, the georeference points nowhere in
+    particular, and every tool that reads a location reads that one. The site
+    command sets it as a side effect of drawing sheets; this does only the one
+    thing, for a project that needs locating and nothing else yet.
+
+    What is written is the longitude and latitude of the address, the survey
+    point on the MGA2020 grid with the zone read off the longitude, and the
+    matching CRS. North is left as the project has it -- turning it would move
+    everything already modelled, and which way a project faces is a decision
+    somebody made, not something an address can answer.
+    """
+    banner()
+    connection = _connect(port, timeout, switch_database=False)
+
+    before = read_geo_location(connection)
+    typer.echo(f"  now: {before.describe()}")
+    if not before.looks_like_a_city_preset:
+        typer.secho(
+            "  the project already carries a location of its own; it is about to be "
+            "replaced. Anything already modelled against it keeps its coordinates, "
+            "so the model and the georeference will disagree unless that was the point.",
+            fg=typer.colors.YELLOW,
+        )
+
+    typer.echo(f'geocoding "{address}"...')
+    try:
+        found = geocode(address)
+    except (OSError, ValueError, RuntimeError) as error:
+        typer.secho(f"  could not geocode that address: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+    for name in found.matched:
+        typer.echo(f"  matched: {name}")
+
+    try:
+        after = context_model.set_project_location(
+            connection, before, found.lonlat_points[0], ground_m=altitude
+        )
+    except ArchicadError as error:
+        typer.secho(f"  the project location was not set: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"  set: {after.describe()}")
+    typer.secho("  Save the project, or Archicad forgets it.", fg=typer.colors.YELLOW)
+
+
 @app.command("archicad-ports")
 def archicad_ports() -> None:
     """List every running Archicad and the project each has open.
@@ -7124,9 +7194,16 @@ def site_analysis(
     # leaves the tiles for a person, and only then is the hint worth printing.
     unplaced = False
     # The location first, so the sheets and the model that follow land on a
-    # project that says where it is. Only with the site at the origin: with
-    # --anchor location the origin is wherever the project already says.
-    if reference is not None and (anchor == "site" or fit is not None):
+    # project that says where it is.
+    #
+    # Asking for it outright is enough. It used to need the site anchored at
+    # the origin as well, which meant --set-location quietly did nothing on a
+    # project left on a city preset -- the one case it is most wanted, and the
+    # case where the flag reads as "yes, do that". Without being asked it
+    # still waits for the anchor, because with --anchor location the origin is
+    # wherever the project already says it is, and moving that under a run
+    # that was told to trust it would be the wrong way round.
+    if reference is not None and (anchor == "site" or fit is not None or set_location):
         preset = geo is not None and geo.looks_like_a_city_preset
         if set_location or (set_location is None and (preset or fit is not None)):
             ground = (

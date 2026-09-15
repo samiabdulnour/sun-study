@@ -1536,3 +1536,47 @@ def test_every_mesh_the_context_makes_sends_a_depth_not_a_level() -> None:
         if not (isinstance(value, ast.Call) and getattr(value.func, "id", "") == "_skirt_depth")
     ]
     assert not bare, "these send a level where Archicad wants a depth: " + ", ".join(bare)
+
+
+def test_asking_to_be_located_is_enough_on_its_own() -> None:
+    """--set-location used to need the site anchored at the origin as well, so
+    on a project sitting on a city preset -- the one case it is most wanted --
+    the flag quietly did nothing. Asking outright is now enough.
+
+    Read off the source rather than run, because the branch sits four minutes
+    into a run that fetches a suburb first.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    source = _Path("src/sun_study/cli.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    guards = [
+        ast.unparse(node.test)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and "set_project_location" in ast.unparse(node)
+    ]
+    assert guards, "the location is never set -- has the branch moved?"
+    outer = guards[0]
+    assert "set_location" in outer, "asking for the location does not reach it: " + outer
+
+
+def test_locating_a_project_writes_the_grid_and_leaves_north_alone() -> None:
+    """The survey point matters as much as the latitude: a project located by
+    longitude alone georeferences to nothing an engineer can use. North is not
+    the address's business -- turning it would move everything modelled."""
+    from sun_study.archicad.context_model import set_project_location
+
+    connection, transport_ = connect({"SetGeoLocation": {"success": True}})
+    before = GeoLocation(latitude_deg=-33.8, longitude_deg=151.2, altitude_m=0.0, north_radians=1.5)
+
+    set_project_location(connection, before, (151.2016, -33.8926), ground_m=24.0)
+
+    sent = transport_.parameters_for("SetGeoLocation")
+    assert sent["projectLocation"]["longitude"] == pytest.approx(151.2016)
+    assert sent["projectLocation"]["altitude"] == pytest.approx(24.0)
+    assert sent["projectLocation"]["north"] == pytest.approx(1.5), "north is left as it was"
+    survey = sent["surveyPoint"]
+    assert survey["position"]["eastings"] > 0 and survey["position"]["northings"] > 0
+    assert survey["geoReferencingParameters"]["crsName"].startswith("EPSG:78"), survey
+    assert "MGA zone 56" in survey["geoReferencingParameters"]["description"]
