@@ -6491,6 +6491,27 @@ def sun_eye_views(
     if said:
         typer.secho(f"  {said}", fg=typer.colors.YELLOW)
 
+    # The views themselves, which is the one copy of the filter nothing can
+    # edit: API_NavigatorView carries the layer combination, the pen set, the
+    # 3D style and the renovation filter, and no storey range. A saved view
+    # re-applies the filter it was saved with, so the only way to change it
+    # is the one a person does by hand -- redefine from the current window --
+    # and from outside that means deleting the view and making it again while
+    # the window is unfiltered (D98).
+    #
+    # Layouts first and then views, which is what remove_previous already
+    # does and why: a view a placed Drawing still points at cannot be
+    # deleted, and Archicad reports success either way. Scoped to this tool's
+    # own number, so it reaches the sun views and nothing else (D93).
+    gone, left = remove_previous(connection)
+    if gone:
+        typer.echo(f"  removed {gone} views and layouts, so the new ones take the window as it is")
+    if left:
+        typer.secho(
+            f"  {left} could not be removed and will keep the filter they were saved with",
+            fg=typer.colors.YELLOW,
+        )
+
     geo = read_geo_location(connection)
     eyes = sun_eyes(geo, date=when, hours=hours, timezone=timezone)
     turn = (eyes[0].project_bearing_deg - eyes[0].true_bearing_deg) % 360.0 if eyes else 0.0

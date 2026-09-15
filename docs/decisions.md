@@ -3156,3 +3156,27 @@ in place through `APIEnv_ChangeDocumentFrom3DSettingsID`, which is the only
 mend there is short of a person deleting them by hand. The run does it to every
 document under its own prefix before making views, and counts what would not
 take.
+
+**And a third copy, in the saved view, which nothing can edit.** Reported from
+the model: *"the filter setting is written in view itself. so if i open view,
+change the floor filter. I need to do redefine with current window to keep
+filter turned off."* That is the behaviour, and the API offers no way round it
+— `API_NavigatorView` carries the zoom, the model view options, the structure
+display, the layer combination and stats, the scale, the dimensions, the pens,
+the transformation, the renovation filter, the override combination, the 3D
+style and the rendering scene, and **no storey range**. There is nothing to
+set.
+
+What there is: a view saved while the window is unfiltered keeps that, because
+saving a view is what "redefine from current window" does. So the views have to
+be *deleted and made again* rather than edited, and `sun-views` now calls
+`remove_previous` before it makes any — layouts first and then views, which is
+what that function already does and why, since a view a placed Drawing points
+at cannot be deleted and Archicad reports success either way. It is scoped to
+the tool's own number, so it reaches the sun views and nothing else — which is
+[D93](#d93--one-prefix-number-per-tool-not-one-for-the-whole-tool) paying for
+itself.
+
+Three copies of one setting, then: the window, each document, and each view.
+The first two are set; the third is made afresh. Nothing in the API reads a
+view's filter back, so that last one is checked by opening the sheet.
