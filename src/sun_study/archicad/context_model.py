@@ -29,6 +29,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection, ArchicadError
 from sun_study.archicad.draw import ensure_layer, move_to_layer
 from sun_study.archicad.ids import stamp_in_order
@@ -50,16 +51,24 @@ from sun_study.site.geo import (
 from sun_study.site.pipeline import SiteBundle
 
 __all__ = [
-    "LAYER",
     "STOREY_M",
     "ContextModelReport",
+    "layer_name",
     "model_context",
     "set_project_location",
     "storeys_of",
 ]
 
+
 #: Where everything generated goes, until the office files it.
-LAYER = "LORIINI"
+#: Deliberately not a constant: the site group is settable, and a name built
+#: at import would freeze it at the default however the run was told otherwise
+#: -- the run would then draw on one layer and look for its own work on
+#: another, with both names looking right on their own.
+def layer_name() -> str:
+    """The layer the fetched context goes on: the office's own site group."""
+    return naming.context_layer()
+
 
 #: Floor to floor, where nothing better is recorded. A NSW apartment floor
 #: is 3.1 m under the ADG's 2.7 m ceilings; a house is a little less. One
@@ -700,7 +709,7 @@ def model_context(
 ) -> ContextModelReport:
     """The terrain and the neighbours, in the model, on the ``LORIINI`` layer."""
     _on_the_floor_plan(connection)
-    layer = ensure_layer(connection, LAYER)
+    layer = ensure_layer(connection, layer_name())
     contours = _contours(bundle, frame)
     ground = _Ground(contours)
     datum = project_datum(connection) if datum_m is None else datum_m

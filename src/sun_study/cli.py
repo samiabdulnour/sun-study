@@ -6776,6 +6776,21 @@ def site_analysis(
             ),
         ),
     ] = None,
+    context_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--context-prefix",
+            help=(
+                "The office's own site group, the number in front of "
+                "'Site Context.3D'. The neighbours and the ground under them "
+                "go there rather than on a layer of this tool's own, so a "
+                "colleague finds them where neighbours live. A layer the "
+                "template already has is used, not duplicated; point this at a "
+                "group the project does not have and the layers are made. "
+                "Defaults to 03 |."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Draw the context analysis, site analysis and development summary for
     an address into worksheets of the open project.
@@ -6789,6 +6804,12 @@ def site_analysis(
     """
     banner()
     naming.set_prefix(layer_prefix, default=naming.SITE_PREFIX)
+    # The context is filed under the office's site group rather than the
+    # tool's own number: it is the neighbourhood, not the study.
+    try:
+        naming.set_context_prefix(context_prefix)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--context-prefix") from error
     if north not in ("true", "grid"):
         typer.secho("  --north takes 'true' or 'grid'.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)

@@ -64,6 +64,32 @@ SHADOW_PREFIX = "15 |"
 SUN_VIEW_PREFIX = "16 |"
 SITE_PREFIX = "17 |"
 
+#: And one number that is *not* the tool's, which is why it is kept apart from
+#: the four above. The context a study stands in -- the neighbours and the
+#: ground under them -- belongs to the site group the office template already
+#: has, not to a group the sun study invented: on the reference project that
+#: is ``03 | Site Context.3D``, sitting under ``03 ---------- SITE`` with the
+#: boundaries, the setbacks and the survey mesh.
+#:
+#: Writing the fetched context there rather than onto a ``LORIINI`` layer of
+#: its own means a colleague finds the neighbours where neighbours live, and
+#: the layer that is already in the template is *used* rather than duplicated
+#: -- ``ensure_layer`` finds it by name and only creates when there is nothing
+#: to find. Point this at a group the project does not have, ``50 |``, and the
+#: layers are made there instead; that is the same call either way.
+#:
+#: The part after the number is the template's own wording and is not settable.
+#: The number is, because it is the one thing that differs between offices.
+CONTEXT_PREFIX = "03 |"
+
+#: What the context parts are called under it. ``Future buildings`` is the
+#: spelling the shadow tool's own worked example already uses, so a legend row
+#: written from that example finds the geometry without being told twice.
+CONTEXT_PART = "Site Context.3D"
+FUTURE_PART = "Site Context.Future buildings"
+
+_context_prefix = CONTEXT_PREFIX
+
 #: The word between the prefix and the part, in a layer name. Not settable:
 #: it is what the tool *is*, while the prefix is where the office keeps it.
 GROUP_WORD = "Solar Analysis"
@@ -151,6 +177,48 @@ def set_prefix(value: str | None, *, default: str | None = None) -> str:
 def prefix() -> str:
     """Leads the name of everything this tool creates."""
     return _prefix
+
+
+def set_context_prefix(value: str | None) -> str:
+    """Choose the site group the context is filed under. Returns what was set.
+
+    ``None`` leaves it alone, the same shape as ``set_prefix``, so an optional
+    flag passes straight through. Empty is refused for a different reason than
+    an empty tool prefix: nothing here searches by it, but ``| Site
+    Context.3D`` is not a layer name anybody meant to type.
+    """
+    global _context_prefix
+    if value is None:
+        return _context_prefix
+    chosen = " ".join(value.split())
+    if not chosen:
+        raise ValueError(
+            "The context prefix cannot be empty: it is the office's own site "
+            "group, the number in front of 'Site Context.3D'. Use the group "
+            f"the template keeps the neighbours in, such as {CONTEXT_PREFIX!r}."
+        )
+    _context_prefix = chosen
+    return chosen
+
+
+def context_prefix() -> str:
+    """The site group the context is filed under."""
+    return _context_prefix
+
+
+def context_layer() -> str:
+    """Where the neighbouring buildings and the ground under them go."""
+    return f"{_context_prefix} {CONTEXT_PART}"
+
+
+def future_layer() -> str:
+    """Where the envelopes the controls would allow go.
+
+    A layer of its own beside the context, not mixed into it: a future
+    neighbour is a question a saved view answers -- with, without -- and not
+    something the model asserts is there.
+    """
+    return f"{_context_prefix} {FUTURE_PART}"
 
 
 def group(word: str = GROUP_WORD) -> str:

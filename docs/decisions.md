@@ -2917,3 +2917,48 @@ The wiring is walked rather than trusted, in `test_naming.py`: a command that
 calls `set_prefix` without naming its tool silently takes the solar analysis's
 number, the run succeeds, every name looks right, and the only symptom is two
 drawings sharing a layer group.
+
+
+### D94 — The context goes in the office's own site group, not a layer of the tool's
+
+Asked 15 September 2026, after D93: *"existing context gonna be XX | Site
+Context.3D, depending on chosen number in the program... if you input prefix for
+example 50 | it will create new layers."*
+
+The fetched context — the neighbours inside the radius and the ground under
+them — went on a layer called `LORIINI`, and the future envelopes on `LORIINI
+FUTURE`. Both are the tool talking to itself. The office template already has
+somewhere for neighbours: on the reference project `03 | Site Context.3D`, under
+`03 ------------------------------ SITE` beside the boundaries, the setbacks
+and the survey mesh. A colleague looking for the context looks there.
+
+So the context is filed under the site group, and the group number is the
+setting:
+
+| | |
+|---|---|
+| `03 \| Site Context.3D` | the neighbours and the ground under them |
+| `03 \| Site Context.Future buildings` | what the controls would allow, D90 |
+
+`Future buildings` is the spelling the shadow tool's own `--shadow-source`
+example already used, so a legend row copied from that help finds the geometry.
+
+**Find or create, which is one call.** `ensure_layer` looks the layer up by
+name: the template's is used and left alone, and a group the project does not
+have — `50 |` — gets its layers made. There is nothing to decide at the call
+site and no second layer beside the template's.
+
+**Only the number is settable.** The wording after it is the template's, so a
+run cannot invent `03 | Neighbours` and leave the next one looking in the wrong
+place. `--context-prefix` on the `site` command, one box in the window, and it
+reaches only that command because only that command makes the context.
+
+**It is deliberately not one of D93's four numbers.** Those say where the
+*study* is filed; this says where the *neighbourhood* is. Moving one must not
+move the other, which is why they are separate settings rather than one.
+
+**Nothing is orphaned by the move.** `_clear_previous` deletes by Element ID
+alone — `SA NEIGHBOUR`, `SA TERRAIN`, `SA BLOCK`, `SA FUTURE` — and not by
+layer, precisely so a slab a failed move left in the wrong place is still found.
+A rerun therefore clears what earlier runs left on `LORIINI` as well as what it
+put in the site group.

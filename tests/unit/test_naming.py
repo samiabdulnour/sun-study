@@ -25,14 +25,17 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "sun_study"
 
 @pytest.fixture(autouse=True)
 def restored() -> Iterator[None]:
-    """The prefix is process-wide, so a test that changes it puts it back.
+    """The prefixes are process-wide, so a test that changes one puts it back.
 
     Without this, one test naming its layers ``ZZ |`` would leave every later
-    test in the session measuring a project it never described.
+    test in the session measuring a project it never described. Both of them,
+    because the site group the context is filed under is process-wide in the
+    same way and leaks in the same way.
     """
-    before = naming.prefix()
+    before, context_before = naming.prefix(), naming.context_prefix()
     yield
     naming.set_prefix(before)
+    naming.set_context_prefix(context_before)
 
 
 def test_the_default_is_the_reference_projects_next_free_group() -> None:
@@ -203,3 +206,41 @@ def test_every_command_that_sets_the_prefix_says_which_tool_it_is() -> None:
         "These set the layer prefix without naming the tool they belong to, "
         f"so they take the solar analysis number:{listed}"
     )
+
+
+def test_the_context_goes_in_the_offices_own_site_group() -> None:
+    """Not one of the tool's four numbers. The neighbours and the ground under
+    them are the neighbourhood, not the study, and the template already has a
+    group for them -- on the reference project, under '03 ---- SITE' beside
+    the boundaries and the survey mesh."""
+    assert naming.context_layer() == "03 | Site Context.3D"
+    assert naming.future_layer() == "03 | Site Context.Future buildings"
+
+
+def test_another_offices_site_group_moves_both_of_them() -> None:
+    """One number, and the wording after it is the template's rather than
+    anybody's to choose."""
+    naming.set_context_prefix("50 |")
+
+    assert naming.context_layer() == "50 | Site Context.3D"
+    assert naming.future_layer() == "50 | Site Context.Future buildings"
+
+
+def test_the_site_group_is_not_the_tools_own_number() -> None:
+    """Changing where the study is filed must not move the neighbours, and
+    changing where the neighbours are filed must not move the study. They were
+    one setting before, and one number cannot mean both."""
+    naming.set_prefix("15 |")
+    naming.set_context_prefix("03 |")
+
+    assert naming.context_layer().startswith("03 |")
+    assert naming.layer("9AM", naming.SHADOW_WORD).startswith("15 |")
+
+    naming.set_context_prefix("50 |")
+    assert naming.layer("9AM", naming.SHADOW_WORD).startswith("15 |"), "the study did not move"
+
+
+def test_an_empty_site_group_is_refused() -> None:
+    """'| Site Context.3D' is not a layer name anybody meant to type."""
+    with pytest.raises(ValueError, match="cannot be empty"):
+        naming.set_context_prefix("  ")

@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from sun_study.archicad import naming
 from sun_study.archicad.connection import ArchicadConnection
 from sun_study.archicad.context_model import (
     STOREY_M,
@@ -50,18 +51,24 @@ __all__ = [
     "DEFAULT_REACH_M",
     "DEFAULT_ZONES",
     "ID_PREFIX",
-    "LAYER",
     "FutureModelReport",
     "FutureOptions",
     "FutureReport",
     "future_envelopes",
+    "layer_name",
     "lots_of",
     "model_future",
 ]
 
+
 #: Where the envelopes stand. Not the context model's layer, so a view can
 #: show the neighbourhood as it is or as the controls would have it.
-LAYER = "LORIINI FUTURE"
+#: A function rather than a constant, for the reason context_model.layer_name
+#: gives: the site group is chosen per run.
+def layer_name() -> str:
+    """The layer the future envelopes go on, beside the context and not in it."""
+    return naming.future_layer()
+
 
 #: What every slab's Element ID starts with, and what a rerun deletes by.
 ID_PREFIX = "SA FUTURE"
@@ -199,7 +206,7 @@ def model_future(
     """
     options = options or FutureOptions()
     _on_the_floor_plan(connection)
-    layer = ensure_layer(connection, LAYER)
+    layer = ensure_layer(connection, layer_name())
     notes: list[str] = []
     removed = _clear_previous(connection, prefixes=(ID_PREFIX,))
     if removed:

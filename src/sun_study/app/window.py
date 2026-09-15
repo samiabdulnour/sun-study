@@ -836,6 +836,22 @@ class Window:
             "The site and context worksheets, and the summary of controls.",
             shared_detail,
         )
+        self.prefix_context, row = self._entry(
+            frame,
+            row,
+            "Site group — context",
+            naming.CONTEXT_PREFIX,
+            "The office's own group, where the neighbours already live.",
+            "Not one of this tool's numbers: the fetched neighbours and the "
+            "ground under them are the neighbourhood, not the study, so they "
+            "go in the site group the template already has — '03 | Site "
+            "Context.3D' on the reference project, under '03 ---- SITE' with "
+            "the boundaries and the survey mesh. A layer that is already there "
+            "is used rather than duplicated; give a group the project does not "
+            "have, '50 |', and the layers are made there instead. Only the "
+            "number is yours to choose — the wording after it is the "
+            "template's.",
+        )
         self.wait_min, row = self._entry(
             frame,
             row,
@@ -2122,6 +2138,7 @@ class Window:
             "shadow_layer_prefix": self.prefix_shadow,
             "sun_view_layer_prefix": self.prefix_sun,
             "site_layer_prefix": self.prefix_site,
+            "context_site_group": self.prefix_context,
             "archicad_wait_minutes": self.wait_min,
             "skin_grid": self.grid_m,
         }
@@ -2576,6 +2593,15 @@ class Window:
             return f"{DEFAULT_TIMEOUT_SECONDS:g}"
         return f"{minutes * 60.0:g}"
 
+    def _flag(self, name: str, box: ttk.Entry) -> list[str]:
+        """One option and its box, or nothing when the box is empty.
+
+        Empty means the command's own default, which is the honest reading of
+        a field nobody has filled in.
+        """
+        chosen = box.get().strip()
+        return [name, chosen] if chosen else []
+
     def _prefix_flag(self, box: ttk.Entry) -> list[str]:
         """``--layer-prefix`` for one tool, or nothing when its box is empty.
 
@@ -2583,8 +2609,7 @@ class Window:
         than an empty prefix -- that is refused there, and rightly, since it
         matches every layout in the project.
         """
-        chosen = box.get().strip()
-        return ["--layer-prefix", chosen] if chosen else []
+        return self._flag("--layer-prefix", box)
 
     def jobs(self) -> list[Job]:
         """The command lines the ticked boxes mean. Public, and pure, because
@@ -2808,6 +2833,7 @@ class Window:
                 self.site_address.get().strip(),
                 *common,
                 *self._prefix_flag(self.prefix_site),
+                *self._flag("--context-prefix", self.prefix_context),
             ]
             args += ["--context" if self.do_site_context.get() else "--no-context"]
             args += ["--site" if self.do_site_site.get() else "--no-site"]

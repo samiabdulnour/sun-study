@@ -765,6 +765,27 @@ def test_an_emptied_prefix_box_leaves_the_tool_its_own_default(hidden_window: An
     assert "--layer-prefix" not in shadow.args
 
 
+def test_the_site_group_reaches_only_the_command_that_makes_the_context(
+    hidden_window: Any,
+) -> None:
+    """The office's site group is not one of the tool's four numbers, and only
+    the site command creates the context that goes in it. Passing it to the
+    others would be an option they do not have."""
+    hidden_window.do_site.set(True)
+    hidden_window.do_shadows.set(True)
+    hidden_window.site_address.insert(0, "212 Bondi Rd, Bondi")
+    hidden_window.prefix_context.delete(0, "end")
+    hidden_window.prefix_context.insert(0, "50 |")
+
+    by_tool = {job.label: job.args for job in hidden_window.jobs()}
+
+    assert flag(by_tool[window.SITE_JOB], "--context-prefix") == ["50 |"]
+    assert "--context-prefix" not in by_tool[window.SHADOW_JOB]
+    assert flag(by_tool[window.SITE_JOB], "--layer-prefix") == [naming.SITE_PREFIX], (
+        "and the site analysis is still filed under its own number"
+    )
+
+
 def test_a_zone_is_offered_under_both_of_the_names_archicad_gives_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

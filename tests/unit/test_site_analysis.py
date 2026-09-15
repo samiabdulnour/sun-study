@@ -53,6 +53,8 @@ KOGARAH = GeoLocation(
     north_radians=math.radians(49.052),
 )
 SS = naming.prefix()
+CONTEXT_LAYER = naming.context_layer()
+FUTURE_LAYER = naming.future_layer()
 
 # A square site about 20 m across, a little east of the project location.
 LON, LAT = 151.1312, -33.9601
@@ -502,11 +504,17 @@ def test_the_summary_of_controls_is_drawn_straight_onto_a_layout_of_its_own() ->
             "SetCurrentDatabase": {"success": True},
             "GetCurrentDatabase": {"databaseId": {"guid": "LAY"}, "windowType": "Layout"},
             "GetAttributesByType": {
-                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+                "attributes": [{"name": CONTEXT_LAYER, "index": 9, "attributeId": {"guid": "L9"}}]
             },
             "GetLayers": {
                 "layers": [
-                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                    {
+                        "layerAttribute": {
+                            "name": CONTEXT_LAYER,
+                            "isHidden": False,
+                            "isLocked": False,
+                        }
+                    }
                 ]
             },
             "CreateLayers": {"success": True},
@@ -888,12 +896,18 @@ def test_the_neighbours_stand_on_the_ground_and_the_sites_own_are_left_out() -> 
     connection, transport_ = connect(
         {
             "GetAttributesByType": {
-                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+                "attributes": [{"name": CONTEXT_LAYER, "index": 9, "attributeId": {"guid": "L9"}}]
             },
             "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
             "GetLayers": {
                 "layers": [
-                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                    {
+                        "layerAttribute": {
+                            "name": CONTEXT_LAYER,
+                            "isHidden": False,
+                            "isLocked": False,
+                        }
+                    }
                 ]
             },
             "CreateMesh": {"success": True, "guid": "MESH"},
@@ -1053,8 +1067,8 @@ def test_the_envelopes_stand_as_slabs_on_their_own_layer_and_a_rerun_replaces_th
         {
             "GetAttributesByType": {
                 "attributes": [
-                    {"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}},
-                    {"name": "LORIINI FUTURE", "index": 10, "attributeId": {"guid": "L10"}},
+                    {"name": CONTEXT_LAYER, "index": 9, "attributeId": {"guid": "L9"}},
+                    {"name": FUTURE_LAYER, "index": 10, "attributeId": {"guid": "L10"}},
                 ]
             },
             "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
@@ -1062,7 +1076,7 @@ def test_the_envelopes_stand_as_slabs_on_their_own_layer_and_a_rerun_replaces_th
                 "layers": [
                     {
                         "layerAttribute": {
-                            "name": "LORIINI FUTURE",
+                            "name": FUTURE_LAYER,
                             "isHidden": False,
                             "isLocked": False,
                         }
@@ -1098,7 +1112,7 @@ def test_the_envelopes_stand_as_slabs_on_their_own_layer_and_a_rerun_replaces_th
     )
     report = model_future(connection, bundle, frame, options=FutureOptions(reach_m=60.0))
 
-    assert report.layer == "LORIINI FUTURE" and report.slabs == 1
+    assert report.layer == FUTURE_LAYER and report.slabs == 1
     assert len(report.future.envelopes) == 1
     # Only the last run's future slabs go; the context model's neighbour stays.
     doomed = transport_.parameters_for("DeleteElements")["elements"]
@@ -1163,12 +1177,12 @@ def test_the_model_is_placed_against_the_projects_declared_altitude() -> None:
     frame = frame_for(KOGARAH, site_centre=(LON, LAT), anchor="site")
     responses: dict[str, Any] = {
         "GetAttributesByType": {
-            "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+            "attributes": [{"name": CONTEXT_LAYER, "index": 9, "attributeId": {"guid": "L9"}}]
         },
         "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
         "GetLayers": {
             "layers": [
-                {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                {"layerAttribute": {"name": CONTEXT_LAYER, "isHidden": False, "isLocked": False}}
             ]
         },
         "CreateMesh": {"success": True, "guid": "MESH"},
@@ -1196,6 +1210,91 @@ def test_the_model_is_placed_against_the_projects_declared_altitude() -> None:
     # to the lowest contour, 24 AHD.
     assert all(4.0 <= point["z"] <= 8.0 for point in mesh["outline"]), mesh["outline"]
     assert any("datum of 20.00 m" in note for note in report.notes), report.notes
+
+
+def _context_responses(existing: list[str], then: list[str] | None = None) -> dict[str, Any]:
+    """Enough of Archicad for model_context, with `existing` layers in it.
+
+    ``then`` is what the project holds once a layer has been made: ensure_layer
+    reads back after creating rather than believing the answer, so a script
+    that never changes describes a project where creation silently did nothing.
+    """
+
+    def attributes(names: list[str]) -> dict[str, Any]:
+        return {
+            "attributes": [
+                {"name": name, "index": 9, "attributeId": {"guid": "L9"}} for name in names
+            ]
+        }
+
+    def layers(names: list[str]) -> dict[str, Any]:
+        return {
+            "layers": [
+                {"layerAttribute": {"name": name, "isHidden": False, "isLocked": False}}
+                for name in names
+            ]
+        }
+
+    return {
+        "GetAttributesByType": (
+            attributes(existing)
+            if then is None
+            else Sequential(attributes(existing), attributes(then))
+        ),
+        "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
+        "GetLayers": (
+            layers(existing) if then is None else Sequential(layers(existing), layers(then))
+        ),
+        "CreateLayers": {"success": True},
+        "CreateMesh": {"success": True, "guid": "MESH"},
+        "CreateSlabs": {"elements": [{"elementId": {"guid": "SLAB"}}]},
+        "GetDetailsOfElements": {"detailsOfElements": [{"layerIndex": 9}]},
+        "GetElementsByType": {"elements": []},
+        "GetStories": {"stories": [{"index": 0, "level": 0.0}]},
+        "GetGeoLocation": {
+            "projectLocation": {
+                "latitude": LAT,
+                "longitude": LON,
+                "altitude": 0.0,
+                "north": 0.0,
+            }
+        },
+    }
+
+
+def test_the_template_layer_is_used_rather_than_a_second_one_made() -> None:
+    """The office keeps its neighbours in its own site group, and the layer is
+    already there. Asked for by name, it is found and left alone -- the point
+    of filing the fetched context under '03 |' instead of a layer of the
+    tool's own is that a colleague finds neighbours where neighbours live,
+    which fails if the run adds a second layer beside the template's."""
+    from sun_study.archicad.context_model import model_context
+
+    connection, transport_ = connect(_context_responses(existing=[CONTEXT_LAYER]))
+    model_context(connection, site_bundle(), frame_for(KOGARAH, site_centre=(LON, LAT)))
+
+    assert "CreateLayers" not in transport_.commands(), (
+        "the template's own layer was there and a second was made anyway"
+    )
+
+
+def test_a_site_group_the_project_does_not_have_gets_its_layers_made() -> None:
+    """The other half: point it at a group that is not in the template and the
+    layers are created there. Same call either way -- find or create -- so
+    there is nothing to decide at the call site."""
+    from sun_study.archicad.context_model import model_context
+
+    naming.set_context_prefix("50 |")
+    try:
+        connection, transport_ = connect(
+            _context_responses(existing=[], then=["50 | Site Context.3D"])
+        )
+        model_context(connection, site_bundle(), frame_for(KOGARAH, site_centre=(LON, LAT)))
+
+        made = transport_.parameters_for("CreateLayers")["layerDataArray"][0]
+        assert made["name"] == "50 | Site Context.3D"
+    finally:
+        naming.set_context_prefix(naming.CONTEXT_PREFIX)
 
 
 def test_a_project_that_will_not_say_its_altitude_is_placed_as_before() -> None:
@@ -1229,12 +1328,18 @@ def test_a_datum_given_outright_beats_the_projects_own_altitude() -> None:
     connection, transport_ = connect(
         {
             "GetAttributesByType": {
-                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+                "attributes": [{"name": CONTEXT_LAYER, "index": 9, "attributeId": {"guid": "L9"}}]
             },
             "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
             "GetLayers": {
                 "layers": [
-                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                    {
+                        "layerAttribute": {
+                            "name": CONTEXT_LAYER,
+                            "isHidden": False,
+                            "isLocked": False,
+                        }
+                    }
                 ]
             },
             "CreateMesh": {"success": True, "guid": "MESH"},
@@ -1261,12 +1366,18 @@ def test_a_datum_given_outright_beats_the_projects_own_altitude() -> None:
     connection, transport_ = connect(
         {
             "GetAttributesByType": {
-                "attributes": [{"name": "LORIINI", "index": 9, "attributeId": {"guid": "L9"}}]
+                "attributes": [{"name": CONTEXT_LAYER, "index": 9, "attributeId": {"guid": "L9"}}]
             },
             "GetCurrentDatabase": {"databaseId": {"guid": "PLAN"}, "windowType": "FloorPlan"},
             "GetLayers": {
                 "layers": [
-                    {"layerAttribute": {"name": "LORIINI", "isHidden": False, "isLocked": False}}
+                    {
+                        "layerAttribute": {
+                            "name": CONTEXT_LAYER,
+                            "isHidden": False,
+                            "isLocked": False,
+                        }
+                    }
                 ]
             },
             "CreateMesh": {"success": True, "guid": "MESH"},
