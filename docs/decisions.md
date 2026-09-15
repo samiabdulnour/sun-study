@@ -3140,3 +3140,19 @@ what it already converted — which reads exactly like the command doing nothing
 that it has no such command; the run says so in yellow and goes on, because the
 views were made that way until now and are still worth making. What is not
 acceptable is making them quietly.
+
+**And the documents already in the project keep a filter of their own.**
+Setting the window mends nothing that exists: `API_DocumentFrom3DType` carries
+an `API_3DFilterAndCutSettings` as its *first field*, so each 3D Document holds
+a private copy and goes on converting the storeys it was made under. Measured
+on Bondi: the window was set to every storey, three dates were re-run, all
+twenty-one documents reported `kept`, and the sun views were still empty.
+
+A document cannot be remade either. `DeleteNavigatorItems` reports success on
+one and leaves all twenty-one in the Project Map — measured, 15 September 2026
+— which is what `make_sun_eye_documents` already meant by keeping what it
+finds. So `Set3DFilter` takes an optional `databaseId` and mends the document
+in place through `APIEnv_ChangeDocumentFrom3DSettingsID`, which is the only
+mend there is short of a person deleting them by hand. The run does it to every
+document under its own prefix before making views, and counts what would not
+take.

@@ -148,6 +148,7 @@ from sun_study.archicad.sun_eyes import (
     make_sun_eye_documents,
     make_sun_eye_sheets,
     make_sun_eye_views,
+    mend_document_filters,
     planned_renovation_filter,
     show_every_storey,
     sun_eye_layer_combination,
@@ -6481,6 +6482,14 @@ def sun_eye_views(
     trouble = show_every_storey(connection)
     if trouble:
         typer.secho(f"  {trouble}", fg=typer.colors.YELLOW)
+
+    # And the documents already in the project, which keep a filter of their
+    # own and can be neither re-aimed nor deleted through the API (D98).
+    mended, looked, said = mend_document_filters(connection)
+    if mended:
+        typer.echo(f"  took the storey filter off {mended} of {looked} documents already there")
+    if said:
+        typer.secho(f"  {said}", fg=typer.colors.YELLOW)
 
     geo = read_geo_location(connection)
     eyes = sun_eyes(geo, date=when, hours=hours, timezone=timezone)

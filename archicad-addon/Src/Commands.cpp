@@ -377,7 +377,8 @@ GS::Optional<GS::UniString> Set3DFilterCommand::GetInputParametersSchema () cons
 			"allStories": { "type": "boolean", "description": "True converts every storey, which is the dialog's own 'All Stories'. False makes firstStory and lastStory apply." },
 			"firstStory": { "type": "integer", "description": "First storey index to convert, when allStories is false." },
 			"lastStory": { "type": "integer", "description": "Last storey index to convert, when allStories is false." },
-			"trimToStoryRange": { "type": "boolean", "description": "Whether elements are cut at the range rather than shown whole." }
+			"trimToStoryRange": { "type": "boolean", "description": "Whether elements are cut at the range rather than shown whole." },
+			"databaseId": { "type": "object", "properties": { "guid": { "type": "string" } }, "description": "A 3D Document to change instead of the 3D window. A document keeps its own copy of the filter, so one made under a storey range goes on showing that range however the window is set." }
 		},
 		"additionalProperties": false
 	})");
@@ -401,13 +402,40 @@ GS::Optional<GS::UniString> Set3DFilterCommand::GetResponseSchema () const
 GS::ObjectState Set3DFilterCommand::Execute (const GS::ObjectState& parameters,
 											 GS::ProcessControl& /*processControl*/) const
 {
+	// A document, if one is named. `API_DocumentFrom3DType` carries an
+	// `API_3DFilterAndCutSettings` of its own -- the first field of the struct
+	// -- so a document made while the window was filtered to storeys 1..10
+	// goes on converting those ten however the window is set afterwards, and
+	// cannot be re-aimed or deleted through the API. Changing it in place is
+	// the only way to mend one that is already there.
+	API_DatabaseUnId document = {};
+	bool ofDocument = false;
+	{
+		GS::ObjectState identifier;
+		if (parameters.Get ("databaseId", identifier)) {
+			GS::UniString guid;
+			if (!identifier.Get ("guid", guid)) {
+				return Failed ("databaseId needs a guid.", APIERR_BADPARS);
+			}
+			document.elemSetId = APIGuidFromString (guid.ToCStr ().Get ());
+			ofDocument = true;
+		}
+	}
+
 	// Read first. The same struct carries the marquee filter and the element
 	// type filter, and a command that built it from nothing would throw away
 	// a marquee somebody set without ever mentioning it.
 	API_3DFilterAndCutSettings settings = {};
-	GSErrCode err = ACAPI_Environment (APIEnv_Get3DImageSetsID, &settings);
+	API_DocumentFrom3DType paper = {};
+	GSErrCode err = ofDocument
+		? ACAPI_Environment (APIEnv_GetDocumentFrom3DSettingsID, &document, &paper)
+		: ACAPI_Environment (APIEnv_Get3DImageSetsID, &settings);
 	if (err != NoError) {
-		return Failed ("Failed to read the 3D filter settings.", err);
+		return Failed (ofDocument ? "Failed to read the 3D Document's settings."
+								  : "Failed to read the 3D filter settings.", err);
+	}
+	if (ofDocument) {
+		settings = paper.filterAndCutSettings;
 	}
 
 	bool allStories = settings.allStories;
@@ -421,20 +449,40 @@ GS::ObjectState Set3DFilterCommand::Execute (const GS::ObjectState& parameters,
 		settings.trimToStoryRange = trim;
 	}
 
-	// par2 is the kit's "must convert" flag: without it the settings change
-	// and the window goes on showing what it already converted, which reads
-	// exactly like the command having done nothing.
-	bool convert = true;
-	err = ACAPI_Environment (APIEnv_Change3DImageSetsID, &settings, &convert);
-	if (err != NoError) {
-		return Failed ("Failed to write the 3D filter settings.", err);
+	if (ofDocument) {
+		paper.filterAndCutSettings = settings;
+		err = ACAPI_Environment (APIEnv_ChangeDocumentFrom3DSettingsID, &document, &paper);
+		// The settings read back carry a handle the kit's own example frees
+		// after use; nothing here owns it.
+		BMhFree (reinterpret_cast<GSHandle> (paper.cutSetting.shapes));
+		paper.cutSetting.shapes = nullptr;
+		if (err != NoError) {
+			return Failed ("Failed to write the 3D Document's filter.", err);
+		}
+	} else {
+		// par2 is the kit's "must convert" flag: without it the settings
+		// change and the window goes on showing what it already converted,
+		// which reads exactly like the command having done nothing.
+		bool convert = true;
+		err = ACAPI_Environment (APIEnv_Change3DImageSetsID, &settings, &convert);
+		if (err != NoError) {
+			return Failed ("Failed to write the 3D filter settings.", err);
+		}
 	}
 
 	// Read back rather than report what was asked for: a refused field would
 	// otherwise be reported as set, and the symptom -- half a model in a sun
 	// view -- says nothing about which storey was dropped.
 	API_3DFilterAndCutSettings now = {};
-	err = ACAPI_Environment (APIEnv_Get3DImageSetsID, &now);
+	if (ofDocument) {
+		API_DocumentFrom3DType again = {};
+		err = ACAPI_Environment (APIEnv_GetDocumentFrom3DSettingsID, &document, &again);
+		now = again.filterAndCutSettings;
+		BMhFree (reinterpret_cast<GSHandle> (again.cutSetting.shapes));
+		again.cutSetting.shapes = nullptr;
+	} else {
+		err = ACAPI_Environment (APIEnv_Get3DImageSetsID, &now);
+	}
 	if (err != NoError) {
 		return Failed ("The 3D filter was written but could not be read back.", err);
 	}

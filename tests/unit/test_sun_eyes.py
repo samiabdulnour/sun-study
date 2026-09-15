@@ -282,3 +282,76 @@ def test_a_filter_that_will_not_come_off_is_reported_rather_than_assumed() -> No
     connection, _ = connect({"Set3DFilter": {"success": True, "allStories": False}})
 
     assert "would not come off" in show_every_storey(connection)
+
+
+def test_the_documents_already_there_have_their_own_filter_taken_off() -> None:
+    """Setting the window is not enough. API_DocumentFrom3DType carries an
+    API_3DFilterAndCutSettings of its own, so a document made while the window
+    was filtered goes on converting those storeys for ever -- and it can be
+    neither re-aimed nor deleted through the API, so mending it in place is
+    the only mend there is (D98)."""
+    from sun_study.archicad.sun_eyes import mend_document_filters
+
+    tree = {
+        "navigatorItemTree": {
+            "name": "root",
+            "children": [
+                {
+                    "navigatorItem": {
+                        "type": "DocumentFrom3DItem",
+                        "name": f"{naming.prefix()} Sun View Document 21 Jun 09:00",
+                        "navigatorItemId": {"guid": "DOC"},
+                        "children": [],
+                    }
+                }
+            ],
+        }
+    }
+    connection, transport = connect(
+        {
+            "GetNavigatorItemTree": tree,
+            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "DB"}}]},
+            "Set3DFilter": {"success": True, "allStories": True},
+        }
+    )
+
+    mended, looked, said = mend_document_filters(connection)
+
+    assert (mended, looked, said) == (1, 1, "")
+    sent = transport.parameters_for("Set3DFilter")
+    assert sent["allStories"] is True
+    assert sent["databaseId"] == {"guid": "DB"}, "the document, not the window"
+
+
+def test_a_document_that_keeps_its_filter_is_counted_and_said() -> None:
+    """A refused document is a sun view that shows part of the model and looks
+    exactly like one that shows all of it."""
+    from sun_study.archicad.sun_eyes import mend_document_filters
+
+    tree = {
+        "navigatorItemTree": {
+            "name": "root",
+            "children": [
+                {
+                    "navigatorItem": {
+                        "type": "DocumentFrom3DItem",
+                        "name": f"{naming.prefix()} Sun View Document 21 Jun 09:00",
+                        "navigatorItemId": {"guid": "DOC"},
+                        "children": [],
+                    }
+                }
+            ],
+        }
+    }
+    connection, _ = connect(
+        {
+            "GetNavigatorItemTree": tree,
+            "GetDatabaseIdFromNavigatorItemId": {"databases": [{"databaseId": {"guid": "DB"}}]},
+            "Set3DFilter": {"success": True, "allStories": False},
+        }
+    )
+
+    mended, looked, said = mend_document_filters(connection)
+
+    assert (mended, looked) == (0, 1)
+    assert "kept their storey filter" in said

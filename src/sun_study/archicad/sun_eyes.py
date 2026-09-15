@@ -55,6 +55,7 @@ from sun_study.archicad.layout import (
     remove_stale_layouts,
 )
 from sun_study.archicad.read import GeoLocation, layer_names, zones
+from sun_study.archicad.series import database_of
 from sun_study.archicad.sheeting import (
     DEFAULT_SHEET_MODE,
     cells_for,
@@ -83,6 +84,7 @@ __all__ = [
     "make_sun_eye_documents",
     "make_sun_eye_sheets",
     "make_sun_eye_views",
+    "mend_document_filters",
     "planned_renovation_filter",
     "sheet_cells_for",
     "sheet_groups",
@@ -359,6 +361,60 @@ def show_every_storey(connection: ArchicadConnection) -> str:
     if isinstance(answer, dict) and answer.get("allStories"):
         return ""
     return f"the 3D storey filter would not come off: {answer!r}"
+
+
+def mend_document_filters(connection: ArchicadConnection) -> tuple[int, int, str]:
+    """Take the storey filter off the 3D Documents this tool has made.
+
+    Returns ``(mended, looked at, what to say)``.
+
+    Setting the window is not enough. ``API_DocumentFrom3DType`` carries an
+    ``API_3DFilterAndCutSettings`` of its own -- the first field of the struct
+    -- so a document made while the window was filtered to storeys 1..10 goes
+    on converting those ten for ever, however the window is set afterwards.
+
+    And it cannot be remade: a 3D Document can be neither re-aimed nor deleted
+    through the API, so a run that finds one keeps it. Measured on the Bondi
+    file, 15 September 2026 -- ``DeleteNavigatorItems`` reports success and all
+    twenty-one are still there. Changing each in place is the only mend there
+    is short of a person deleting them by hand.
+    """
+    documents = [
+        source
+        for source in three_d_sources(connection)
+        if source.kind == "DocumentFrom3DItem" and source.name.startswith(f"{naming.prefix()} ")
+    ]
+    if not documents:
+        return 0, 0, ""
+    mended = 0
+    for source in documents:
+        database_id = database_of(connection, source.identifier)
+        if not database_id:
+            continue
+        try:
+            answer = connection.run_loriini(
+                "Set3DFilter", {"allStories": True, "databaseId": {"guid": database_id}}
+            )
+        except ArchicadError as error:
+            if "not have the registered" not in str(error):
+                raise
+            return (
+                0,
+                len(documents),
+                (
+                    "the installed Loriini add-on has no Set3DFilter, so the documents already "
+                    "in the project keep the storey filter they were made under"
+                ),
+            )
+        if isinstance(answer, dict) and answer.get("allStories"):
+            mended += 1
+    if mended == len(documents):
+        return mended, len(documents), ""
+    return (
+        mended,
+        len(documents),
+        f"{len(documents) - mended} of {len(documents)} documents kept their storey filter",
+    )
 
 
 def _view_name(eye: SunEye, *, of_document: bool) -> str:
