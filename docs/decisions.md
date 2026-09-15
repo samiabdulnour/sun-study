@@ -3053,3 +3053,44 @@ worksheet is opened, and a person at the machine may not mind.
 This also retires the search for a way round: there is no save, no reopen and
 no API call that enters a worksheet the session made. There is only not making
 one.
+
+
+### D97 — A mesh skirt is a depth below the mesh, not a level, and the sign is invisible until you look from underneath
+
+Reported 15 September 2026, with a screenshot: *"look. its upside down"*. The
+Bondi context model was a flat plate with the whole neighbourhood hanging
+beneath it.
+
+The surface was never wrong. Read back off the element, the terrain outline ran
+`+10.2` and `+11.6` on the west edge and `-45.8` and `-46.7` on the east —
+which is the real landform, rising toward Bondi Junction and falling toward the
+beach. The neighbours were right too: tops from `+29.6` beside the site down to
+`-47.5` half a kilometre away, following the contours as they should.
+
+What was inside out was the solid body. `_terrain` computed the skirt as a
+level — `lowest - SKIRT_M`, `-53.818` — and Archicad put the solid between the
+surface and **+53.8**, mirrored about the mesh level, which is the plate in the
+screenshot. Archicad then reads the field back as `+53.818` for a skirt whose
+bottom is 53.8 m *down*: the field is a **depth below the mesh's own level,
+positive downward**, and not the level its name suggests.
+
+| | before | after | from the contours |
+|---|---|---|---|
+| terrain zMin | −51.8 | **−53.8** | −53.8, the skirt |
+| terrain zMax | **+53.8** | **+16.2** | ≈ +18.2, the 94 m contour |
+| span | 105.6 | **70.0** | ~74 |
+
+The giveaway, before the screenshot arrived, was that the terrain covered 31 m
+more range than the contours it was built from — 105.6 m against 74 — which
+interpolation between two contour levels cannot do.
+
+**Why it is a function.** `_skirt_depth` exists so the convention is stated
+once, beside the measurement, and because three call sites send it: the
+terrain, the 236 road blocks and the Tapir fallback. One left on the old sign
+would turn that mesh inside out while the others looked right. A test walks the
+module's AST and fails if any of them sends a bare level again.
+
+**Why nothing caught it.** The run reports the same counts, layers and element
+IDs either way. A mesh inside out is not an error, it is a shape — and the only
+symptom is the model seen from below, which nothing in a headless run ever
+does.

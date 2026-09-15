@@ -513,7 +513,7 @@ def _block_meshes(
                     "outline": outline,
                     "levelLines": [],
                     "skirt": "solid",
-                    "skirtLevel": lowest - SKIRT_M,
+                    "skirtLevel": _skirt_depth(lowest - SKIRT_M),
                     "layerIndex": layer_index,
                     "floorIndex": floor_index,
                     "elementId": f"SA BLOCK {i + 1}",
@@ -603,6 +603,28 @@ def _datum_storey(connection: ArchicadConnection) -> tuple[int, float]:
     return best or (0, 0.0)
 
 
+def _skirt_depth(lowest: float, mesh_level: float = 0.0) -> float:
+    """What to send as ``skirtLevel`` to put the skirt's bottom at ``lowest``.
+
+    Not the level. Archicad stores the skirt as a *depth below the mesh's own
+    level, positive downward*, which is not what the field's name suggests and
+    is the opposite sign of everything else in this module.
+
+    Measured on the Bondi context, 15 September 2026, after the terrain came
+    out as a solid plate above the neighbourhood with the ground hanging under
+    it. The mesh surface was right -- west high toward Bondi Junction, east low
+    toward the beach -- and the body was inside out: a skirt sent as -53.818
+    put the solid between the surface and *+53.8*, mirrored about the mesh
+    level, and Archicad then read the field back as +53.818 for a skirt whose
+    bottom sits 53.8 m down. Sending the depth puts it where the name implied.
+
+    Kept as a function with the measurement beside it because the sign is
+    invisible in the result until somebody looks at the model from below: a
+    run reports the same counts either way.
+    """
+    return mesh_level - lowest
+
+
 def _terrain(
     connection: ArchicadConnection,
     bundle: SiteBundle,
@@ -644,7 +666,7 @@ def _terrain(
                 "outline": outline,
                 "levelLines": [s["coordinates"] for s in sublines],
                 "skirt": "solid",
-                "skirtLevel": lowest - SKIRT_M,
+                "skirtLevel": _skirt_depth(lowest - SKIRT_M),
                 "layerIndex": layer_index,
                 "floorIndex": floor_index,
                 "elementId": "SA TERRAIN",
@@ -666,7 +688,7 @@ def _terrain(
                     "polygonCoordinates": outline,
                     "sublines": sublines,
                     "skirtType": "SolidBodyWithSkirt",
-                    "skirtLevel": lowest - SKIRT_M,
+                    "skirtLevel": _skirt_depth(lowest - SKIRT_M),
                     "ridges": "UserDefined",
                     "showLines": False,
                 }

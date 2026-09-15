@@ -1490,3 +1490,49 @@ def test_nothing_is_said_when_every_worksheet_is_already_there(
     _say_which_worksheets_are_missing(connection, context=True, site=True)
 
     assert said == []
+
+
+def test_the_terrain_skirt_hangs_below_the_ground_and_not_above_it() -> None:
+    """The bug that made the Bondi context a plate with the neighbourhood
+    hanging under it. Archicad stores a mesh skirt as a depth below the mesh
+    level, positive downward -- send it a level and the solid body is mirrored
+    to the other side of the ground.
+
+    Worth a test precisely because nothing in a run says so: the counts, the
+    layers and the element IDs are identical either way, and the only symptom
+    is the model seen from underneath.
+    """
+    from sun_study.archicad.context_model import _skirt_depth
+
+    # Ground 51.8 m below project zero, the skirt 2 m under that.
+    assert _skirt_depth(-53.818) == pytest.approx(53.818)
+    # And a site whose ground is above zero keeps the skirt under it.
+    assert _skirt_depth(3.0) == pytest.approx(-3.0)
+    # The sign is the whole point: a depth is never the level it came from.
+    assert _skirt_depth(-10.0) > 0
+    assert _skirt_depth(10.0) < 0
+
+
+def test_every_mesh_the_context_makes_sends_a_depth_not_a_level() -> None:
+    """Three call sites -- the terrain, the road blocks and the fallback --
+    and one of them left on the old sign would put that mesh inside out while
+    the others looked right."""
+    import ast
+    from pathlib import Path as _Path
+
+    source = _Path("src/sun_study/archicad/context_model.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    sent = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values, strict=True):
+            if isinstance(key, ast.Constant) and key.value == "skirtLevel":
+                sent.append(value)
+    assert sent, "no skirtLevel is sent any more -- has the mesh changed?"
+    bare = [
+        ast.unparse(value)
+        for value in sent
+        if not (isinstance(value, ast.Call) and getattr(value.func, "id", "") == "_skirt_depth")
+    ]
+    assert not bare, "these send a level where Archicad wants a depth: " + ", ".join(bare)
