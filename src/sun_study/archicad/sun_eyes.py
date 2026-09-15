@@ -87,6 +87,7 @@ __all__ = [
     "sheet_cells_for",
     "sheet_groups",
     "sheet_positions_for",
+    "show_every_storey",
     "sun_eye_layer_combination",
     "sun_eyes",
 ]
@@ -327,6 +328,37 @@ def aim(connection: ArchicadConnection, eye: SunEye) -> None:
     )
     if not isinstance(response, dict) or not response.get("success"):
         raise ArchicadError(f"SetProjection for {eye.label} answered {response!r}")
+
+
+def show_every_storey(connection: ArchicadConnection) -> str:
+    """Take the storey filter off the 3D window. Returns what to say, or "".
+
+    A saved 3D view keeps the filter it was made under, so a window filtered
+    to one storey bakes half a model into every sun view and says nothing
+    about it. That bites here in particular: the context model is homed on the
+    storey nearest level zero, while the building stands on the ground storey
+    and the ones above, so a single-storey filter can never show both.
+
+    Nothing in Tapir reaches the "Filter Elements in 3D" dialog --
+    ``SetViewSettings`` carries the layer combination, the renovation filter,
+    the 3D style and the pen set, and no storey range -- so this is the
+    add-on's own command. An add-on built before it simply does not have it,
+    and the run goes on with whatever the project is set to rather than
+    stopping: the views are still made, and were made that way until now.
+    """
+    try:
+        answer = connection.run_loriini("Set3DFilter", {"allStories": True})
+    except ArchicadError as error:
+        if "not have the registered" not in str(error):
+            raise
+        return (
+            "the installed Loriini add-on has no Set3DFilter, so the 3D window keeps "
+            "whatever storey filter the project is set to; a view filtered to one "
+            "storey carries half the model"
+        )
+    if isinstance(answer, dict) and answer.get("allStories"):
+        return ""
+    return f"the 3D storey filter would not come off: {answer!r}"
 
 
 def _view_name(eye: SunEye, *, of_document: bool) -> str:

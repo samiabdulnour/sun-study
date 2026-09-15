@@ -149,6 +149,7 @@ from sun_study.archicad.sun_eyes import (
     make_sun_eye_sheets,
     make_sun_eye_views,
     planned_renovation_filter,
+    show_every_storey,
     sun_eye_layer_combination,
     sun_eyes,
 )
@@ -6474,6 +6475,12 @@ def sun_eye_views(
         hours = [int(part) for part in hour.split(",") if part.strip()]
     else:
         hours = list(range(rules.assessment.start_time.hour, rules.assessment.end_time.hour + 1))
+
+    # Before any view is made, because a saved 3D view keeps the storey
+    # filter it was made under (D98).
+    trouble = show_every_storey(connection)
+    if trouble:
+        typer.secho(f"  {trouble}", fg=typer.colors.YELLOW)
 
     geo = read_geo_location(connection)
     eyes = sun_eyes(geo, date=when, hours=hours, timezone=timezone)

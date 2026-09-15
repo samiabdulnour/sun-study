@@ -364,4 +364,87 @@ GS::ObjectState CreateDocumentFrom3DCommand::Execute (const GS::ObjectState& par
 	return result;
 }
 
+
+// -- Set3DFilter ------------------------------------------------------------
+
+GS::String Set3DFilterCommand::GetName () const			{ return "Set3DFilter"; }
+
+GS::Optional<GS::UniString> Set3DFilterCommand::GetInputParametersSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"allStories": { "type": "boolean", "description": "True converts every storey, which is the dialog's own 'All Stories'. False makes firstStory and lastStory apply." },
+			"firstStory": { "type": "integer", "description": "First storey index to convert, when allStories is false." },
+			"lastStory": { "type": "integer", "description": "Last storey index to convert, when allStories is false." },
+			"trimToStoryRange": { "type": "boolean", "description": "Whether elements are cut at the range rather than shown whole." }
+		},
+		"additionalProperties": false
+	})");
+}
+
+GS::Optional<GS::UniString> Set3DFilterCommand::GetResponseSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"success": { "type": "boolean" },
+			"allStories": { "type": "boolean" },
+			"firstStory": { "type": "integer" },
+			"lastStory": { "type": "integer" },
+			"trimToStoryRange": { "type": "boolean" },
+			"error": { "type": "object" }
+		}
+	})");
+}
+
+GS::ObjectState Set3DFilterCommand::Execute (const GS::ObjectState& parameters,
+											 GS::ProcessControl& /*processControl*/) const
+{
+	// Read first. The same struct carries the marquee filter and the element
+	// type filter, and a command that built it from nothing would throw away
+	// a marquee somebody set without ever mentioning it.
+	API_3DFilterAndCutSettings settings = {};
+	GSErrCode err = ACAPI_Environment (APIEnv_Get3DImageSetsID, &settings);
+	if (err != NoError) {
+		return Failed ("Failed to read the 3D filter settings.", err);
+	}
+
+	bool allStories = settings.allStories;
+	if (parameters.Get ("allStories", allStories)) {
+		settings.allStories = allStories;
+	}
+	ReadShort (parameters, "firstStory", settings.firstStory3D);
+	ReadShort (parameters, "lastStory", settings.lastStory3D);
+	bool trim = settings.trimToStoryRange;
+	if (parameters.Get ("trimToStoryRange", trim)) {
+		settings.trimToStoryRange = trim;
+	}
+
+	// par2 is the kit's "must convert" flag: without it the settings change
+	// and the window goes on showing what it already converted, which reads
+	// exactly like the command having done nothing.
+	bool convert = true;
+	err = ACAPI_Environment (APIEnv_Change3DImageSetsID, &settings, &convert);
+	if (err != NoError) {
+		return Failed ("Failed to write the 3D filter settings.", err);
+	}
+
+	// Read back rather than report what was asked for: a refused field would
+	// otherwise be reported as set, and the symptom -- half a model in a sun
+	// view -- says nothing about which storey was dropped.
+	API_3DFilterAndCutSettings now = {};
+	err = ACAPI_Environment (APIEnv_Get3DImageSetsID, &now);
+	if (err != NoError) {
+		return Failed ("The 3D filter was written but could not be read back.", err);
+	}
+
+	GS::ObjectState result = Succeeded ();
+	result.Add ("allStories", now.allStories);
+	result.Add ("firstStory", static_cast<Int32> (now.firstStory3D));
+	result.Add ("lastStory", static_cast<Int32> (now.lastStory3D));
+	result.Add ("trimToStoryRange", now.trimToStoryRange);
+	return result;
+}
+
 }		// namespace Loriini

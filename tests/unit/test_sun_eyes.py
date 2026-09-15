@@ -239,3 +239,46 @@ def test_cells_are_the_grid_less_a_gap_for_the_title() -> None:
     # Every cell the same size.
     sizes = {(round((c[2] - c[0]) * 1000), round((c[3] - c[1]) * 1000)) for c in cells}
     assert sizes == {(410, 314)}
+
+
+def test_the_storey_filter_comes_off_before_any_view_is_made() -> None:
+    """A saved 3D view keeps the filter it was made under, so a window left on
+    one storey bakes half a model into every sun view -- the context is homed
+    on the storey nearest zero and the building stands on the ground storey
+    and above, and one storey can never show both (D98)."""
+    from sun_study.archicad.sun_eyes import show_every_storey
+
+    connection, transport = connect({"Set3DFilter": {"success": True, "allStories": True}})
+
+    assert show_every_storey(connection) == "", "nothing to report when it comes off"
+    assert transport.parameters_for("Set3DFilter") == {"allStories": True}
+
+
+def test_an_older_add_on_without_the_command_is_said_and_not_fatal() -> None:
+    """The views were made this way until the command existed, and they are
+    still worth making. What is not acceptable is making them quietly: a view
+    carrying half the model looks exactly like one carrying all of it."""
+    from sun_study.archicad.sun_eyes import show_every_storey
+
+    connection, _ = connect(
+        {
+            "Set3DFilter": {
+                "error": {"code": 4010, "message": "does not have the registered Add-On command"}
+            }
+        }
+    )
+
+    trouble = show_every_storey(connection)
+    assert "no Set3DFilter" in trouble
+    assert "half the model" in trouble
+
+
+def test_a_filter_that_will_not_come_off_is_reported_rather_than_assumed() -> None:
+    """Read back rather than believed, for the same reason the add-on reads it
+    back: a refused field reported as set is a sun view that is wrong and says
+    it is right."""
+    from sun_study.archicad.sun_eyes import show_every_storey
+
+    connection, _ = connect({"Set3DFilter": {"success": True, "allStories": False}})
+
+    assert "would not come off" in show_every_storey(connection)

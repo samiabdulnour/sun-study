@@ -3094,3 +3094,49 @@ module's AST and fails if any of them sends a bare level again.
 IDs either way. A mesh inside out is not an error, it is a shape — and the only
 symptom is the model seen from below, which nothing in a headless run ever
 does.
+
+
+### D98 — The 3D window's storey filter is the add-on's to set, because a saved view keeps it
+
+Asked 15 September 2026: *"there is filter applied by default on every 3d view
+filtering 0.AHD floor... apply no filter on storey"*.
+
+A saved 3D view keeps the "Filter Elements in 3D" settings it was made under,
+so a window left on one storey bakes half a model into every sun view and
+nothing in the run says so. It bites on exactly this pairing: the context model
+is homed on the storey nearest level zero — `AHD`, 0.000, on the Bondi file —
+while the building stands on `GROUND` at 10.0 and the storeys above, so a
+single-storey filter can never show both.
+
+Nothing already reachable sets it. Tapir's `SetViewSettings` carries the layer
+combination, the graphic override, the renovation filter, the 3D style, the pen
+set and the scale, and no storey range; Tapir 1.5.8's own catalogue has
+`GetStories`, `SetStories` and `Set3DCutPlanes`, none of which is this. So it is
+the fourteenth thing the add-on carries because no command for it exists
+anywhere.
+
+`APIEnv_Get3DImageSetsID` and `APIEnv_Change3DImageSetsID` carry
+`API_3DFilterAndCutSettings`, read out of the 26.3000 kit rather than guessed:
+
+    short  firstStory3D;        // first floor to convert
+    short  lastStory3D;         // last floor to convert
+    bool   allStories;          // if false, firstStory3D..lastStory3D is valid
+    API_MarqueeFilter marqueeFilter;
+    bool   trimToStoryRange;
+    API_3DFilterModeID filterMode;
+    std::map<API_ElemTypeID, bool> elemTypeFilter;
+
+`allStories` is the whole question, and `Loriini.Set3DFilter` sets it.
+
+**Read, modify, write, read back.** The struct also carries the marquee filter
+and the element type filter, so a command that built it from nothing would
+throw away a marquee somebody set without mentioning it. And the answer is read
+back from Archicad rather than echoed, because a refused field reported as set
+is a sun view that is wrong and says it is right. The change is written with the
+kit's *must convert* flag, or the settings move and the window goes on showing
+what it already converted — which reads exactly like the command doing nothing.
+
+**An older add-on is said, not fatal.** A build without `Set3DFilter` answers
+that it has no such command; the run says so in yellow and goes on, because the
+views were made that way until now and are still worth making. What is not
+acceptable is making them quietly.

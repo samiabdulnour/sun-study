@@ -108,6 +108,42 @@ public:
 													 GS::ProcessControl& processControl) const override;
 };
 
+
+// -- Set3DFilter ------------------------------------------------------------
+//
+// What storeys the 3D window converts, which is the "Filter Elements in 3D"
+// dialog and nothing Tapir can reach: its `SetViewSettings` carries the layer
+// combination, the renovation filter, the 3D style and the pen set onto a
+// view, and no storey range.
+//
+// It matters because a saved 3D view keeps the filter it was made under. The
+// context model is homed on the storey nearest level zero -- `AHD`, 0.000, on
+// the Bondi file -- while the building itself stands on `GROUND` at 10.0 and
+// the storeys above it. With the window filtered to one storey the two can
+// never appear together, so every sun view carries half a model and says
+// nothing about it.
+//
+// `APIEnv_Get3DImageSetsID` and `APIEnv_Change3DImageSetsID` carry
+// `API_3DFilterAndCutSettings`, whose `allStories` is the whole question:
+// false means `firstStory3D..lastStory3D` applies. Read first and written back
+// whole, because the same struct carries the marquee filter and the element
+// type filter, and a command that rebuilt it from nothing would quietly throw
+// away a marquee somebody set.
+class Set3DFilterCommand : public Command {
+public:
+	virtual GS::String						GetName () const override;
+	virtual GS::Optional<GS::UniString>		GetInputParametersSchema () const override;
+	virtual GS::Optional<GS::UniString>		GetResponseSchema () const override;
+
+	virtual API_AddOnCommandExecutionPolicy	GetExecutionPolicy () const override
+	{
+		return API_AddOnCommandExecutionPolicy::ScheduleForExecutionOnMainThread;
+	}
+
+	virtual GS::ObjectState					Execute (const GS::ObjectState& parameters,
+													 GS::ProcessControl& processControl) const override;
+};
+
 }		// namespace Loriini
 
 #endif
