@@ -119,9 +119,14 @@ def test_a_missing_worksheet_lists_the_ones_that_exist() -> None:
 
 def test_activation_that_does_not_take_is_an_error_not_a_shrug() -> None:
     """Drawing after a failed switch would put the whole series on the floor
-    plan of whatever storey happened to be open."""
+    plan of whatever storey happened to be open.
+
+    The message has to say what to do about it, and for a worksheet that is
+    one specific thing: a person opens it once, and no amount of reopening the
+    project substitutes (D95).
+    """
     connection, _ = connect({"ChangeWindow": {"success": False}})
-    with pytest.raises(ArchicadError, match="cannot be activated"):
+    with pytest.raises(ArchicadError, match="opened by a person"):
         activate(connection, "db-1", "Worksheet")
 
 
