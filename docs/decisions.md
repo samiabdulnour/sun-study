@@ -3015,3 +3015,41 @@ way would end the waiting outright. The second is the add-on: a double-click
 opens a navigator item, which is not the same call as changing the current
 database, and Loriini only ever tries the latter. Whether AC26's API exposes
 the former is unread — the kit is not on this workstation.
+
+
+### D96 — A worksheet already in the project enters without help; only one the run made is refused
+
+The other half of [D95](#d95--a-worksheet-made-through-the-api-is-opened-by-a-person-once-ever-and-a-reopen-does-not-do-it),
+measured on Bondi the same afternoon, and the one that ends the waiting.
+
+D95 established that a worksheet the API had just made stayed refused through
+a save and a reopen, and that the two a person had double-clicked entered
+freely. That left the discriminator ambiguous: was it the double-click, or was
+it simply being in the file already? Three worksheets nobody had touched in
+that session answered it:
+
+| Worksheet | Origin | Entered |
+|---|---|---|
+| `BASIX`, `Survey DWG`, `Scale Bar` | in the project, made by a person | yes |
+| `ZZ Reopen Probe` | made by `Loriini.CreateWorksheet` this session | **no** |
+
+Nobody opened the first three. They entered anyway. So the click is not what
+lifts the refusal — being in the project before the run started is. Archicad
+refuses only the worksheet the running session created.
+
+**So the fix is the template, not the tool.** Put `17 | Site Analysis` and
+`17 | Context Analysis` in the office template — or make them once, by hand,
+on a project that has none — and the site run never creates a worksheet, never
+asks and never waits. `ensure_worksheet` already prefers the one it finds
+([D84](#d84--a-worksheet-made-in-the-session-is-entered-by-a-person-and-the-run-waits-for-that)),
+so no code had to change for the unattended case to work.
+
+What did change: the run now looks for those worksheets **before** the
+geocoding and the fetching rather than discovering the problem four minutes
+later, names the ones it is about to have trouble with, and says that the
+template ends it. It does not refuse to run — the sheet still draws once the
+worksheet is opened, and a person at the machine may not mind.
+
+This also retires the search for a way round: there is no save, no reopen and
+no API call that enters a worksheet the session made. There is only not making
+one.

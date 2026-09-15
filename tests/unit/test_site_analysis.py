@@ -1443,3 +1443,54 @@ def test_an_add_on_without_the_command_says_which_one_is_missing() -> None:
     )
     with pytest.raises(ArchicadError, match="no PlaceDrawings command"):
         _figures(connection, drawing.figures, {drawing.layer("Aerial"): 7}, "drawing")
+
+
+def test_a_worksheet_the_run_will_have_to_make_is_named_before_the_fetching() -> None:
+    """The refusal arrives at the end -- after the geocoding, the fetching and
+    the drawing -- and by then a person has been waiting four minutes for the
+    news. D95 and D96 make it predictable: a worksheet already in the project
+    enters without help, one the run creates does not. So the run can say at
+    the start which of them it is about to have trouble with."""
+    from sun_study.cli import _say_which_worksheets_are_missing
+
+    connection, _ = connect(
+        {"GetNavigatorItemTree": navigator_tree((f"{SS} Site Analysis", "NAV"))}
+    )
+    said: list[str] = []
+    import typer
+
+    original = typer.secho
+    typer.secho = lambda message, **kw: said.append(str(message))  # type: ignore[assignment]
+    try:
+        _say_which_worksheets_are_missing(connection, context=True, site=True)
+    finally:
+        typer.secho = original  # type: ignore[assignment]
+
+    spoken = " ".join(said)
+    assert f"{SS} Context Analysis" in spoken, "the missing one is named"
+    assert f"{SS} Site Analysis" not in spoken, "the one already there is not"
+    assert "template" in spoken, "and the fix that ends it for good is named"
+
+
+def test_nothing_is_said_when_every_worksheet_is_already_there() -> None:
+    """The ordinary case on a project set up once. Silence is the point."""
+    from sun_study.cli import _say_which_worksheets_are_missing
+
+    connection, _ = connect(
+        {
+            "GetNavigatorItemTree": navigator_tree(
+                (f"{SS} Site Analysis", "A"), (f"{SS} Context Analysis", "B")
+            )
+        }
+    )
+    said: list[str] = []
+    import typer
+
+    original = typer.secho
+    typer.secho = lambda message, **kw: said.append(str(message))  # type: ignore[assignment]
+    try:
+        _say_which_worksheets_are_missing(connection, context=True, site=True)
+    finally:
+        typer.secho = original  # type: ignore[assignment]
+
+    assert said == []

@@ -6578,6 +6578,50 @@ def _site_out_dir(address: str, out: Path | None) -> Path:
     return root / "Loriini" / "site-analysis" / site_pipeline.slug(address)
 
 
+def _say_which_worksheets_are_missing(
+    connection: ArchicadConnection, *, context: bool, site: bool
+) -> None:
+    """Warn at the start about a sheet that will stop for a person at the end.
+
+    A worksheet already in the project is entered by the run without help; one
+    the run has to create is refused by Archicad until a person double-clicks
+    it, and no save, reopen or API call substitutes (D95, D96). That refusal
+    arrives after the fetching and the drawing -- four minutes in on a real
+    site -- which is the worst moment to learn of it and the reason this looks
+    first.
+
+    It does not refuse to run. The sheet still draws once the worksheet is
+    opened, and a person who is at the machine may not care; what they should
+    not have to do is find out late.
+    """
+    wanted = [
+        naming.named(word)
+        for word, asked in ((site_drawing.CONTEXT_WORD, context), (site_drawing.SITE_WORD, site))
+        if asked
+    ]
+    if not wanted:
+        return
+    try:
+        missing = [name for name in wanted if not site_drawing._worksheet_by_name(connection, name)]
+    except ArchicadError:
+        # A project that will not answer about its navigator is a problem the
+        # drawing step reports properly; this is a courtesy, not a gate.
+        return
+    if not missing:
+        return
+    typer.secho(
+        "  not in the project yet: " + ", ".join(repr(name) for name in missing),
+        fg=typer.colors.YELLOW,
+    )
+    typer.secho(
+        "  The run will create each one and then stop until it is double-clicked in the "
+        "Project Map -- Archicad refuses to enter a worksheet the API just made, and a "
+        "save or a reopen does not lift it. Put these worksheets in the office template, "
+        "or make them once by hand, and no run asks again.",
+        fg=typer.colors.YELLOW,
+    )
+
+
 @app.command("site")
 @app.command("site-analysis", hidden=True)
 def site_analysis(
@@ -6839,6 +6883,7 @@ def site_analysis(
         # one draws into whatever worksheet a person has put in front, and
         # moving the database off it first is the one way to lose that.
         connection = _connect(port, timeout, switch_database=False)
+        _say_which_worksheets_are_missing(connection, context=context, site=site)
         try:
             geo = read_geo_location(connection)
             typer.echo(f"  project location: {geo.describe()}")
