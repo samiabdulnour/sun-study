@@ -1445,26 +1445,23 @@ def test_an_add_on_without_the_command_says_which_one_is_missing() -> None:
         _figures(connection, drawing.figures, {drawing.layer("Aerial"): 7}, "drawing")
 
 
-def test_a_worksheet_the_run_will_have_to_make_is_named_before_the_fetching() -> None:
+def test_a_worksheet_the_run_will_have_to_make_is_named_before_the_fetching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The refusal arrives at the end -- after the geocoding, the fetching and
     the drawing -- and by then a person has been waiting four minutes for the
     news. D95 and D96 make it predictable: a worksheet already in the project
     enters without help, one the run creates does not. So the run can say at
     the start which of them it is about to have trouble with."""
-    from sun_study.cli import _say_which_worksheets_are_missing
-
-    connection, _ = connect(
-        {"GetNavigatorItemTree": navigator_tree((f"{SS} Site Analysis", "NAV"))}
-    )
-    said: list[str] = []
     import typer
 
-    original = typer.secho
-    typer.secho = lambda message, **kw: said.append(str(message))  # type: ignore[assignment]
-    try:
-        _say_which_worksheets_are_missing(connection, context=True, site=True)
-    finally:
-        typer.secho = original  # type: ignore[assignment]
+    from sun_study.cli import _say_which_worksheets_are_missing
+
+    connection, _ = connect({"GetNavigatorItemTree": navigator_tree((f"{SS} Site Analysis", "N"))})
+    said: list[str] = []
+    monkeypatch.setattr(typer, "secho", lambda message, **kw: said.append(str(message)))
+
+    _say_which_worksheets_are_missing(connection, context=True, site=True)
 
     spoken = " ".join(said)
     assert f"{SS} Context Analysis" in spoken, "the missing one is named"
@@ -1472,8 +1469,12 @@ def test_a_worksheet_the_run_will_have_to_make_is_named_before_the_fetching() ->
     assert "template" in spoken, "and the fix that ends it for good is named"
 
 
-def test_nothing_is_said_when_every_worksheet_is_already_there() -> None:
+def test_nothing_is_said_when_every_worksheet_is_already_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The ordinary case on a project set up once. Silence is the point."""
+    import typer
+
     from sun_study.cli import _say_which_worksheets_are_missing
 
     connection, _ = connect(
@@ -1484,13 +1485,8 @@ def test_nothing_is_said_when_every_worksheet_is_already_there() -> None:
         }
     )
     said: list[str] = []
-    import typer
+    monkeypatch.setattr(typer, "secho", lambda message, **kw: said.append(str(message)))
 
-    original = typer.secho
-    typer.secho = lambda message, **kw: said.append(str(message))  # type: ignore[assignment]
-    try:
-        _say_which_worksheets_are_missing(connection, context=True, site=True)
-    finally:
-        typer.secho = original  # type: ignore[assignment]
+    _say_which_worksheets_are_missing(connection, context=True, site=True)
 
     assert said == []
