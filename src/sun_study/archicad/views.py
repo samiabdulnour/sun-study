@@ -179,19 +179,27 @@ def ensure_layer_combination(
 
 
 def _stand_somewhere_safe(connection: ArchicadConnection) -> None:
-    """Move off a layout before layouts are deleted, if that is where we are.
+    """Move to the floor plan before anything is deleted, unless already there.
 
-    Cheap and unconditional rather than clever: reading where the run stands
-    costs one call, and the failure it avoids is Archicad closing mid-command
-    with the project unsaved. A layout can be entered again afterwards, so
-    leaving one costs nothing.
+    Off *anything*, not only off a layout. The first version of this guard
+    tested for ``Layout`` because that is where D87 met the crash, and it was
+    too narrow: a sun-view run mends its 3D Documents and is left standing in
+    one, so the window is a document when the views and layouts are deleted
+    next, the guard does not fire, and Archicad closes mid-command. Measured
+    three times -- twice on Bondi and once on a clean Redfern file, always on
+    the second date of three, because the first date has nothing to delete.
+
+    What matters is not being in the thing about to be deleted, and the floor
+    plan is the one database this never deletes. Cheap and near-unconditional
+    rather than clever: one call against Archicad closing with the project
+    unsaved, and anything stepped off can be entered again afterwards.
     """
     try:
         here = connection.run_tapir("GetCurrentWindowType", {})
     except ArchicadError:
         return
     kind = here.get("currentWindowType") if isinstance(here, dict) else None
-    if kind == "Layout":
+    if kind and kind != "FloorPlan":
         with suppress(ArchicadError):
             connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
 

@@ -6785,7 +6785,14 @@ def site_analysis(
     ] = None,
     with_aerial: Annotated[
         bool,
-        typer.Option("--aerial", help="Also save the aerial photo as georeferenced JPEG tiles."),
+        typer.Option(
+            "--aerial",
+            help=(
+                "Fetch the aerial photo. Without this there is no orthophoto to put "
+                "on the site sheet -- --aerial-as chooses how it is placed, but only "
+                "if it was fetched. The tiles are also saved as georeferenced JPEGs."
+            ),
+        ),
     ] = False,
     fetch_only: Annotated[
         bool,

@@ -3210,3 +3210,18 @@ delete's.
 The general lesson is the one worth keeping: a rule discovered in one module is
 not guarded until every module that can hit it guards it. This one was two days
 old, in the same repository, written by the person whose Archicad it closed.
+
+*Widened the same day, after it crashed twice more.* The first guard tested for
+`Layout`, because a layout is where D87 met it. That is the wrong question. A
+sun-view run mends its own 3D Documents (D98) and is left standing in one, so
+the window is a **document** when the views and layouts are deleted a moment
+later, the test for `Layout` does not fire, and Archicad closes exactly as
+before. Measured three times — twice on Bondi and once on a clean Redfern file,
+always on the **second of three dates**, because the first date has nothing to
+delete yet and so never reaches the deletion at all. That is also why both
+functions passed when tested alone: run by hand the window happened to be the
+3D model, which is safe.
+
+So the guard asks the question that matters — *am I standing in something that
+is about to be deleted?* — and steps to the floor plan from anywhere that is not
+already the floor plan. The floor plan is the one database this never deletes.

@@ -276,6 +276,32 @@ def test_the_clean_up_steps_off_a_layout_before_deleting_layouts() -> None:
     assert transport.parameters_for("ChangeWindow") == {"windowType": "FloorPlan"}
 
 
+def test_the_clean_up_steps_off_a_document_too_not_only_a_layout() -> None:
+    """The narrow version of this guard tested for Layout, because that is
+    where D87 met the crash. A sun-view run mends its 3D Documents and is left
+    standing in one, so the window is a document when the views are deleted
+    next -- the guard did not fire and Archicad closed mid-command. Three
+    times: twice on Bondi, once on a clean file, always on the second of three
+    dates, because the first has nothing to delete yet."""
+    from sun_study.archicad.views import remove_previous
+    from tests.unit.test_archicad_adapter import connect
+
+    connection, transport = connect(
+        {
+            "GetCurrentWindowType": {"currentWindowType": "Document3D"},
+            "ChangeWindow": {"success": True},
+            "GetNavigatorItemTree": {"navigatorItemTree": {"name": "root", "children": []}},
+        }
+    )
+
+    remove_previous(connection, prefix="14 |")
+
+    assert transport.parameters_for("ChangeWindow") == {"windowType": "FloorPlan"}
+    order = transport.commands()
+    moved = order.index("ChangeWindow")
+    assert all(moved < at for at, name in enumerate(order) if name == "DeleteNavigatorItems")
+
+
 def test_the_clean_up_does_not_move_when_it_is_not_on_a_layout() -> None:
     """A run standing on the floor plan has nothing to step off, and moving
     anyway would take the database somewhere the caller did not ask for."""
