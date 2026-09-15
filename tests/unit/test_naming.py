@@ -244,3 +244,51 @@ def test_an_empty_site_group_is_refused() -> None:
     """'| Site Context.3D' is not a layer name anybody meant to type."""
     with pytest.raises(ValueError, match="cannot be empty"):
         naming.set_context_prefix("  ")
+
+
+def test_the_clean_up_steps_off_a_layout_before_deleting_layouts() -> None:
+    """Archicad closes mid-command if the layout being deleted is the current
+    database. D87 recorded that on 11 September 2026 and `_remove_layout` has
+    guarded it ever since; `remove_previous` did not, and took Archicad down
+    on 15 September the first time a run made layouts and then cleared them.
+
+    The order is the whole test: the move off the layout has to come before
+    the first DeleteNavigatorItems, not after it.
+    """
+    from sun_study.archicad.views import remove_previous
+    from tests.unit.test_archicad_adapter import connect
+
+    connection, transport = connect(
+        {
+            "GetCurrentWindowType": {"currentWindowType": "Layout"},
+            "ChangeWindow": {"success": True},
+            "GetNavigatorItemTree": {"navigatorItemTree": {"name": "root", "children": []}},
+        }
+    )
+
+    remove_previous(connection, prefix="14 |")
+
+    order = transport.commands()
+    assert "ChangeWindow" in order, "it never stepped off the layout"
+    moved = order.index("ChangeWindow")
+    deletes = [i for i, name in enumerate(order) if name == "DeleteNavigatorItems"]
+    assert all(moved < at for at in deletes), "it deleted before stepping off"
+    assert transport.parameters_for("ChangeWindow") == {"windowType": "FloorPlan"}
+
+
+def test_the_clean_up_does_not_move_when_it_is_not_on_a_layout() -> None:
+    """A run standing on the floor plan has nothing to step off, and moving
+    anyway would take the database somewhere the caller did not ask for."""
+    from sun_study.archicad.views import remove_previous
+    from tests.unit.test_archicad_adapter import connect
+
+    connection, transport = connect(
+        {
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
+            "GetNavigatorItemTree": {"navigatorItemTree": {"name": "root", "children": []}},
+        }
+    )
+
+    remove_previous(connection, prefix="14 |")
+
+    assert "ChangeWindow" not in transport.commands()

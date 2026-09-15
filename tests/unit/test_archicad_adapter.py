@@ -3708,6 +3708,8 @@ def test_the_drawings_that_go_with_a_layout_are_not_counted_as_removed() -> None
 
     connection, transport = connect(
         {
+            # remove_previous steps off a layout before deleting (D99).
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
             "GetNavigatorItemTree": Sequential(
                 _navigator(
                     "LayoutBook",
@@ -3738,6 +3740,8 @@ def test_the_tools_own_run_folder_is_not_a_view_it_failed_to_delete() -> None:
 
     connection, _ = connect(
         {
+            # remove_previous steps off a layout before deleting (D99).
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
             "GetNavigatorItemTree": Sequential(
                 _navigator("LayoutBook"),
                 _navigator(
@@ -3766,6 +3770,8 @@ def test_a_view_a_drawing_still_points_at_is_reported_as_left_behind() -> None:
     stuck = _navigator("PublicViewMap", ("StoryItem", f"{SS} LEVEL 01 09:00"))
     connection, _ = connect(
         {
+            # remove_previous steps off a layout before deleting (D99).
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
             "GetNavigatorItemTree": Sequential(
                 _navigator("LayoutBook"), stuck, stuck, _navigator("LayoutBook"), stuck
             ),
@@ -3781,6 +3787,8 @@ def test_something_the_tool_did_not_make_is_never_touched() -> None:
 
     connection, transport = connect(
         {
+            # remove_previous steps off a layout before deleting (D99).
+            "GetCurrentWindowType": {"currentWindowType": "FloorPlan"},
             "GetNavigatorItemTree": Sequential(
                 _navigator("LayoutBook", ("LayoutItem", "A1 Site Plan")),
                 _navigator("PublicViewMap", ("StoryItem", "LEVEL 01")),

@@ -3180,3 +3180,33 @@ itself.
 Three copies of one setting, then: the window, each document, and each view.
 The first two are set; the third is made afresh. Nothing in the API reads a
 view's filter back, so that last one is checked by opening the sheet.
+
+
+### D99 — The clean-up steps off a layout first, everywhere, not only where it was learned
+
+Archicad closed mid-command on the Bondi file, 15 September 2026, on the second
+of three sun-view dates. The project went with it.
+
+The rule was already written down. [D87](#d87--the-summary-of-controls-is-drawn-on-a-layout-a-session-made-layout-can-be-entered)
+recorded it on 11 September — *"never delete the layout that is the current
+database"* — and `_remove_layout` in `site_analysis.py` has moved to the floor
+plan first ever since. `remove_previous` in `views.py` deletes layouts too and
+never learned it, which did not matter while nothing called it straight after
+making layouts. Wiring it into `sun-views` (D98) made that exactly what
+happens: the run places drawings on a layout, leaves it current, and the next
+run for the next date deletes it.
+
+So the guard moves to where the deleting is. `remove_previous` reads the
+current window type and steps to the floor plan before the first
+`DeleteNavigatorItems`, unconditionally and cheaply — one call against a crash
+with the project unsaved — and a layout can be entered again afterwards, so
+nothing is lost by leaving it.
+
+**The test is about order, not about the call.** A guard that moves off the
+layout *after* the delete passes every "does it move" assertion and crashes
+exactly as before, so the test asserts that the move's index comes before every
+delete's.
+
+The general lesson is the one worth keeping: a rule discovered in one module is
+not guarded until every module that can hit it guards it. This one was two days
+old, in the same repository, written by the person whose Archicad it closed.

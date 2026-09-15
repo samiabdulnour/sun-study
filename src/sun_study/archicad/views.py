@@ -26,6 +26,7 @@ That is what lets a sheet say "09:00" and be true.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -177,6 +178,24 @@ def ensure_layer_combination(
     return name
 
 
+def _stand_somewhere_safe(connection: ArchicadConnection) -> None:
+    """Move off a layout before layouts are deleted, if that is where we are.
+
+    Cheap and unconditional rather than clever: reading where the run stands
+    costs one call, and the failure it avoids is Archicad closing mid-command
+    with the project unsaved. A layout can be entered again afterwards, so
+    leaving one costs nothing.
+    """
+    try:
+        here = connection.run_tapir("GetCurrentWindowType", {})
+    except ArchicadError:
+        return
+    kind = here.get("currentWindowType") if isinstance(here, dict) else None
+    if kind == "Layout":
+        with suppress(ArchicadError):
+            connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
+
+
 def remove_previous(connection: ArchicadConnection, prefix: str | None = None) -> tuple[int, int]:
     """Delete the views and layouts an earlier run made. ``(gone, left)``.
 
@@ -205,6 +224,14 @@ def remove_previous(connection: ArchicadConnection, prefix: str | None = None) -
     """
     prefix = prefix or naming.prefix()
     gone = 0
+    # Never while standing in one of them. Archicad goes away mid-call if the
+    # layout being deleted is the current database -- D87 recorded that on 11
+    # September 2026 and `_remove_layout` has guarded it ever since; this
+    # function did not, and took Archicad down with it the first time a run
+    # made layouts and then cleared them (15 September 2026, the sun views
+    # re-run for the second of three dates). The floor plan is somewhere
+    # nothing here deletes.
+    _stand_somewhere_safe(connection)
     for map_id in ("LayoutBook", "PublicViewMap"):
         doomed = _named(connection, map_id, prefix)
         if not doomed:
