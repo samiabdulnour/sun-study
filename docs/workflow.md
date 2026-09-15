@@ -183,6 +183,11 @@ also how a rerun finds its own sheets to replace, so a run given a different pre
 the last one leaves the last one's behind to be deleted by hand, and an empty one is
 refused rather than accepted.
 
+Each tool has its own number by default, so the four drawings do not share a run of the
+layer list (D93): the solar analysis `14 |`, the shadow diagram `15 |`, the sun views
+`16 |`, the site analysis `17 |`. `--layer-prefix` overrides whichever tool is being
+run, and the window has one box per tool in General.
+
 Colours are **pen indices**, because that is what `CreateHatches` takes — so the run
 reads the project's own pen table and gives each band the pen closest to the reference
 study's colour for it. Nothing to configure, and the mapping is printed:

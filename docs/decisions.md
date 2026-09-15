@@ -2874,3 +2874,46 @@ anchor a Drawing does not take.
 Placed at the site's own altitude like everything else (D-datum above), and
 the run says which add-on command is missing if the installed build is
 older than this one.
+
+
+### D93 — One prefix number per tool, not one for the whole tool
+
+Asked 15 September 2026: *"It makes sense for every tool to have its own prefix
+number possibility."*
+
+Until now `--layer-prefix` set one number for everything a run made, and the
+four drawings were told apart only by the group word after it — `14 | Solar
+Analysis.Results` beside `14 | Shadow Diagram.9AM`, `14 | Sun Views 21 Jun
+09:00` and `14 | Site Analysis.Context`. In a layer list those sort as one
+block, and a colleague looking for the shadow sheets has to know to read past
+the number to find them. They are not one drawing: the apartment results are
+read by the person assessing the flats, the shadow diagram by the neighbours'
+side of the argument, the site analysis by whoever is writing the SEE.
+
+So each tool carries its own default, in `naming.py`:
+
+| Tool | Number |
+|---|---|
+| `massing`, `archicad-run` — the solar analysis | `14 \|` |
+| `shadows` — the shadow diagram | `15 \|` |
+| `sun-views` — the sun views | `16 \|` |
+| `site` — site and context analysis | `17 \|` |
+
+**The solar analysis keeps 14** so that nothing anybody has already drawn
+moves. The other three step up from it.
+
+**They are defaults, not fixtures.** `--layer-prefix` still wins, for an office
+whose own groups run past 17 — it is just said once per tool now instead of
+once for the lot. In the window that is four boxes in General where there was
+one, and the saved `layer_prefix` setting keeps its name and drives the solar
+box, so a prefix somebody already chose goes on applying where it used to.
+
+**An empty prefix is still refused, default or no default.** A tool number
+standing in quietly for a typo would hide it, and the refusal exists because an
+empty prefix matches every layout in the project — which is the practice's
+drawings inside a sun study's clean-up.
+
+The wiring is walked rather than trusted, in `test_naming.py`: a command that
+calls `set_prefix` without naming its tool silently takes the solar analysis's
+number, the run succeeds, every name looks right, and the only symptom is two
+drawings sharing a layer group.

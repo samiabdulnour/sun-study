@@ -792,19 +792,49 @@ class Window:
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
         row += 1
 
-        self.prefix, row = self._entry(
-            frame,
-            row,
-            "Layer prefix",
-            naming.DEFAULT_PREFIX,
-            "Leads the name of every layer, view and sheet the tools create.",
+        # One per tool, not one for the lot. The four are four drawings read
+        # by different people, and under a single number the layer list ran
+        # them together with only the group word to tell them apart.
+        shared_detail = (
             "So the output files itself inside the office's own numbering: on "
             "a project whose layer groups run 00 to 13, '14 |' gives "
             "'14 | Solar Analysis.Results' and it sorts where a reader expects. "
             "It is also how a rerun finds its own sheets to replace, so changing "
             "it leaves the last run's behind to be deleted by hand, and it "
             "cannot be emptied — an empty prefix matches every layout in the "
-            "project.",
+            "project."
+        )
+        self.prefix_solar, row = self._entry(
+            frame,
+            row,
+            "Prefix — solar analysis",
+            naming.SOLAR_PREFIX,
+            "The apartment results and the facade bands.",
+            shared_detail,
+        )
+        self.prefix_shadow, row = self._entry(
+            frame,
+            row,
+            "Prefix — shadow diagram",
+            naming.SHADOW_PREFIX,
+            "The shadow sheets, which are about the neighbourhood rather than the apartments.",
+            shared_detail,
+        )
+        self.prefix_sun, row = self._entry(
+            frame,
+            row,
+            "Prefix — sun views",
+            naming.SUN_VIEW_PREFIX,
+            "The 3D documents aimed along the sun, and their sheets.",
+            shared_detail,
+        )
+        self.prefix_site, row = self._entry(
+            frame,
+            row,
+            "Prefix — site analysis",
+            naming.SITE_PREFIX,
+            "The site and context worksheets, and the summary of controls.",
+            shared_detail,
         )
         self.wait_min, row = self._entry(
             frame,
@@ -2088,7 +2118,10 @@ class Window:
             "site_future_reach": self.site_future_reach,
             "site_future_setback": self.site_future_setback,
             "adg_subset": self.adg_subset,
-            "layer_prefix": self.prefix,
+            "layer_prefix": self.prefix_solar,
+            "shadow_layer_prefix": self.prefix_shadow,
+            "sun_view_layer_prefix": self.prefix_sun,
+            "site_layer_prefix": self.prefix_site,
             "archicad_wait_minutes": self.wait_min,
             "skin_grid": self.grid_m,
         }
@@ -2543,17 +2576,31 @@ class Window:
             return f"{DEFAULT_TIMEOUT_SECONDS:g}"
         return f"{minutes * 60.0:g}"
 
+    def _prefix_flag(self, box: ttk.Entry) -> list[str]:
+        """``--layer-prefix`` for one tool, or nothing when its box is empty.
+
+        Empty means "the tool's own number", which is the CLI default, rather
+        than an empty prefix -- that is refused there, and rightly, since it
+        matches every layout in the project.
+        """
+        chosen = box.get().strip()
+        return ["--layer-prefix", chosen] if chosen else []
+
     def jobs(self) -> list[Job]:
         """The command lines the ticked boxes mean. Public, and pure, because
         this is the part worth testing without a window on screen."""
         port = str(self.ports[max(self.instance.current(), 0)]) if self.ports else ""
         common = ["--port", port, "--timeout", self._wait_seconds()]
-        if self.prefix.get().strip():
-            common += ["--layer-prefix", self.prefix.get().strip()]
         made: list[Job] = []
 
         if self.do_facade.get():
-            args = ["massing", "--timezone", "Australia/Sydney", *common]
+            args = [
+                "massing",
+                "--timezone",
+                "Australia/Sydney",
+                *common,
+                *self._prefix_flag(self.prefix_solar),
+            ]
             for name in self._listed(self.subject):
                 args += ["--subject-layer", name]
             # Without an IfcSpace there is nothing to fit the skin onto the
@@ -2585,6 +2632,7 @@ class Window:
                 "--timezone",
                 "Australia/Sydney",
                 *common,
+                *self._prefix_flag(self.prefix_solar),
                 "--draw",
                 "--sheet",
             ]
@@ -2629,7 +2677,13 @@ class Window:
             made.append(Job(PLANS_JOB, args))
 
         if self.do_communal.get():
-            args = ["massing", "--timezone", "Australia/Sydney", *common]
+            args = [
+                "massing",
+                "--timezone",
+                "Australia/Sydney",
+                *common,
+                *self._prefix_flag(self.prefix_solar),
+            ]
             if self.communal.get():
                 args += ["--zone-layer", self.communal.get()]
             for name in self._listed(self.communal_names):
@@ -2679,7 +2733,13 @@ class Window:
             made.append(Job(COMMUNAL_JOB, args))
 
         if self.do_shadows.get():
-            args = ["shadows", "--timezone", "Australia/Sydney", *common]
+            args = [
+                "shadows",
+                "--timezone",
+                "Australia/Sydney",
+                *common,
+                *self._prefix_flag(self.prefix_shadow),
+            ]
             # Views, never layers: the folder is a set of per-view IFCs and
             # Archicad has already resolved each one's layers, renovation
             # filter and pins. Passing the name bare makes it both the legend
@@ -2714,7 +2774,13 @@ class Window:
             made.append(Job(SHADOW_JOB, args))
 
         if self.do_sun_eyes.get():
-            args = ["sun-views", "--timezone", "Australia/Sydney", *common]
+            args = [
+                "sun-views",
+                "--timezone",
+                "Australia/Sydney",
+                *common,
+                *self._prefix_flag(self.prefix_sun),
+            ]
             # Only what is filled in is sent, so the command's own defaults
             # -- read off the practice's diagrams -- hold for a blank field,
             # and a blank pen set keeps each view's own rather than naming
@@ -2737,7 +2803,12 @@ class Window:
             made.append(Job(SUN_EYE_JOB, args))
 
         if self.do_site.get() and self.site_address.get().strip():
-            args = ["site", self.site_address.get().strip(), *common]
+            args = [
+                "site",
+                self.site_address.get().strip(),
+                *common,
+                *self._prefix_flag(self.prefix_site),
+            ]
             args += ["--context" if self.do_site_context.get() else "--no-context"]
             args += ["--site" if self.do_site_site.get() else "--no-site"]
             args += ["--summary" if self.do_site_summary.get() else "--no-summary"]

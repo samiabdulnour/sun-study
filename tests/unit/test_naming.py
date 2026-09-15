@@ -123,3 +123,83 @@ def test_no_module_builds_a_name_at_import_time() -> None:
         "default, whatever --layer-prefix says. Move it into a function:\n  "
         + "\n  ".join(offenders)
     )
+
+
+def test_a_tool_that_says_nothing_gets_its_own_number() -> None:
+    """The four drawings file under four numbers, and the command says which
+    it is. Before this they shared one, and the layer list ran them together
+    with only the group word after the number telling them apart."""
+    assert naming.set_prefix(None, default=naming.SHADOW_PREFIX) == "15 |"
+    assert naming.layer("9AM", naming.SHADOW_WORD) == "15 | Shadow Diagram.9AM"
+
+    assert naming.set_prefix(None, default=naming.SUN_VIEW_PREFIX) == "16 |"
+    assert naming.set_prefix(None, default=naming.SITE_PREFIX) == "17 |"
+
+    # The solar analysis keeps the number it has always had, so nothing
+    # anybody has already drawn moves.
+    assert naming.SOLAR_PREFIX == naming.DEFAULT_PREFIX == "14 |"
+
+
+def test_the_run_beats_the_tools_own_number() -> None:
+    """``--layer-prefix`` is still the answer for an office whose own groups
+    run past 17. The default is only what happens when nobody says."""
+    assert naming.set_prefix("25 |", default=naming.SHADOW_PREFIX) == "25 |"
+    assert naming.layer("9AM", naming.SHADOW_WORD) == "25 | Shadow Diagram.9AM"
+
+
+def test_neither_a_choice_nor_a_default_leaves_the_prefix_alone() -> None:
+    """The shape the optional flag relies on: a command with nothing to say
+    about the prefix does not reset it."""
+    naming.set_prefix("ZZ |")
+    assert naming.set_prefix(None) == "ZZ |"
+
+
+def test_an_empty_prefix_is_still_refused_even_beside_a_default() -> None:
+    """The default does not rescue it. An empty prefix matches every layout in
+    the project, and a clean-up that matched them all is the failure the
+    refusal exists for -- a tool default standing in quietly would hide the
+    typo rather than report it."""
+    with pytest.raises(ValueError, match="cannot be empty"):
+        naming.set_prefix("   ", default=naming.SHADOW_PREFIX)
+
+
+def test_the_four_numbers_are_four() -> None:
+    """Two tools sharing a number would put two drawings on one layer and let
+    each one's clean-up delete the other's sheets."""
+    numbers = [
+        naming.SOLAR_PREFIX,
+        naming.SHADOW_PREFIX,
+        naming.SUN_VIEW_PREFIX,
+        naming.SITE_PREFIX,
+    ]
+    assert len(set(numbers)) == len(numbers), numbers
+
+
+def test_every_command_that_sets_the_prefix_says_which_tool_it_is() -> None:
+    """A command that calls ``set_prefix`` without its own number falls back
+    to whatever the module default is -- which is the solar analysis's 14 --
+    and files its drawing on top of another tool's layers.
+
+    Walked rather than trusted, for the same reason as the import-time check
+    above: the run succeeds, the names look right, and the only symptom is two
+    drawings sharing a number.
+    """
+    tree = ast.parse((PACKAGE_ROOT / "cli.py").read_text(encoding="utf-8"), filename="cli.py")
+    silent: list[str] = []
+    seen = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if not (isinstance(function, ast.Attribute) and function.attr == "set_prefix"):
+            continue
+        seen += 1
+        if not any(keyword.arg == "default" for keyword in node.keywords):
+            silent.append(f"cli.py:{node.lineno}")
+
+    assert seen, "no set_prefix call found in cli.py -- has it moved?"
+    listed = "".join(f"{chr(10)}  {where}" for where in silent)
+    assert not silent, (
+        "These set the layer prefix without naming the tool they belong to, "
+        f"so they take the solar analysis number:{listed}"
+    )

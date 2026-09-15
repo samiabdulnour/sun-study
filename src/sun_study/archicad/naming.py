@@ -44,6 +44,26 @@ from __future__ import annotations
 #: project, whose layer groups end at 13.
 DEFAULT_PREFIX = "14 |"
 
+#: And one number per tool, because the four of them are four drawings read by
+#: different people. Filing them all under ``14 |`` put the apartment results,
+#: the shadow diagram, the sun views and the site analysis in one run of the
+#: layer list, where the only thing telling them apart was the group word
+#: after the number -- and a colleague looking for the shadow sheets had to
+#: know to read past ``14 |`` to find them.
+#:
+#: The solar analysis keeps ``14 |`` so nothing anybody has already drawn
+#: moves; the other three step up from it. Each is only a *default*:
+#: ``--layer-prefix`` still wins, and an office whose own groups run past 17
+#: says so once per tool rather than being argued with.
+#:
+#: They are deliberately separate constants rather than a dict keyed by
+#: command name. The command names are the CLI's business and change with it;
+#: what a number means -- "this is the shadow diagram's" -- does not.
+SOLAR_PREFIX = DEFAULT_PREFIX
+SHADOW_PREFIX = "15 |"
+SUN_VIEW_PREFIX = "16 |"
+SITE_PREFIX = "17 |"
+
 #: The word between the prefix and the part, in a layer name. Not settable:
 #: it is what the tool *is*, while the prefix is where the office keeps it.
 GROUP_WORD = "Solar Analysis"
@@ -92,11 +112,17 @@ def _stamped(name: str) -> str:
     return f"{name} {_day}"
 
 
-def set_prefix(value: str | None) -> str:
+def set_prefix(value: str | None, *, default: str | None = None) -> str:
     """Choose the prefix for everything this run creates. Returns what was set.
 
-    ``None`` or an unset option leaves the default alone, so a caller can pass
-    an optional flag straight through.
+    ``value`` is what the run asked for and wins. ``default`` is the calling
+    tool's own number -- ``SHADOW_PREFIX`` and the rest -- used when the run
+    asked for nothing. With neither, the prefix already in force stays, so a
+    caller can pass an optional flag straight through as before.
+
+    The tool's default is passed in rather than read from here because this
+    module does not know which tool is running, and should not have to: the
+    command knows what it is, and says so at the one point where it matters.
 
     Whitespace is collapsed rather than preserved: a name copied out of
     Archicad brings a double space with it often enough, and ``14  |`` would
@@ -108,9 +134,9 @@ def set_prefix(value: str | None) -> str:
     the practice's drawings deleted by a sun study's clean-up.
     """
     global _prefix
-    if value is None:
+    if value is None and default is None:
         return _prefix
-    chosen = " ".join(value.split())
+    chosen = " ".join((value if value is not None else default or "").split())
     if not chosen:
         raise ValueError(
             "The layer prefix cannot be empty: it is how a rerun finds its own "

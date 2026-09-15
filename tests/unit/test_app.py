@@ -704,11 +704,65 @@ def test_reading_the_project_does_not_wait_the_exports_wait() -> None:
 def test_another_offices_numbering_reaches_the_command_line(hidden_window: Any) -> None:
     """``14`` is right for a project whose layer groups end at 13. The next
     office numbers differently, which is the whole reason for the field."""
-    hidden_window.prefix.delete(0, "end")
-    hidden_window.prefix.insert(0, "ZZ |")
+    hidden_window.prefix_solar.delete(0, "end")
+    hidden_window.prefix_solar.insert(0, "ZZ |")
     (facade,) = hidden_window.jobs()
 
     assert flag(facade.args, "--layer-prefix") == ["ZZ |"]
+
+
+def test_each_tool_files_its_work_under_its_own_number(hidden_window: Any) -> None:
+    """Four drawings, four numbers. Under one prefix the layer list ran the
+    apartment results, the shadow sheets, the sun views and the site analysis
+    together, and only the group word after the number told them apart.
+
+    The solar analysis keeps 14 so nothing already drawn moves; the rest step
+    up from it. Read off the argv rather than the boxes, because the argv is
+    what Archicad ends up being told.
+    """
+    hidden_window.do_facade.set(True)
+    hidden_window.do_plans.set(True)
+    hidden_window.do_shadows.set(True)
+    hidden_window.do_sun_eyes.set(True)
+    hidden_window.do_site.set(True)
+    hidden_window.site_address.insert(0, "212 Bondi Rd, Bondi")
+
+    under = {job.label: flag(job.args, "--layer-prefix") for job in hidden_window.jobs()}
+
+    assert under[window.FACADE_JOB] == [naming.SOLAR_PREFIX]
+    assert under[window.PLANS_JOB] == [naming.SOLAR_PREFIX]
+    assert under[window.SHADOW_JOB] == [naming.SHADOW_PREFIX]
+    assert under[window.SUN_EYE_JOB] == [naming.SUN_VIEW_PREFIX]
+    assert under[window.SITE_JOB] == [naming.SITE_PREFIX]
+    assert len({naming.SHADOW_PREFIX, naming.SUN_VIEW_PREFIX, naming.SITE_PREFIX}) == 3, (
+        "three tools sharing a number is the thing this is here to prevent"
+    )
+
+
+def test_one_tool_renumbered_leaves_the_others_where_they_were(hidden_window: Any) -> None:
+    """The boxes are independent, which is the point of there being four.
+    Somebody whose project already uses 15 moves the shadow diagram alone."""
+    hidden_window.do_shadows.set(True)
+    hidden_window.do_sun_eyes.set(True)
+    hidden_window.prefix_shadow.delete(0, "end")
+    hidden_window.prefix_shadow.insert(0, "25 |")
+
+    under = {job.label: flag(job.args, "--layer-prefix") for job in hidden_window.jobs()}
+
+    assert under[window.SHADOW_JOB] == ["25 |"]
+    assert under[window.SUN_EYE_JOB] == [naming.SUN_VIEW_PREFIX], "and the sun views did not follow"
+
+
+def test_an_emptied_prefix_box_leaves_the_tool_its_own_default(hidden_window: Any) -> None:
+    """Empty means "whatever the command already defaults to", not an empty
+    prefix -- the CLI refuses that, since it matches every layout there is."""
+    hidden_window.do_shadows.set(True)
+    hidden_window.prefix_shadow.delete(0, "end")
+
+    (shadow,) = [job for job in hidden_window.jobs() if job.label == window.SHADOW_JOB]
+
+    assert flag(shadow.args, "--layer-prefix") == []
+    assert "--layer-prefix" not in shadow.args
 
 
 def test_a_zone_is_offered_under_both_of_the_names_archicad_gives_it(
@@ -956,7 +1010,7 @@ def test_the_settings_scroll_and_the_run_button_does_not(hidden_window: Any) -> 
     run is a log nobody reads, and Run somewhere down a long page is worse
     than a Run that never moves.
     """
-    assert in_a_section(hidden_window, hidden_window.prefix), "a setting in General"
+    assert in_a_section(hidden_window, hidden_window.prefix_solar), "a setting in General"
     assert in_a_section(hidden_window, hidden_window.grid_m), "and one in Facade skin"
     assert in_a_section(hidden_window, hidden_window.communal_csv), "and one in Solar diagrams"
     assert not in_a_section(hidden_window, hidden_window.go), "Run must stay where it is"
@@ -1057,8 +1111,8 @@ def test_what_was_saved_is_what_opens(hidden_window: Any, settings_file: Path) -
     and the Archicad wait are properties of the practice, not of the job, and
     retyping them every time is both tedious and a way to get one subtly
     wrong."""
-    hidden_window.prefix.delete(0, "end")
-    hidden_window.prefix.insert(0, "14 |")
+    hidden_window.prefix_solar.delete(0, "end")
+    hidden_window.prefix_solar.insert(0, "14 |")
     hidden_window.livable.insert(0, "_L")
     hidden_window.do_plans.set(True)
 
@@ -1069,7 +1123,7 @@ def test_what_was_saved_is_what_opens(hidden_window: Any, settings_file: Path) -
     assert hidden_window.livable.get() == "", "back to the defaults"
 
     hidden_window.apply(preferences.load())
-    assert hidden_window.prefix.get() == "14 |"
+    assert hidden_window.prefix_solar.get() == "14 |"
     assert hidden_window.livable.get() == "_L"
     assert hidden_window.do_plans.get() is True
 
@@ -1151,7 +1205,7 @@ def test_a_setting_of_the_wrong_shape_costs_only_itself(
     """One bad line should not condemn the other twenty-five."""
     hidden_window.apply({"layer_prefix": "14 |", "year": 2024, "study_plans": "yes"})
 
-    assert hidden_window.prefix.get() == "14 |"
+    assert hidden_window.prefix_solar.get() == "14 |"
     assert hidden_window.year.get() == "2024", "the number is not a field's text"
     assert hidden_window.do_plans.get() is False, "and the string is not a tick"
 
@@ -1160,14 +1214,14 @@ def test_forget_puts_back_what_the_window_opens_with(
     hidden_window: Any, settings_file: Path
 ) -> None:
     """Not 'whatever was on screen when it was pressed'."""
-    hidden_window.prefix.delete(0, "end")
-    hidden_window.prefix.insert(0, "99 |")
+    hidden_window.prefix_solar.delete(0, "end")
+    hidden_window.prefix_solar.insert(0, "99 |")
     hidden_window._remember()
 
     hidden_window._forget()
 
     assert not settings_file.exists()
-    assert hidden_window.prefix.get() == naming.DEFAULT_PREFIX
+    assert hidden_window.prefix_solar.get() == naming.SOLAR_PREFIX
     assert hidden_window.master.get(), "and the project's own lists are read again"
 
 

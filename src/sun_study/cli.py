@@ -3211,9 +3211,12 @@ def massing(
                 "Leads the name of every layer, layer combination, surface, "
                 "view and layout this run creates, so the output files itself "
                 "inside the office's own numbering: '14 |' gives "
-                "'14 | Sun Study.Results'. It is also how a rerun finds its own "
-                "sheets to replace, so changing it leaves the last run's behind "
-                "for you to delete by hand, and an empty one is refused."
+                "'14 | Solar Analysis.Results'. Defaults to the solar "
+                "analysis's own number, 14 | -- the shadow diagram, the sun "
+                "views and the site analysis each file under their own. It is "
+                "also how a rerun finds its own sheets to replace, so changing "
+                "it leaves the last run's behind for you to delete by hand, "
+                "and an empty one is refused."
             ),
         ),
     ] = None,
@@ -3359,7 +3362,7 @@ def massing(
     # has to be settled before the first of them -- and a bad one is a usage
     # error, not a traceback four minutes into a run.
     try:
-        naming.set_prefix(layer_prefix)
+        naming.set_prefix(layer_prefix, default=naming.SOLAR_PREFIX)
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--layer-prefix") from error
 
@@ -4965,9 +4968,12 @@ def archicad_run(
                 "Leads the name of every layer, layer combination, surface, "
                 "view and layout this run creates, so the output files itself "
                 "inside the office's own numbering: '14 |' gives "
-                "'14 | Sun Study.Results'. It is also how a rerun finds its own "
-                "sheets to replace, so changing it leaves the last run's behind "
-                "for you to delete by hand, and an empty one is refused."
+                "'14 | Solar Analysis.Results'. Defaults to the solar "
+                "analysis's own number, 14 | -- the shadow diagram, the sun "
+                "views and the site analysis each file under their own. It is "
+                "also how a rerun finds its own sheets to replace, so changing "
+                "it leaves the last run's behind for you to delete by hand, "
+                "and an empty one is refused."
             ),
         ),
     ] = None,
@@ -5235,7 +5241,7 @@ def archicad_run(
     # has to be settled before the first of them -- and a bad one is a usage
     # error, not a traceback four minutes into a run.
     try:
-        naming.set_prefix(layer_prefix)
+        naming.set_prefix(layer_prefix, default=naming.SOLAR_PREFIX)
     except ValueError as error:
         raise typer.BadParameter(str(error), param_hint="--layer-prefix") from error
 
@@ -5908,7 +5914,17 @@ def shadows(
     shadow_margin: Annotated[
         float, typer.Option("--shadow-margin", help="How far past the site to grid, metres.")
     ] = SHADOW_MARGIN_M,
-    layer_prefix: Annotated[str | None, typer.Option("--layer-prefix")] = None,
+    layer_prefix: Annotated[
+        str | None,
+        typer.Option(
+            "--layer-prefix",
+            help=(
+                "What every layer, view and sheet the shadow diagram makes is "
+                "named under. Defaults to 15 |, the shadow diagram's own "
+                "number, so it stands apart from the apartment results on 14 |."
+            ),
+        ),
+    ] = None,
     draw: Annotated[
         bool,
         typer.Option("--draw/--no-draw", help="Draw the fills into the project."),
@@ -5948,7 +5964,7 @@ def shadows(
     a model edited since it was written is not the model being drawn, and
     nothing here can tell.
     """
-    naming.set_prefix(layer_prefix)
+    naming.set_prefix(layer_prefix, default=naming.SHADOW_PREFIX)
     moments, labels = _shadow_moments(shadow_date, shadow_hour, year, timezone)
     if not moments:
         typer.secho("No instants to draw.", fg=typer.colors.RED, err=True)
@@ -6408,7 +6424,13 @@ def sun_eye_views(
     ] = TITLE_BLOCK_MM,
     layer_prefix: Annotated[
         str | None,
-        typer.Option("--layer-prefix", help="What every view, document and sheet is named under."),
+        typer.Option(
+            "--layer-prefix",
+            help=(
+                "What every view, document and sheet is named under. Defaults "
+                "to 16 |, the sun views' own number."
+            ),
+        ),
     ] = None,
 ) -> None:
     """Aim the 3D window along the sun for every hour of the assessment window.
@@ -6423,7 +6445,7 @@ def sun_eye_views(
     command for.
     """
     banner()
-    naming.set_prefix(layer_prefix)
+    naming.set_prefix(layer_prefix, default=naming.SUN_VIEW_PREFIX)
     rules = _ruleset_for(ruleset, date=date)
     connection = _connect(port, timeout, switch_database=False)
 
@@ -6746,7 +6768,13 @@ def site_analysis(
     ] = 5.0,
     layer_prefix: Annotated[
         str | None,
-        typer.Option("--layer-prefix", help="What every layer, worksheet and view is named under."),
+        typer.Option(
+            "--layer-prefix",
+            help=(
+                "What every layer, worksheet and view is named under. Defaults "
+                "to 17 |, the site analysis's own number."
+            ),
+        ),
     ] = None,
 ) -> None:
     """Draw the context analysis, site analysis and development summary for
@@ -6760,7 +6788,7 @@ def site_analysis(
     add-on's own command.
     """
     banner()
-    naming.set_prefix(layer_prefix)
+    naming.set_prefix(layer_prefix, default=naming.SITE_PREFIX)
     if north not in ("true", "grid"):
         typer.secho("  --north takes 'true' or 'grid'.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
