@@ -349,8 +349,9 @@ def activate(connection: ArchicadConnection, database_id: str, window_type: str)
     if isinstance(result, dict) and result.get("success"):
         return
     hint = (
-        " A worksheet created in this session cannot be activated until the "
-        "project has been reopened."
+        " A worksheet created through the API has to be opened by a person "
+        "once -- double-clicked in the Project Map -- before it can ever be "
+        "activated. Reopening the project does not do it (measured, D95)."
         if window_type == "Worksheet"
         else " A layout is only readable once the project has been saved since it was made."
         if window_type == "Layout"

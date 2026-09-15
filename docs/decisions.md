@@ -2605,6 +2605,10 @@ plan and a name is a weaker key than an id anyway. A rerun in a later session
 enters the existing worksheet without help, as the docs measured for the
 penetration series.
 
+*Corrected 15 September 2026 by [D95](#d95--a-worksheet-made-through-the-api-is-opened-by-a-person-once-ever-and-a-reopen-does-not-do-it).
+The later run enters it because a person opened it during the first, not
+because the session changed. Reopening the project lifts nothing.*
+
 The alternative -- drawing into the floor plan and asking a person to move
 the elements -- was not taken. A context sheet is 6,000 elements at
 1:3000 over a kilometre of the model's storey, and nothing about that is
@@ -2962,3 +2966,52 @@ alone — `SA NEIGHBOUR`, `SA TERRAIN`, `SA BLOCK`, `SA FUTURE` — and not by
 layer, precisely so a slab a failed move left in the wrong place is still found.
 A rerun therefore clears what earlier runs left on `LORIINI` as well as what it
 put in the site group.
+
+
+### D95 — A worksheet made through the API is opened by a person once, ever, and a reopen does not do it
+
+Asked 15 September 2026, after a site run stopped twice waiting to be let in:
+*"this is not optimal. next task is to find a way around it so you dont need my
+assistence."*
+
+[D84](#d84--a-worksheet-made-in-the-session-is-entered-by-a-person-and-the-run-waits-for-that)
+read the refusal as a property of the *session*, and `connection.py` said so in
+the hint it raised: *"cannot be activated until the project has been reopened."*
+That was inference from a rerun working the next day, not a measurement, and it
+is wrong.
+
+Measured on the Bondi file, 15 September 2026. A worksheet was created through
+`Loriini.CreateWorksheet` and never opened by anyone; entering it was refused
+with `APIERR_BADDATABASE` (-2130313110). The project was saved and reopened
+through Tapir's `OpenProject` — eighteen seconds, against under one for the
+same call on an already-open file, so the reload was real. It was still
+refused. Then all three worksheets in that one reopened file were tried
+together:
+
+| Worksheet | History | Entered |
+|---|---|---|
+| `17 \| Context Analysis` | double-clicked once by a person | yes |
+| `17 \| Site Analysis` | double-clicked once by a person | yes |
+| `ZZ Reopen Probe` | never opened by anyone | **no** |
+
+Same file, same session, same reopen. The discriminator is not the session. It
+is whether a person has ever opened that worksheet. Once they have, it is
+enterable for good; until they do, nothing the API can say will enter it.
+
+`CloseProject` also refused (-2130312308) on a project that was the only one
+open, so "close, then open" is not available to route around it either.
+
+**What this changes.** D84's waiting is still right, and its cost is better
+than it looked: once per worksheet for the life of the project, not once per
+session. What it kills is the obvious fix — there is no save-and-reopen dance
+that makes a fresh worksheet drawable.
+
+**What is left.** Two routes, and the first is already proven in this codebase.
+[D87](#d87--the-summary-of-controls-is-drawn-on-a-layout-a-session-made-layout-can-be-entered)
+found that a layout made moments earlier *can* be entered, drawn into, and
+needs nobody — that is how the Summary of Controls is built, at half a second
+against thirty through a worksheet. Moving the site and context sheets the same
+way would end the waiting outright. The second is the add-on: a double-click
+opens a navigator item, which is not the same call as changing the current
+database, and Loriini only ever tries the latter. Whether AC26's API exposes
+the former is unread — the kit is not on this workstation.
