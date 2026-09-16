@@ -2165,9 +2165,7 @@ class _Attributes:
         return min(self.pens, key=lambda pen: _looks_like(pen.rgb, wanted)).index
 
 
-def _attribute_index(
-    connection: ArchicadConnection, kind: str, wanted: Sequence[str]
-) -> int | None:
+def attribute_index(connection: ArchicadConnection, kind: str, wanted: Sequence[str]) -> int | None:
     """The index of the first attribute whose name matches one of ``wanted``,
     in order of preference; ``None`` when the project has none."""
     try:
@@ -2197,12 +2195,12 @@ def _attributes(connection: ArchicadConnection) -> _Attributes:
     except ArchicadError:
         pens = ()
     return _Attributes(
-        solid_fill=_attribute_index(connection, "Fill", ("Solid Fill", "Solid", "Foreground")),
-        dashed=_attribute_index(connection, "Line", ("Dashed", "Dashed Line", "Dash")),
-        wash_fill=_attribute_index(
+        solid_fill=attribute_index(connection, "Fill", ("Solid Fill", "Solid", "Foreground")),
+        dashed=attribute_index(connection, "Line", ("Dashed", "Dashed Line", "Dash")),
+        wash_fill=attribute_index(
             connection, "Fill", ("50%", "50 %", "Percent 50", "Percentage 50")
         ),
-        empty_fill=_attribute_index(connection, "Fill", ("Empty Fill", "Empty")),
+        empty_fill=attribute_index(connection, "Fill", ("Empty Fill", "Empty")),
         pens=pens,
     )
 

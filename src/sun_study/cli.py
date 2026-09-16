@@ -1098,6 +1098,8 @@ def report_zone_bands(
     also_hide: Sequence[str] = (),
     max_residual_m: float = MAX_FIT_RESIDUAL_M,
     sheets_mode: str = "one",
+    fill_name: str = "",
+    outline: bool = True,
 ) -> bool:
     """Draw the measured Zones on the plan, banded by hours of sun.
 
@@ -1162,7 +1164,29 @@ def report_zone_bands(
     # north hit this, and only a project at north 0 ever escaped it.
     turn_deg = _frame_turn(connection, result)
 
+    # The fill attribute, found by name. An index means nothing outside the
+    # project it came from -- Silverwater carries '20 %' at 484 and '20%' at
+    # 486, and another office's file will agree with neither -- so the name is
+    # what travels and the lookup is tolerant of how it was typed.
+    fill_index = (
+        site_drawing.attribute_index(connection, "Fill", (fill_name, fill_name.replace(" ", "")))
+        if fill_name
+        else None
+    )
+    if fill_name and fill_index is None:
+        typer.secho(
+            f"  no fill attribute named {fill_name!r}; the patches take the Fill tool's "
+            f"own default, which is whatever it was last set to.",
+            fg=typer.colors.YELLOW,
+        )
+    elif fill_index is not None:
+        typer.echo(
+            f"  patches drawn with the {fill_name!r} fill" + ("" if outline else ", no contour")
+        )
+
     shared: dict[str, Any] = {
+        "fill_index": fill_index,
+        "outline": outline,
         "positions": samples.positions,
         "parent_ids": samples.parent_ids,
         "spacing_m": spacing_m,
@@ -3105,6 +3129,31 @@ def massing(
             ),
         ),
     ] = None,
+    zone_fill: Annotated[
+        str,
+        typer.Option(
+            "--zone-fill",
+            help=(
+                "Name of the fill attribute the communal patches are drawn with. A "
+                "percentage fill, so the plan underneath is read through the patch "
+                "rather than covered by it. Named, not indexed: a fill index means "
+                "nothing outside the project it came from. Empty leaves the Fill "
+                "tool's own default, which is whatever it was last set to."
+            ),
+        ),
+    ] = "20 %",
+    zone_outline: Annotated[
+        bool,
+        typer.Option(
+            "--zone-outline/--no-zone-outline",
+            help=(
+                "Draw a contour round each patch. Off by default: against a "
+                "percentage fill a contour reads as a hard edge round every cell "
+                "of the grid. Turning it off needs the Loriini add-on -- Tapir's "
+                "CreateHatches has a contour pen and no switch."
+            ),
+        ),
+    ] = False,
     zone_storey: Annotated[
         list[str] | None,
         typer.Option(
@@ -3645,6 +3694,8 @@ def massing(
             subset=zone_subset,
             also_hide=tuple(hide_layer or ()),
             max_residual_m=zone_max_residual,
+            fill_name=zone_fill,
+            outline=zone_outline,
         ):
             raise typer.Exit(code=1)
 

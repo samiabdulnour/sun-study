@@ -288,3 +288,53 @@ def test_a_turned_export_places_correctly_and_an_unturned_one_does_not() -> None
     radii = [float(np.hypot(x, y)) for x, y in centres]
     worst = max(range(len(centres)), key=lambda i: not_told.per_pair_m[i])
     assert radii[worst] == max(radii), "the worst pair should be the furthest out"
+
+
+def test_a_contourless_patch_goes_through_the_addon_and_a_normal_one_does_not() -> None:
+    """Tapir's CreateHatches has a contour pen and no switch to turn it off.
+
+    Against a percentage fill that matters: the contour is a solid edge round
+    every cell of the grid, which is not the drawing anybody asked for. The
+    add-on's CreateFills reaches the field, so a contourless patch has to go
+    that way -- and a patch that wants its contour must not, because then an
+    older add-on would fail at the drawing stage for no gain.
+    """
+    from sun_study.archicad.penetration import _as_addon_fill, _create_fills
+
+    hatch = {
+        "coordinates": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 0.0}, {"x": 1.0, "y": 1.0}],
+        "layerIndex": 7,
+        "fillPenIndex": 124,
+        "fillBackgroundPenIndex": 0,
+        "contourPenIndex": 124,
+        "fillIndex": 484,
+        "showArea": False,
+        "floorInd": 8,
+    }
+
+    # Re-spelled for the add-on: the contour off, everything else carried over.
+    off = _as_addon_fill(hatch, outline=False)
+    assert off["contourPen"] == 0, "pen 0 is the project's no-pen, as backgroundPen 0 already is"
+    assert off["fillIndex"] == 484, "the percentage fill has to survive the translation"
+    assert off["layerIndex"] == 7 and off["floorIndex"] == 8
+    assert off["contours"] == [{"points": hatch["coordinates"]}]
+    assert "coordinates" not in off, "the add-on takes contours, not a bare coordinate list"
+
+    on = _as_addon_fill(hatch, outline=True)
+    assert on["contourPen"] == 124, "asked for a contour, it keeps the one it was given"
+
+    # With the contour wanted, the add-on is not consulted at all.
+    class TapirOnly:
+        def __init__(self) -> None:
+            self.asked: list[str] = []
+
+        def run_tapir(self, command: str, parameters: object = None) -> dict[str, object]:
+            self.asked.append(command)
+            return {"elements": [{"elementId": {"guid": "made"}}]}
+
+        def run_loriini(self, command: str, parameters: object = None) -> dict[str, object]:
+            raise AssertionError("the add-on must not be needed for an ordinary patch")
+
+    tapir = TapirOnly()
+    made = _create_fills(tapir, [hatch], outline=True)  # type: ignore[arg-type]
+    assert tapir.asked == ["CreateHatches"] and len(made) == 1

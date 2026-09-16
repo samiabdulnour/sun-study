@@ -457,6 +457,8 @@ def draw_cell_groups(
     on_storey: int | None = None,
     max_residual_m: float = MAX_FIT_RESIDUAL_M,
     turn_deg: float = 0.0,
+    fill_index: int | None = None,
+    outline: bool = True,
 ) -> PenetrationReport:
     """Draw floor cells grouped by band, one colour each, plus a legend.
 
@@ -521,7 +523,9 @@ def draw_cell_groups(
                 continue
             flat = replace(anywhere, storey_index=on_storey)
             for shape in _contours(here, np.ones(len(here), dtype=bool), spacing_m):
-                fills.append(_patch_fill(shape, transform, group.style, layer, flat))
+                fills.append(
+                    _patch_fill(shape, transform, group.style, layer, flat, fill_index, outline)
+                )
                 band_ids.append(fill_id(SOLAR, group.label))
             storeys.add(on_storey)
 
@@ -534,7 +538,9 @@ def draw_cell_groups(
                 continue
             here = positions[mine]
             for shape in _contours(here, np.ones(len(here), dtype=bool), spacing_m):
-                fills.append(_patch_fill(shape, transform, group.style, layer, zone))
+                fills.append(
+                    _patch_fill(shape, transform, group.style, layer, zone, fill_index, outline)
+                )
                 band_ids.append(fill_id(SOLAR, group.label))
             if zone.storey_index is not None:
                 storeys.add(zone.storey_index)
@@ -550,7 +556,7 @@ def draw_cell_groups(
     fills.extend(legend_fills)
     texts.extend(legend_texts)
 
-    made = _create(connection, "CreateHatches", "hatchesData", fills)
+    made = _create_fills(connection, fills, outline=outline)
     stamped = stamp_in_order(connection, made[:measured], band_ids)
     grouped = (
         group_by_value(connection, list(zip(made[:measured], band_ids, strict=True)))
@@ -682,24 +688,75 @@ def _patch_fill(
     style: BandStyle,
     layer: LayerState,
     zone: ArchicadZone,
+    fill_index: int | None = None,
+    outline: bool = True,
 ) -> dict[str, Any]:
-    """One patch outline, moved into the project's own frame."""
+    """One patch outline, moved into the project's own frame.
+
+    ``fill_index`` is the project's own fill attribute -- a percentage fill,
+    so the plan underneath is read *through* the patch rather than covered by
+    it. Left ``None``, the Fill tool's current default is used, which is
+    whatever the last person to draw a fill happened to leave it on.
+
+    ``outline`` off asks for no contour at all. Tapir's ``CreateHatches``
+    cannot express that -- it has a contour pen and no switch -- so the
+    nearest it could manage was drawing the contour in the fill's own pen and
+    hoping it disappeared, which against a 20% fill it does not: the patch
+    gets a solid edge in the pen the pattern is drawn in. The add-on's
+    ``CreateFills`` reaches the field, so the contour can simply be turned off.
+    """
     corners = transform.apply(np.array(ring, dtype=np.float64))
     data: dict[str, Any] = {
         "coordinates": [{"x": float(x), "y": float(y)} for x, y in corners],
         "layerIndex": layer.index,
         "fillPenIndex": style.fill_pen,
         "fillBackgroundPenIndex": style.background_pen,
-        "contourPenIndex": style.fill_pen,
         # Explicitly off. A Fill inherits the Fill tool's current default, and
         # on a real project that default has "Show Area Text" on -- so every
         # patch cell arrives with its own square-metre figure printed across
         # it, which at 250 mm resolution is thousands of numbers over the plan.
         "showArea": False,
     }
+    if outline:
+        data["contourPenIndex"] = style.fill_pen
+    if fill_index is not None:
+        data["fillIndex"] = fill_index
     if zone.storey_index is not None:
         data["floorInd"] = zone.storey_index
     return data
+
+
+#: Tapir's key names for a hatch, against the add-on's for the same field.
+#: Only the spelling differs; every one of these means the same thing to
+#: Archicad, which is why one dict can be sent either way.
+_FILL_FIELDS = {
+    "layerIndex": "layerIndex",
+    "floorInd": "floorIndex",
+    "fillPenIndex": "fillPen",
+    "fillBackgroundPenIndex": "backgroundPen",
+    "contourPenIndex": "contourPen",
+    "fillIndex": "fillIndex",
+    "showArea": "showArea",
+}
+
+
+def _as_addon_fill(hatch: dict[str, Any], outline: bool) -> dict[str, Any]:
+    """One Tapir hatch re-spelled as an add-on fill.
+
+    The contour is the reason this exists. ``CreateHatches`` has a contour pen
+    and nothing that turns the contour off, so a patch always carried an edge;
+    ``CreateFills`` sets ``contPen`` from ``contourPen``, and pen 0 is the
+    project's "no pen" -- the same convention ``background_pen=0`` already
+    relies on for a see-through background.
+    """
+    one: dict[str, Any] = {
+        "contours": [{"points": list(hatch.get("coordinates") or ())}],
+        "contourPen": 0 if not outline else hatch.get("contourPenIndex", 1),
+    }
+    for theirs, ours in _FILL_FIELDS.items():
+        if theirs in hatch and theirs != "contourPenIndex":
+            one[ours] = hatch[theirs]
+    return one
 
 
 def _outline(zone: ArchicadZone, style: BandStyle, layer: LayerState) -> dict[str, Any]:
@@ -744,6 +801,49 @@ def _label(
     if zone.storey_index is not None:
         data["floorIndex"] = zone.storey_index
     return data
+
+
+def _create_fills(
+    connection: ArchicadConnection, data: list[dict[str, Any]], *, outline: bool
+) -> list[dict[str, Any]]:
+    """Create the patch fills, through the add-on where it is installed.
+
+    The add-on's ``CreateFills`` is preferred for one reason here: it can turn
+    the contour off, which Tapir's ``CreateHatches`` cannot. Asked for a patch
+    with no outline and given only Tapir, the honest thing is to say so rather
+    than draw the edge anyway -- a 20% fill with a solid border round every
+    cell is not the drawing that was asked for, and it is not obvious from a
+    thumbnail that it is wrong.
+
+    With the outline wanted, either route draws the same thing, so an older
+    add-on costs nothing and Tapir is used without comment.
+    """
+    if not data:
+        return []
+    if outline:
+        # Nothing here needs the add-on. Both commands draw the same fill with
+        # the same contour, so the route that every project already has is the
+        # one to take -- preferring the add-on regardless would make an older
+        # install fail at the drawing stage for no gain at all.
+        return _create(connection, "CreateHatches", "hatchesData", data)
+    try:
+        made: list[dict[str, Any]] = []
+        for start in range(0, len(data), 500):
+            batch = [_as_addon_fill(one, outline) for one in data[start : start + 500]]
+            answer = connection.run_loriini("CreateFills", {"fills": batch})
+            elements = answer.get("elements") if isinstance(answer, dict) else None
+            if not isinstance(elements, list):
+                raise ArchicadError(f"CreateFills returned no element list: {answer!r}")
+            made.extend(entry for entry in elements if isinstance(entry, dict))
+        return made
+    except ArchicadError as error:
+        if "not have the registered" not in str(error):
+            raise
+        raise ArchicadError(
+            "The installed Loriini add-on has no CreateFills, and Tapir's CreateHatches "
+            "cannot draw a fill without a contour -- it has a contour pen and no switch. "
+            "Install the current add-on build, or run with --zone-outline."
+        ) from error
 
 
 def _create(
