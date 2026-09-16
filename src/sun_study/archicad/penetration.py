@@ -334,6 +334,8 @@ def draw_penetration(
     layer_prefix: str,
     patch_style: BandStyle = PATCH_STYLE,
     outline_style: BandStyle = OUTLINE_STYLE,
+    fill_index: int | None = None,
+    patch_outline: bool = False,
     caption_height_mm: float = 2.5,
     turn_deg: float = 0.0,
 ) -> PenetrationReport:
@@ -401,7 +403,11 @@ def draw_penetration(
                 here = positions[mine]
                 shapes = _contours(here, instant.lit[mine], spacing_m, instant.lit_at)
                 for shape in shapes:
-                    fills.append(_patch_fill(shape, transform, patch_style, layer, zone))
+                    fills.append(
+                        _patch_fill(
+                            shape, transform, patch_style, layer, zone, fill_index, patch_outline
+                        )
+                    )
                     patch_ids.append(fill_id(SOLAR, instant.label, apartment))
                     patch_groups.append(fill_id(SOLAR, instant.label))
                 patches += len(shapes)
@@ -417,7 +423,7 @@ def draw_penetration(
             if zone.storey_index is not None:
                 storeys.add(zone.storey_index)
 
-        made = _create(connection, "CreateHatches", "hatchesData", fills)
+        made = _create_fills(connection, fills, outline=patch_outline)
         tagged.append(stamp_in_order(connection, made, patch_ids))
         if len(made) == len(patch_groups):
             gathered.append(group_by_value(connection, list(zip(made, patch_groups, strict=True))))
@@ -834,7 +840,20 @@ def _create_fills(
             elements = answer.get("elements") if isinstance(answer, dict) else None
             if not isinstance(elements, list):
                 raise ArchicadError(f"CreateFills returned no element list: {answer!r}")
-            made.extend(entry for entry in elements if isinstance(entry, dict))
+            # Re-shaped to Tapir's, which is what everything downstream reads.
+            # The add-on answers `{"guid": ...}` and Tapir `{"elementId":
+            # {"guid": ...}}`, and `ids.stamp_element_ids` keeps only the
+            # elements that carry an `elementId` -- silently, with no count and
+            # no complaint. Handed the add-on's shape it therefore stamps
+            # nothing at all, and a Schedule totalling on Element ID finds an
+            # empty drawing while the run reports every fill drawn.
+            made.extend(
+                {"elementId": entry["elementId"]}
+                if "elementId" in entry
+                else {"elementId": {"guid": entry["guid"]}}
+                for entry in elements
+                if isinstance(entry, dict) and ("elementId" in entry or "guid" in entry)
+            )
         return made
     except ArchicadError as error:
         if "not have the registered" not in str(error):

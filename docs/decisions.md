@@ -3315,3 +3315,43 @@ Still unmended, and still true: the third copy, in the saved view. Nothing in
 or a document and nothing else. The sheets place documents, so they are now
 right; a person opening the *view* may still meet the filter, and redefining
 from the current window is still the only cure.
+
+### D102 — A fill with no contour is `contourPen 0`, and it is the standard for solar analysis
+
+Confirmed on screen, 16 September 2026, in an untitled file: six 20% patches
+drawn side by side, each with a different contour treatment, and the one with
+`contourPen: 0` is the one with no visible edge.
+
+It had to be looked at. Archicad *accepted* every variant -- pen 0, `Hidden
+Line`, `Wipeout_Contour`, zero pen weight -- and `GetDetailsOfElements` reports
+nothing back for a Hatch, so there was no way to measure which had worked.
+[D100](#d100--a-guard-that-cannot-do-its-job-stops-the-run-archicad-accepts-moves-it-does-not-make)
+is the standing reason not to believe an acceptance; here the answer came from
+drawing the six and asking.
+
+**Why it matters more than it sounds.** Against a *solid* fill the old trick
+worked: draw the contour in the fill's own pen and it disappears against it.
+Against a **percentage** fill it does not -- the pattern is read through, so the
+contour stays as a hard edge round every cell of the grid. The moment the
+patches became 20% fills, the contour became visible, and there was nothing in
+Tapir's `CreateHatches` to turn it off: it has a contour pen and no switch.
+That is the wall, and `Loriini.CreateFills` is over it, because pen 0 is the
+project's "no pen" -- the same convention `background_pen=0` has always relied
+on for a see-through background.
+
+This retires the Fill Favorite workaround for these drawings. A Favorite was
+"the only contour-less fill there is" while Tapir was the only route; it is not
+any more.
+
+**And the shapes differ, which cost a run before it was noticed.** Tapir
+answers `{"elementId": {"guid": ...}}` and the add-on `{"guid": ...}`, while
+`ids.stamp_element_ids` keeps only the elements carrying an `elementId` --
+silently, with no count. The first Silverwater run through `CreateFills`
+reported 332 patch fills and stamped **none** of them, so a Schedule totalling
+on Element ID would have found an empty drawing beside a run that said it drew
+everything. The add-on's elements are re-shaped to Tapir's on the way out.
+
+Only a contourless fill takes the add-on route. With a contour wanted both
+commands draw the same thing, so Tapir is used and an older add-on install
+costs nothing; asked for no contour without the add-on, the run says so rather
+than drawing the edge anyway.

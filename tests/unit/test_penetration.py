@@ -56,6 +56,8 @@ def connect(**overrides: Any) -> tuple[ArchicadConnection, FakeTransport]:
         "GetElementsByType": {"elements": []},
         "DeleteElements": {"success": True},
         "CreateHatches": {"elements": [{"elementId": {"guid": "h"}}] * 99},
+        # The add-on answers with a bare guid, not Tapir's elementId wrapper.
+        "CreateFills": {"success": True, "elements": [{"guid": "h"}] * 99},
         "CreatePolylines": {"elements": [{"elementId": {"guid": "p"}}] * 99},
         "CreateTexts": {"elements": [{"elementId": {"guid": "t"}}] * 99},
         "SetDetailsOfElements": {"executionResults": [{"success": True}]},
@@ -86,12 +88,17 @@ def test_a_patch_a_green_outline_and_a_label_are_all_drawn() -> None:
     connection, transport = connect()
     report = draw(connection)
 
-    hatches = transport.parameters_for("CreateHatches")["hatchesData"]
-    assert hatches, "the patch itself"
-    assert all(h["showArea"] is False for h in hatches), (
+    # Through the add-on, because the patch is drawn without a contour and
+    # Tapir's CreateHatches has no switch for that.
+    patches = transport.parameters_for("CreateFills")["fills"]
+    assert patches, "the patch itself"
+    assert all(p["showArea"] is False for p in patches), (
         "every cell would otherwise print its own square-metre figure"
     )
-    assert all(h["floorInd"] == 4 for h in hatches), "on the storey the flat is on"
+    assert all(p["floorIndex"] == 4 for p in patches), "on the storey the flat is on"
+    assert all(p["contourPen"] == 0 for p in patches), (
+        "no contour: against a percentage fill an edge round every cell is not the drawing"
+    )
 
     outlines = transport.parameters_for("CreatePolylines")["polylinesData"]
     assert len(outlines) == 2, "one per matched apartment"
@@ -106,8 +113,13 @@ def test_the_patch_is_the_lit_cells_and_not_the_whole_floor() -> None:
     connection, transport = connect()
     draw(connection)
 
-    hatches = transport.parameters_for("CreateHatches")["hatchesData"]
-    ys = [point["y"] for hatch in hatches for point in hatch["coordinates"]]
+    patches = transport.parameters_for("CreateFills")["fills"]
+    ys = [
+        point["y"]
+        for patch in patches
+        for contour in patch["contours"]
+        for point in contour["points"]
+    ]
     assert max(ys) == pytest.approx(0.5), "the far half of the floor saw no sun"
 
 
@@ -338,3 +350,29 @@ def test_a_contourless_patch_goes_through_the_addon_and_a_normal_one_does_not() 
     tapir = TapirOnly()
     made = _create_fills(tapir, [hatch], outline=True)  # type: ignore[arg-type]
     assert tapir.asked == ["CreateHatches"] and len(made) == 1
+
+
+def test_the_addons_elements_are_reshaped_so_the_ids_are_actually_written() -> None:
+    """The two commands answer in different shapes, and one of them stamps nothing.
+
+    Tapir returns `{"elementId": {"guid": ...}}`; the add-on returns
+    `{"guid": ...}`. `ids.stamp_element_ids` keeps only the elements carrying
+    an `elementId` -- silently, with no count and no complaint -- so handed the
+    add-on's shape it writes no Element IDs at all, and a Schedule totalling on
+    them finds an empty drawing while the run reports every fill drawn.
+
+    Found on the Silverwater run of 16 September 2026, which reported 332
+    patch fills and stamped none of them.
+    """
+    from sun_study.archicad.penetration import _create_fills
+
+    class AddOn:
+        def run_loriini(self, command: str, parameters: object = None) -> dict[str, object]:
+            assert command == "CreateFills"
+            return {"success": True, "elements": [{"guid": "a"}, {"guid": "b"}]}
+
+    made = _create_fills(AddOn(), [{"coordinates": []}, {"coordinates": []}], outline=False)  # type: ignore[arg-type]
+
+    assert made == [{"elementId": {"guid": "a"}}, {"elementId": {"guid": "b"}}], (
+        "every element must carry an elementId or it is dropped without a word"
+    )
