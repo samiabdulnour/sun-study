@@ -2810,6 +2810,10 @@ def _draw(
             )
     if drawing.figures and attributes.wash_fill is None:
         notes.append("no percentage fill named '50%'; the zoning is drawn solid over the aerial.")
+    # Counted before the flush, because the fallback below empties the list and
+    # the question afterwards is how many were *asked for*, not how many are
+    # left to ask for.
+    wanted = len(drawing.figures)
     try:
         figures, fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
     except ArchicadError as error:
@@ -2820,6 +2824,17 @@ def _draw(
         figures, fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
     if refused:
         notes.append(f"Archicad refused {refused} fills; they are left out of the sheet.")
+    # The silent one. A tile whose file has gone is skipped by `_aerial` and by
+    # `_figures` without a word, and the sheet then comes out bare rather than
+    # wrong -- which nobody notices, because a site plan with no photo under it
+    # looks like a site plan. Saying nothing here is what let the orthophoto be
+    # missing from Redfern for a day without a single line of output admitting
+    # it. So a shortfall is stated, whether it is some of them or all of them.
+    if wanted and figures < wanted:
+        notes.append(
+            f"{wanted - figures} of {wanted} orthophoto tiles were not placed; their files "
+            f"are missing from the run folder, or Archicad refused them."
+        )
     view_name = ""
     layout_name = ""
     if view:
