@@ -3343,13 +3343,23 @@ This retires the Fill Favorite workaround for these drawings. A Favorite was
 "the only contour-less fill there is" while Tapir was the only route; it is not
 any more.
 
-**And the shapes differ, which cost a run before it was noticed.** Tapir
-answers `{"elementId": {"guid": ...}}` and the add-on `{"guid": ...}`, while
+**And the shapes differ, which would have cost the next run.** Tapir answers
+`{"elementId": {"guid": ...}}` and the add-on `{"guid": ...}`, while
 `ids.stamp_element_ids` keeps only the elements carrying an `elementId` --
-silently, with no count. The first Silverwater run through `CreateFills`
-reported 332 patch fills and stamped **none** of them, so a Schedule totalling
-on Element ID would have found an empty drawing beside a run that said it drew
-everything. The add-on's elements are re-shaped to Tapir's on the way out.
+silently, with no count. Handed the add-on's shape it writes nothing, and a
+Schedule totalling on Element ID would find an empty drawing beside a run that
+said it drew every fill. The add-on's elements are re-shaped to Tapir's on the
+way out.
+
+*Corrected the same evening.* The commit that made this change, and an earlier
+draft of this entry, both said the Silverwater run of 16 September had drawn
+332 patch fills and stamped none of them. It had not. That run finished at
+18:12 on `32dad45`, where both fill paths still went through Tapir's
+`CreateHatches` and were stamped correctly; `_create_fills` did not exist until
+`b3af822` at 18:32 and was re-shaped in `74f978d` at 19:09. No run was made in
+those thirty-seven minutes, so no drawing anybody has was ever left unstamped.
+The bug was real and worth the test that now pins it, but it was latent, and
+saying otherwise sent a reader to check a schedule that was never wrong.
 
 Only a contourless fill takes the add-on route. With a contour wanted both
 commands draw the same thing, so Tapir is used and an older add-on install
