@@ -3225,3 +3225,48 @@ functions passed when tested alone: run by hand the window happened to be the
 So the guard asks the question that matters — *am I standing in something that
 is about to be deleted?* — and steps to the floor plan from anywhere that is not
 already the floor plan. The floor plan is the one database this never deletes.
+
+### D100 — A guard that cannot do its job stops the run; Archicad accepts moves it does not make
+
+Archicad closed on the Redfern file again on 16 September 2026, on the equinox
+— the second of three dates, the same place it has always closed. D99 was in
+and its guard fired. The guard was the problem.
+
+`_stand_somewhere_safe` asked for a floor plan and threw the answer away:
+
+```python
+with suppress(ArchicadError):
+    connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
+```
+
+It never looked to see whether the window had moved. `remove_previous` then
+deleted the previous date's views and layouts while Archicad was still standing
+in one of the seven 3D Documents the run had just mended — which is precisely
+the crash D87 and D99 were written to prevent. The last line before the socket
+closed was *"took the storey filter off 7 of 7 documents already there"*, one
+call before the first delete.
+
+**That Archicad refuses these moves is measured, not supposed.** The same
+session asked `SetCurrentDatabase` to step from a worksheet to a floor plan and
+was told, in as many words:
+
+> Archicad accepted the move and stayed where it was. (-2130313215)
+
+There is no reason to think `ChangeWindow` is more honest than
+`SetCurrentDatabase` about a move it did not make. So the guard asks again
+afterwards, and compares.
+
+**And when the move did not happen, the run stops.** This is the part worth
+keeping. The whole purpose of the guard is that deleting the current database
+closes Archicad with the project unsaved; a guard that has failed to move and
+proceeds anyway is not a guard, it is the crash with an extra step. Refusing
+costs one sentence and one click. Continuing costs the afternoon — three times
+on Bondi, twice on Redfern.
+
+The general lesson, and it is the second time this rule has been learned in this
+file: **the API reports success for things it did not do.** `DeleteNavigatorItems`
+reports success and leaves the view (D-see `remove_previous`), a hidden layer
+reports a successful delete and removes nothing (`clear_database`), and now a
+window move reports success and does not move. Every one of them was found the
+same way — by counting afterwards rather than by reading the response. Assume
+the answer describes the request, not the outcome.

@@ -199,9 +199,38 @@ def _stand_somewhere_safe(connection: ArchicadConnection) -> None:
     except ArchicadError:
         return
     kind = here.get("currentWindowType") if isinstance(here, dict) else None
-    if kind and kind != "FloorPlan":
-        with suppress(ArchicadError):
-            connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
+    if not kind or kind == "FloorPlan":
+        return
+
+    with suppress(ArchicadError):
+        connection.run_tapir("ChangeWindow", {"windowType": "FloorPlan"})
+
+    # Asked again, because Archicad accepts a move it does not make. Measured
+    # on Redfern, 16 September 2026: moving to a floor plan from a worksheet
+    # answered "Archicad accepted the move and stayed where it was"
+    # (-2130313215) and the window did not change. `ChangeWindow` is the
+    # other route to the same place and there is no reason to think it is
+    # more honest, so the question is asked rather than the answer assumed.
+    after = kind
+    with suppress(ArchicadError):
+        moved = connection.run_tapir("GetCurrentWindowType", {})
+        if isinstance(moved, dict) and moved.get("currentWindowType"):
+            after = str(moved["currentWindowType"])
+    if after == "FloorPlan":
+        return
+
+    # Refused rather than attempted. Deleting while standing in what is being
+    # deleted is what closes Archicad mid-command with the project unsaved --
+    # the whole reason this guard exists -- so a guard that could not do its
+    # job must stop the run instead of letting it proceed to the crash it was
+    # written to prevent. That is the difference between an afternoon lost
+    # and a sentence asking for one click.
+    raise ArchicadError(
+        f"Archicad is showing a {after} and would not move to a floor plan, so the "
+        f"previous run's views and layouts cannot be deleted safely: deleting the "
+        f"current database closes Archicad with the project unsaved. Click a floor "
+        f"plan tab and run again."
+    )
 
 
 def remove_previous(connection: ArchicadConnection, prefix: str | None = None) -> tuple[int, int]:

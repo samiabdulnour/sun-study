@@ -256,11 +256,17 @@ def test_the_clean_up_steps_off_a_layout_before_deleting_layouts() -> None:
     the first DeleteNavigatorItems, not after it.
     """
     from sun_study.archicad.views import remove_previous
-    from tests.unit.test_archicad_adapter import connect
+    from tests.unit.test_archicad_adapter import Sequential, connect
 
     connection, transport = connect(
         {
-            "GetCurrentWindowType": {"currentWindowType": "Layout"},
+            # Asked twice: once to see where it is standing, and again to
+            # check the move actually happened. A real Archicad that moves
+            # answers the second differently, and one that quietly refuses
+            # does not -- which is the case the third test covers.
+            "GetCurrentWindowType": Sequential(
+                {"currentWindowType": "Layout"}, {"currentWindowType": "FloorPlan"}
+            ),
             "ChangeWindow": {"success": True},
             "GetNavigatorItemTree": {"navigatorItemTree": {"name": "root", "children": []}},
         }
@@ -284,11 +290,17 @@ def test_the_clean_up_steps_off_a_document_too_not_only_a_layout() -> None:
     times: twice on Bondi, once on a clean file, always on the second of three
     dates, because the first has nothing to delete yet."""
     from sun_study.archicad.views import remove_previous
-    from tests.unit.test_archicad_adapter import connect
+    from tests.unit.test_archicad_adapter import Sequential, connect
 
     connection, transport = connect(
         {
-            "GetCurrentWindowType": {"currentWindowType": "Document3D"},
+            # Asked twice: once to see where it is standing, and again to
+            # check the move actually happened. A real Archicad that moves
+            # answers the second differently, and one that quietly refuses
+            # does not -- which is the case the third test covers.
+            "GetCurrentWindowType": Sequential(
+                {"currentWindowType": "Document3D"}, {"currentWindowType": "FloorPlan"}
+            ),
             "ChangeWindow": {"success": True},
             "GetNavigatorItemTree": {"navigatorItemTree": {"name": "root", "children": []}},
         }
@@ -318,3 +330,41 @@ def test_the_clean_up_does_not_move_when_it_is_not_on_a_layout() -> None:
     remove_previous(connection, prefix="14 |")
 
     assert "ChangeWindow" not in transport.commands()
+
+
+def test_the_clean_up_refuses_to_delete_when_the_window_would_not_move() -> None:
+    """Archicad accepts a move it does not make, and the guard believed it.
+
+    Measured on Redfern, 16 September 2026. The run mended seven 3D Documents,
+    was left standing in one, called the guard, and Archicad closed mid-command
+    anyway -- on the second of three dates, exactly as before D99. The guard
+    had asked for a floor plan, swallowed whatever came back, and reported
+    success to a caller that then deleted the database it was standing in.
+
+    That Archicad refuses these moves is not a theory: the same session asked
+    `SetCurrentDatabase` to step from a worksheet to a floor plan and was told
+    "Archicad accepted the move and stayed where it was" (-2130313215).
+
+    So the guard checks, and a guard that could not do its job stops the run.
+    Deleting anyway is how the afternoon is lost; one sentence asking for one
+    click is not.
+    """
+    from sun_study.archicad.connection import ArchicadError
+    from sun_study.archicad.views import remove_previous
+    from tests.unit.test_archicad_adapter import connect
+
+    connection, transport = connect(
+        {
+            # It never moves, however politely it is asked.
+            "GetCurrentWindowType": {"currentWindowType": "Document3D"},
+            "ChangeWindow": {"success": True},
+            "GetNavigatorItemTree": {"navigatorItemTree": {"name": "root", "children": []}},
+        }
+    )
+
+    with pytest.raises(ArchicadError, match="would not move to a floor plan"):
+        remove_previous(connection, prefix="14 |")
+
+    assert "DeleteNavigatorItems" not in transport.commands(), (
+        "it deleted while standing in a 3D Document, which is what closes Archicad"
+    )

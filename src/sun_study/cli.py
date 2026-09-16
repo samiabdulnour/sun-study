@@ -6573,7 +6573,11 @@ def sun_eye_views(
     # does and why: a view a placed Drawing still points at cannot be
     # deleted, and Archicad reports success either way. Scoped to this tool's
     # own number, so it reaches the sun views and nothing else (D93).
-    gone, left = remove_previous(connection)
+    try:
+        gone, left = remove_previous(connection)
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
     if gone:
         typer.echo(f"  removed {gone} views and layouts, so the new ones take the window as it is")
     if left:

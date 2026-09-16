@@ -2114,6 +2114,7 @@ class WorksheetReport:
     lines: int
     texts: int
     texts_on_layer: int
+    figures: int
     layers: tuple[str, ...]
     view: str
     notes: tuple[str, ...] = ()
@@ -2121,9 +2122,14 @@ class WorksheetReport:
 
     def describe(self) -> str:
         made = f"reused, cleared {self.cleared} elements" if self.reused else "created"
+        # The orthophoto is counted out loud. It is the one element a run can
+        # fail to place in silence -- a tile whose file has gone is skipped
+        # without a word -- and the sheet then looks bare rather than wrong,
+        # which is a great deal harder to notice than a number that says 0.
+        photo = f", {self.figures} orthophoto tiles" if self.figures else ""
         head = (
             f"  worksheet {self.name!r} ({made}): {self.fills} fills, {self.lines} polylines, "
-            f"{self.texts} texts on {len(self.layers)} layers"
+            f"{self.texts} texts{photo} on {len(self.layers)} layers"
         )
         lines = [head]
         if self.texts_on_layer != self.texts:
@@ -2491,14 +2497,19 @@ def _figures(
 
 def _flush(
     connection: ArchicadConnection, drawing: Drawing, attributes: _Attributes
-) -> tuple[int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, int]:
     """Create every element of the drawing in the current database.
 
-    Returns ``(fills, lines, texts, texts on their layer, fills refused)``.
+    Returns ``(figures, fills, lines, texts, texts on their layer, fills refused)``.
+
+    The figure count is returned and not discarded, because the orthophoto is
+    the one element here that a run could silently fail to place -- a missing
+    tile file is skipped without a word -- and the sheet looks merely bare
+    rather than wrong. Counting it is the only way the report can say.
     """
     indices = {name: ensure_layer(connection, name).index for name in drawing.layers}
 
-    _figures(connection, drawing.figures, indices, drawing.pictures_as)
+    figures = _figures(connection, drawing.figures, indices, drawing.pictures_as)
 
     fills: list[dict[str, Any]] = []
     for fill in drawing.fills:
@@ -2564,7 +2575,7 @@ def _flush(
 
     on_layer = _texts(connection, drawing.texts, indices, attributes)
 
-    return len(fills) - refused, len(lines), len(drawing.texts), on_layer, refused
+    return figures, len(fills) - refused, len(lines), len(drawing.texts), on_layer, refused
 
 
 def _view_of(
@@ -2800,13 +2811,13 @@ def _draw(
     if drawing.figures and attributes.wash_fill is None:
         notes.append("no percentage fill named '50%'; the zoning is drawn solid over the aerial.")
     try:
-        fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
+        figures, fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
     except ArchicadError as error:
         if "PlaceFigures" not in str(error):
             raise
         notes.append(str(error))
         drawing.figures.clear()
-        fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
+        figures, fills, lines, texts, on_layer, refused = _flush(connection, drawing, attributes)
     if refused:
         notes.append(f"Archicad refused {refused} fills; they are left out of the sheet.")
     view_name = ""
@@ -2839,6 +2850,7 @@ def _draw(
         lines=lines,
         texts=texts,
         texts_on_layer=on_layer,
+        figures=figures,
         layers=tuple(drawing.layers),
         view=view_name,
         notes=tuple(notes),
