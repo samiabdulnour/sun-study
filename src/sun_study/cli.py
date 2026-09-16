@@ -3049,6 +3049,20 @@ def massing(
             ),
         ),
     ] = None,
+    zone_storey: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--zone-storey",
+            help=(
+                "Narrow --zone-layer/--zone-name to these storeys -- name them, e.g. "
+                "'LEVEL 02'. Repeatable. Layer and name do not always separate the "
+                "Zones: a project can carry one communal open space per level, all on "
+                "one layer and all with the same name, and a sheet for one level can "
+                "only be asked for by storey. Occluders are unaffected, so the towers "
+                "above still shade what is measured."
+            ),
+        ),
+    ] = None,
     zone_height: Annotated[
         float,
         typer.Option(
@@ -3477,6 +3491,7 @@ def massing(
         ground_level_m=ground_level,
         zone_layers=tuple(zone_layer or ()),
         zone_names=tuple(zone_name or ()),
+        zone_storeys=tuple(zone_storey or ()),
         zone_height_m=zone_height,
         zone_spacing_m=zone_grid,
     )

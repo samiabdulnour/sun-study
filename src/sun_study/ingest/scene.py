@@ -993,6 +993,23 @@ def _on_layer(element: IfcElement, layers: Sequence[str]) -> bool:
     return any(" ".join(wanted.split()).casefold() == actual for wanted in layers)
 
 
+def _on_storey(element: IfcElement, storeys: Sequence[str]) -> bool:
+    """Whether an element sits on one of the named storeys. Empty means any.
+
+    The same tolerance `_on_layer` gives a layer name, and for the same
+    reason: "LEVEL 02" typed at a command line should match the storey however
+    the project spelled it. A study of one level's communal open space is a
+    real request -- Silverwater carries ten COS Zones across five storeys, and
+    the sheet for LEVEL 02 is about one of them -- and neither the layer nor
+    the name separates them, because all four on `07 | Fills.Areas` are called
+    NON RESIDENTIAL.
+    """
+    if not storeys:
+        return True
+    actual = " ".join(str(element.storey or "").split()).casefold()
+    return any(" ".join(wanted.split()).casefold() == actual for wanted in storeys)
+
+
 def _is_livable_opening(element: IfcElement, config: SceneConfig) -> bool:
     """D24, in code: does this opening's ID carry the livable marker?
 
@@ -1539,6 +1556,14 @@ class MassingConfig:
     Empty means no zone surface, which is the ordinary massing run.
     """
 
+    zone_storeys: tuple[str, ...] = ()
+    """Storey names the measured Zones must sit on. Empty is every storey.
+
+    Layer and name do not always separate them: on Silverwater all four
+    communal-open-space Zones on `07 | Fills.Areas` are named NON RESIDENTIAL,
+    one per level, so a sheet for one level can only be asked for by storey.
+    """
+
     zone_height_m: float = 1.0
     """Height above the Zone's floor at which it is assessed."""
 
@@ -1574,7 +1599,9 @@ class MassingConfig:
             )
             + (
                 f"zone surface on layers {list(self.zone_layers)} "
-                f"named {list(self.zone_names)} at {self.zone_height_m:g} m | "
+                f"named {list(self.zone_names)}"
+                + (f" on {list(self.zone_storeys)}" if self.zone_storeys else "")
+                + f" at {self.zone_height_m:g} m | "
                 if self.zone_layers or self.zone_names
                 else ""
             )
@@ -1694,12 +1721,14 @@ def _zone_surface(model: IfcModel, config: MassingConfig) -> tuple[SamplePoints,
         for space in model.of_class("IfcSpace")
         if (not config.zone_layers or _on_layer(space, config.zone_layers))
         and _named_one_of(space, config.zone_names)
+        and _on_storey(space, config.zone_storeys)
     ]
     if not chosen:
         raise SceneConfigError(
             f"No Zone matches layers {list(config.zone_layers)} named "
-            f"{list(config.zone_names)}. Run 'sun-study archicad-info' to see "
-            f"the zone names on each layer."
+            f"{list(config.zone_names)}"
+            + (f" on storeys {list(config.zone_storeys)}" if config.zone_storeys else "")
+            + ". Run 'sun-study archicad-info' to see the zone names on each layer."
         )
 
     grids = [

@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -908,3 +909,39 @@ def test_the_height_cut_keeps_a_band_and_not_only_a_ceiling() -> None:
     # A floor on its own is a floor on its own.
     kept, dropped = _cut_above(model, None, 100.0)
     assert dropped == 3 and {e.name for e in kept.elements} == {"parked hotlink master"}
+
+
+def test_zones_can_be_narrowed_to_one_storey_when_layer_and_name_cannot() -> None:
+    """Silverwater carries one communal open space per level, all alike.
+
+    All four on `07 | Fills.Areas` are named NON RESIDENTIAL, one each on
+    LEVEL 02, LEVEL 11, LEVEL 12 and ROOF TERRACE, so neither the layer nor
+    the name can ask for the LEVEL 02 sheet. The storey can.
+
+    Occluders are deliberately untouched: narrowing the height band instead
+    would drop the towers above and report a level flooded with sun it does
+    not get.
+    """
+    from sun_study.ingest.scene import _on_storey
+
+    def zone(storey: str | None) -> Any:
+        return SimpleNamespace(storey=storey)
+
+    level_02 = zone("LEVEL 02")
+    level_12 = zone("LEVEL 12")
+    homeless = zone(None)
+
+    # Empty means every storey -- the behaviour every existing run relies on.
+    assert _on_storey(level_02, ()) is True
+    assert _on_storey(homeless, ()) is True
+
+    assert _on_storey(level_02, ("LEVEL 02",)) is True
+    assert _on_storey(level_12, ("LEVEL 02",)) is False
+
+    # Typed at a command line, so spelling is forgiven the way a layer's is.
+    assert _on_storey(level_02, ("level 02",)) is True
+    assert _on_storey(level_02, ("  LEVEL   02 ",)) is True
+
+    # Several storeys, and a Zone that belongs to none of them.
+    assert _on_storey(level_12, ("LEVEL 02", "LEVEL 12")) is True
+    assert _on_storey(homeless, ("LEVEL 02",)) is False
