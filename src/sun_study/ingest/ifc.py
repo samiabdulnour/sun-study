@@ -365,7 +365,26 @@ def _resolve_location(model: ifcopenshell.file, unit_scale: float) -> tuple[floa
 
 
 def _storey_name(product: Any) -> str | None:
+    """Which storey this product belongs to, by either of the two IFC routes.
+
+    ``get_container`` follows ``IfcRelContainedInSpatialStructure``, which is
+    how a wall or a slab is tied to its storey. A **space is not**: Archicad
+    aggregates an ``IfcSpace`` into its storey through ``IfcRelAggregates``,
+    and the container is then nothing at all. Measured on Silverwater,
+    16 September 2026: 1,359 of 1,359 ``IfcSpace`` answered ``None``, so every
+    Zone the tool has ever read carried no storey.
+
+    That was invisible while nothing asked. ``--zone-storey`` asks, and
+    without this would match nothing on any Archicad project -- the filter
+    would look broken rather than the reading of it.
+    """
     container = _ios().util.element.get_container(product)
+    if container is None:
+        for relation in getattr(product, "Decomposes", ()) or ():
+            parent = getattr(relation, "RelatingObject", None)
+            if parent is not None and parent.is_a("IfcBuildingStorey"):
+                container = parent
+                break
     if container is None:
         return None
     name = getattr(container, "Name", None)

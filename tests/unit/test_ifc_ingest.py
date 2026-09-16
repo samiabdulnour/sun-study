@@ -1209,3 +1209,56 @@ def test_a_balcony_slab_still_belongs_to_the_flat_standing_on_it() -> None:
 
     assert owner is not None and owner.global_id == "upper"
     assert route == "level-matched"
+
+
+def test_a_space_finds_its_storey_through_the_aggregate_when_it_has_no_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Archicad ties a Zone to its storey by aggregation, not containment.
+
+    `get_container` follows IfcRelContainedInSpatialStructure, which is how a
+    wall reaches its storey. An IfcSpace is aggregated through
+    IfcRelAggregates instead, and the container is then nothing at all:
+    measured on Silverwater, 16 September 2026, 1,359 of 1,359 IfcSpace
+    answered None, so every Zone the tool had ever read carried no storey.
+
+    Invisible until something asked. `--zone-storey` asks, and without the
+    fallback it would match nothing on any Archicad project -- which would
+    read as a broken filter rather than as a storey never being read.
+
+    `get_container` is stubbed to the None it really returns, so the test is
+    about the fallback and not about ifcopenshell's traversal.
+    """
+    from sun_study.ingest import ifc as ifc_module
+
+    monkeypatch.setattr(ifc_module._ios().util.element, "get_container", lambda product: None)
+
+    class Storey:
+        Name = "LEVEL 02"
+
+        def is_a(self, kind: str) -> bool:
+            return kind == "IfcBuildingStorey"
+
+    class Building:
+        Name = "not a storey"
+
+        def is_a(self, kind: str) -> bool:
+            return kind == "IfcBuilding"
+
+    class Relation:
+        def __init__(self, parent: object) -> None:
+            self.RelatingObject = parent
+
+    class Space:
+        def __init__(self, *parents: object) -> None:
+            self.Decomposes = [Relation(p) for p in parents]
+
+    assert ifc_module._storey_name(Space(Storey())) == "LEVEL 02"
+
+    # Aggregated into something that is not a storey: not mistaken for one.
+    assert ifc_module._storey_name(Space(Building())) is None
+
+    # A building first and the storey after it: still found.
+    assert ifc_module._storey_name(Space(Building(), Storey())) == "LEVEL 02"
+
+    assert ifc_module._storey_name(Space()) is None
