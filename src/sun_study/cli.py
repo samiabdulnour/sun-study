@@ -1524,10 +1524,36 @@ def _draw_zone_groups(
             **shared,
         )
     except ArchicadError as error:
-        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        _say_once(str(error))
         return None
     typer.echo(drawn.describe())
     return drawn
+
+
+#: Refusals `_say_once` has already printed, so a run states each one once.
+_ALREADY_SAID: set[str] = set()
+
+
+def _say_once(message: str) -> None:
+    """Print a refusal the first time, and acknowledge repeats in one line.
+
+    Every drawing in a run goes through the same fit, so a fit that is out
+    refuses all of them with the identical paragraph: the bands, the
+    threshold, then one per hour. On Silverwater that was eleven copies of a
+    seven-line message -- seventy-odd lines saying one thing, with the numbers
+    the run did produce buried between them.
+
+    Kept per message, not per run, so two genuinely different refusals are
+    both heard. Repeats are acknowledged rather than dropped, because how many
+    drawings were refused is how much of the sheet is missing.
+    """
+    if message in _ALREADY_SAID:
+        typer.secho(
+            "  the same disagreement refused this drawing too", fg=typer.colors.RED, err=True
+        )
+        return
+    _ALREADY_SAID.add(message)
+    typer.secho(message, fg=typer.colors.RED, err=True)
 
 
 def _window_of(result: MassingResult) -> str:

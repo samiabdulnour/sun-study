@@ -208,3 +208,33 @@ def test_the_export_is_turned_before_either_box_is_taken() -> None:
     astray = fit_to_plan(extents, {"a": zone, "b": other}, turn_deg=0.0)
     assert astray.rmse_m > 0.5, "boxed in different frames, they do not"
     _ = spin
+
+
+def test_a_refusal_is_stated_once_however_many_drawings_it_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One bad fit refuses every drawing in the run, with the same paragraph.
+
+    The bands, the threshold, then one per hour: on Silverwater that printed
+    eleven copies of a seven-line message and buried the figures the run had
+    actually produced. The refusal is one fact about the run, so it is said
+    once and the repeats are acknowledged in a line.
+    """
+    import typer
+
+    from sun_study import cli
+
+    said: list[str] = []
+    monkeypatch.setattr(typer, "secho", lambda message, **kwargs: said.append(str(message)))
+    monkeypatch.setattr(cli, "_ALREADY_SAID", set())
+
+    cli._say_once("the export and the project disagree")
+    for _ in range(10):
+        cli._say_once("the export and the project disagree")
+    cli._say_once("a different problem entirely")
+
+    assert said.count("the export and the project disagree") == 1, "said more than once"
+    assert said.count("a different problem entirely") == 1, "a second refusal was swallowed"
+    # The repeats are acknowledged, because how many were refused is how much
+    # of the sheet is missing.
+    assert sum(1 for line in said if "refused this drawing too" in line) == 10

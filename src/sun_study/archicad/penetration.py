@@ -212,6 +212,13 @@ def box_centre(points: FloatArray) -> list[float]:
     ]
 
 
+#: Above this many pairs the leave-one-out diagnosis is not attempted. It is
+#: quadratic, and past a few hundred Zones the answer it gives is never "one
+#: Zone moved" anyway -- a disagreement spread that wide is the frames being
+#: out of step, which is what `describe_disagreement` then says.
+LEAVE_ONE_OUT_LIMIT = 400
+
+
 def fit_to_plan(
     export_extents: Mapping[str, FloatArray],
     zones: Mapping[str, ArchicadZone],
@@ -272,11 +279,32 @@ def fit_to_plan(
     gaps = np.array(target) - np.array(source)
     offset = np.median(gaps, axis=0)
     per_pair = np.linalg.norm(gaps - offset, axis=1)
+
+    # Leave-one-out, so a refusal can name the Zone rather than guess at it.
+    # This path built its own PlanTransform and left `without_each_m` empty,
+    # which sent `describe_disagreement` down the branch that blames the pair
+    # count -- telling a reader that 1,359 pairs was "too few to tell" and to
+    # put *more* Zones in the export. It is the one piece of advice that
+    # cannot help. Each refit is a median of the same gaps with one row
+    # dropped, so the diagnosis costs a sort per pair and nothing on the wire.
+    #
+    # Skipped above a few hundred pairs: the cost is quadratic and the answer
+    # is not worth it at that size, since a disagreement spread over hundreds
+    # of Zones is never one Zone's fault. `describe_disagreement` says which
+    # of the two it is rather than pretending the count was the problem.
+    without_each: tuple[float, ...] = ()
+    if 4 <= len(gaps) <= LEAVE_ONE_OUT_LIMIT:
+        without_each = tuple(
+            float(np.median(np.linalg.norm(rest - np.median(rest, axis=0), axis=1)))
+            for rest in (np.delete(gaps, drop, axis=0) for drop in range(len(gaps)))
+        )
+
     return PlanTransform(
         rotation=turn,
         offset=offset,
         rmse_m=float(np.median(per_pair)),
         per_pair_m=tuple(float(x) for x in per_pair),
+        without_each_m=without_each,
         keys=tuple(keys),
     )
 
