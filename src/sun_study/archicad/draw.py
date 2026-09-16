@@ -52,6 +52,7 @@ from sun_study.archicad.ids import (
 )
 from sun_study.archicad.layers import LayerState, borrowed
 from sun_study.archicad.read import ArchicadZone, disambiguated
+from sun_study.core.edges import signed_area, thickness
 from sun_study.rules.assessment import BuildingAssessment
 
 __all__ = [
@@ -939,16 +940,61 @@ def create_elements(
         raise ArchicadError(f"{command} returned no element list: {response!r}")
 
     problems = [
-        f"{(item.get('error') or {}).get('message', 'unknown error')}"
-        for item in elements
+        (index, (item.get("error") or {}).get("message", "unknown error"))
+        for index, item in enumerate(elements)
         if isinstance(item, dict) and "error" in item
     ]
     if problems:
+        described = []
+        for index, message in problems[:5]:
+            note = _refused_shape(data, index)
+            described.append(f"[{index}] {message}" + (f" -- {note}" if note else ""))
         raise ArchicadError(
             f"{command} failed for {len(problems)} of {len(data)} elements:\n  "
-            + "\n  ".join(sorted(set(problems))[:5])
+            + "\n  ".join(described)
         )
     return [item for item in elements if isinstance(item, dict) and "elementId" in item]
+
+
+def _refused_shape(data: list[dict[str, Any]], index: int) -> str:
+    """The refused element measured, because Archicad will not say what was wrong.
+
+    Its entire answer to a fill it declines to make is "Failed to create new
+    Hatch": not which of the five hundred in the batch, and not what about it
+    was unacceptable. One bad ring therefore ended a thirty-minute analysis
+    with nothing to go on and no way to find the ring but to run it all again.
+
+    These are the measurements that have explained it before -- the vertex
+    count, the size, and above all the thickness, because what Archicad
+    refuses is a polygon thin enough to read as a line. See
+    ``core.edges.MINIMUM_THICKNESS_M`` and the spikes documented beside it.
+
+    Empty for an element carrying no contour, so the commands that share this
+    function to create texts and the rest are unaffected.
+    """
+    if not 0 <= index < len(data):
+        return ""
+    coordinates = data[index].get("coordinates")
+    if not isinstance(coordinates, list):
+        return ""
+    ring = tuple(
+        (float(point.get("x", 0.0)), float(point.get("y", 0.0)))
+        for point in coordinates
+        if isinstance(point, dict)
+    )
+    if len(ring) < 3:
+        return f"{len(ring)} vertices"
+    xs = [x for x, _ in ring]
+    ys = [y for _, y in ring]
+    shortest = min(
+        math.hypot(b[0] - a[0], b[1] - a[1])
+        for a, b in zip(ring, (*ring[1:], ring[0]), strict=True)
+    )
+    return (
+        f"{len(ring)} vertices, {max(xs) - min(xs):.3f} x {max(ys) - min(ys):.3f} m, "
+        f"area {abs(signed_area(ring)) / 2.0:.6g} m2, thickness {thickness(ring):.3g} m, "
+        f"shortest edge {shortest:.3g} m, first vertex ({xs[0]:.3f}, {ys[0]:.3f})"
+    )
 
 
 def _addon_text(text: dict[str, Any], layer_index: int | None) -> dict[str, Any]:

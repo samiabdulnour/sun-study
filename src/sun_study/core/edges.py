@@ -63,6 +63,7 @@ __all__ = [
     "refined_rings",
     "self_intersects",
     "signed_area",
+    "thickness",
     "traced_regions",
 ]
 
@@ -804,12 +805,10 @@ def decomposed(outer: Ring, holes: list[Ring]) -> list[Ring]:
     # A tenth of a millimetre, far below the millimetre the boundary was
     # traced to, so nothing moves further than it was ever located.
     tidied = [_straighten(piece, PIECE_TOLERANCE_M) for piece in pieces]
-    return [
-        piece for piece in tidied if len(piece) >= 3 and _thickness(piece) > MINIMUM_THICKNESS_M
-    ]
+    return [piece for piece in tidied if len(piece) >= 3 and thickness(piece) > MINIMUM_THICKNESS_M]
 
 
-def _thickness(ring: Ring) -> float:
+def thickness(ring: Ring) -> float:
     """How far a ring departs from being a line: twice its area over its edge."""
     perimeter = sum(
         float(np.hypot(b[0] - a[0], b[1] - a[1]))

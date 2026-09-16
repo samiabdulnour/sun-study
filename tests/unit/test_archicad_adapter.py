@@ -51,6 +51,7 @@ from sun_study.archicad.draw import (
     BandStyle,
     Pen,
     band_for,
+    create_elements,
     default_layer_name,
     draw_assessment,
     hidden_layers,
@@ -4886,3 +4887,61 @@ def test_a_loriini_failure_names_the_namespace_and_carries_the_code() -> None:
         connection.run_loriini("CreateDocumentFrom3D", {"name": "9AM"})
     with pytest.raises(CommandFailedError, match="-2130313114"):
         connection.run_loriini("CreateDocumentFrom3D", {"name": "9AM"})
+
+
+def test_a_refused_hatch_names_which_one_it_was_and_measures_it() -> None:
+    """Archicad says only "Failed to create new Hatch", so the tool must say the rest.
+
+    One bad ring in a batch of five hundred aborts the drawing, and the
+    drawing is the last step of a thirty-minute analysis. A message that
+    counts the failures without identifying them costs another thirty minutes
+    to learn anything at all, so the index and the measurements travel with
+    the error.
+    """
+    connection, _ = connect(
+        {
+            "CreateHatches": {
+                "elements": [
+                    {"elementId": {"guid": "drew"}},
+                    {"error": {"message": "Failed to create new Hatch"}},
+                ]
+            }
+        }
+    )
+    solid = [{"x": 0.0, "y": 0.0}, {"x": 10.0, "y": 0.0}, {"x": 10.0, "y": 10.0}]
+    # A triangle a nanometre deep: an area Archicad will not make a fill from,
+    # and the shape every failure in this path has turned out to be.
+    sliver = [{"x": 0.0, "y": 0.0}, {"x": 10.0, "y": 0.0}, {"x": 10.0, "y": 1e-9}]
+
+    with pytest.raises(ArchicadError) as raised:
+        create_elements(
+            connection,
+            "CreateHatches",
+            "hatchesData",
+            [{"coordinates": solid}, {"coordinates": sliver}],
+        )
+
+    message = str(raised.value)
+    assert "failed for 1 of 2 elements" in message
+    assert "[1]" in message, "which hatch, not merely how many"
+    assert "3 vertices" in message
+    assert "thickness" in message, "the measurement that has explained every one so far"
+    assert "[0]" not in message, "and nothing about the hatch that drew"
+
+
+def test_a_refused_element_without_a_contour_is_reported_without_measurements() -> None:
+    """``create_elements`` is shared with the commands that make texts.
+
+    Measuring a ring it has not got would either crash the error path or
+    print zeros that read as a diagnosis. Neither is wanted, so the shape note
+    is simply absent.
+    """
+    connection, _ = connect(
+        {"CreateTexts": {"elements": [{"error": {"message": "no such layer"}}]}}
+    )
+    with pytest.raises(ArchicadError) as raised:
+        create_elements(connection, "CreateTexts", "textsData", [{"text": "9AM"}])
+
+    message = str(raised.value)
+    assert "[0] no such layer" in message
+    assert "vertices" not in message
