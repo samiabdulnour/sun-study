@@ -238,3 +238,53 @@ def test_a_refusal_is_stated_once_however_many_drawings_it_refuses(
     # The repeats are acknowledged, because how many were refused is how much
     # of the sheet is missing.
     assert sum(1 for line in said if "refused this drawing too" in line) == 10
+
+
+def test_a_turned_export_places_correctly_and_an_unturned_one_does_not() -> None:
+    """Why the communal plans refused on a rotated project and the flats did not.
+
+    A bounding box is axis-aligned in whichever frame it is measured, so the
+    same Zone boxed in a north-aligned export and again in a project turned
+    from it has two different centres -- further apart the longer the Zone and
+    the further it sits from the centre of the site. `fit_to_plan` turns the
+    export before boxing, which is exactly what `turn_deg` is for.
+
+    Silverwater stands at bearing 293.548 with its export written at 0.000:
+    66.45 degrees apart. Told nothing, the fit of 1,359 Zones left a median
+    residual of 39.55 m and refused every drawing. Told the angle, 0.687 m.
+    """
+    import numpy as np
+
+    from sun_study.archicad.penetration import fit_to_plan
+    from sun_study.archicad.read import ArchicadZone
+    from sun_study.core.geometry import rotation_about_z
+
+    turn = 66.45
+    back = rotation_about_z(-turn)[:2, :2]
+
+    # Zones spread across a site, so the error has room to grow with radius.
+    centres = [(0.0, 0.0), (60.0, 10.0), (-40.0, 55.0), (120.0, -80.0), (-95.0, -30.0)]
+
+    export_extents = {}
+    zones = {}
+    for index, (x, y) in enumerate(centres):
+        key = f"zone-{index}"
+        # A long thin Zone, which is where the boxing frame matters most.
+        corners = np.array(
+            [[x - 9.0, y - 1.5], [x + 9.0, y - 1.5], [x + 9.0, y + 1.5], [x - 9.0, y + 1.5]]
+        )
+        zones[key] = ArchicadZone(guid=key, name=key, number="", outline=tuple(map(tuple, corners)))
+        # The export holds the same Zone in a frame turned the other way.
+        export_extents[key] = np.column_stack([corners @ back.T, np.zeros(len(corners))])
+
+    told = fit_to_plan(export_extents, zones, turn_deg=turn)
+    assert told.rmse_m < 0.01, f"with the angle stated the fit should be exact, got {told.rmse_m}"
+
+    not_told = fit_to_plan(export_extents, zones, turn_deg=0.0)
+    assert not_told.rmse_m > 10.0, (
+        "with the angle left at zero the fit must fail loudly, not quietly pass"
+    )
+    # And it fails the way Silverwater did: worst at the greatest radius.
+    radii = [float(np.hypot(x, y)) for x, y in centres]
+    worst = max(range(len(centres)), key=lambda i: not_told.per_pair_m[i])
+    assert radii[worst] == max(radii), "the worst pair should be the furthest out"

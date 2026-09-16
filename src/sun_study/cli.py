@@ -1143,16 +1143,41 @@ def report_zone_bands(
             f"each is drawn on its own"
         )
 
+    # The angle between the export's frame and the project's, which this path
+    # did not pass and so took as zero. The apartment diagrams have always
+    # passed it (`draw_penetration`), and that is the whole reason they place
+    # correctly on a rotated project while this refused to: a bounding box is
+    # axis-aligned in whichever frame it is measured, so with the turn missing
+    # every Zone's centre is boxed in the wrong frame and the error grows with
+    # distance from the centre.
+    #
+    # Measured on Silverwater, 16 September 2026: the project stands at
+    # bearing 293.548 and its export is written north-aligned at 0.000, so the
+    # frames are 66.45 degrees apart. Fitting all 1,359 Zones with the turn
+    # left out gave a median residual of 39.55 m and a worst pair 400.67 m out
+    # -- growing with radius, correlation +0.997 -- and the drawing was
+    # refused every time. With the turn stated it is 0.687 m.
+    #
+    # Nothing about Silverwater is unusual. Any project not aligned to true
+    # north hit this, and only a project at north 0 ever escaped it.
+    turn_deg = _frame_turn(connection, result)
+
     shared: dict[str, Any] = {
         "positions": samples.positions,
         "parent_ids": samples.parent_ids,
         "spacing_m": spacing_m,
         "zone_by_apartment": paired,
         "zones": zones,
+        "turn_deg": turn_deg,
         "export_extents": {
             ifc_id: exported[ifc_id].mesh.vertices for ifc_id in paired if ifc_id in exported
         },
     }
+    if abs(turn_deg) > 0.01:
+        typer.echo(
+            f"  the export is written {turn_deg:+.3f} deg from the project's frame; "
+            f"the drawing is turned by that before it is placed"
+        )
     when = f"{result.assessment_date:%d %B}, {_window_of(result)}"
 
     # Before any drawing. Everything below this line can fail in Archicad --
@@ -2915,8 +2940,13 @@ def _export_for_massing(
     return written
 
 
-def _frame_turn(connection: ArchicadConnection, result: PipelineResult) -> float:
+def _frame_turn(connection: ArchicadConnection, result: PipelineResult | MassingResult) -> float:
     """The angle from the export's frame to the project's, in degrees.
+
+    Takes either study's result, because both need the same answer and for the
+    same reason: the apartment diagrams and the communal-open-space plans are
+    both drawn from an export whose frame may be turned from the project's.
+    Only the scene's orientation is read, which both carry.
 
     Both sides say where north is. Archicad reports it as a bearing for its
     own +Y; the export reports its own, which is zero whenever the model was
