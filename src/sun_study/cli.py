@@ -6648,6 +6648,24 @@ def sun_eye_views(
     except ArchicadError as error:
         typer.secho(str(error), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
+    # Again, and this time over the documents this run has just made. The mend
+    # above ran before any existed, and a document carries its own copy of the
+    # storey filter from the moment it is created (D98): whatever
+    # `CreateDocumentFrom3D` hands it is what it converts for ever, because a
+    # document can be neither re-aimed nor deleted through the API. These are
+    # the databases the sheets place, so a filter left on one is a sun view
+    # drawn with half the model in it -- reported 16 September 2026 as views
+    # that come out filtered to the 0.AHD storey however the window is set.
+    #
+    # Cheap and unconditional rather than conditional on the window having
+    # been set: one verified call per document, against a sheet that is wrong
+    # and does not say so.
+    mended, looked, said = mend_document_filters(connection)
+    if mended:
+        typer.echo(f"  took the storey filter off {mended} of {looked} documents just made")
+    if said:
+        typer.secho(f"  {said}", fg=typer.colors.YELLOW)
+
     typer.echo(f"  3D Documents, with views in {naming.named('Sun View Documents')!r}:")
     for _eye, view, reused in made:
         typer.echo(f"    {view.name}" + ("  (document already there, kept)" if reused else ""))

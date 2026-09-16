@@ -355,3 +355,69 @@ def test_a_document_that_keeps_its_filter_is_counted_and_said() -> None:
 
     assert (mended, looked) == (0, 1)
     assert "kept their storey filter" in said
+
+
+def test_the_documents_just_made_are_mended_after_they_are_made(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A document carries its own copy of the storey filter from birth (D98).
+
+    `mend_document_filters` ran once, before `make_sun_eye_documents` had made
+    anything, so it only ever reached documents left by earlier runs. Whatever
+    filter `CreateDocumentFrom3D` gave the new ones stayed on them -- and those
+    are the databases `make_sun_eye_sheets` places, so the sheet came out with
+    half the model in it and said nothing. Reported 16 September 2026: views
+    that come out filtered to the 0.AHD storey however the window is set.
+
+    A document can be neither re-aimed nor deleted through the API, so mending
+    in place afterwards is the only mend there is.
+
+    The order is the test, not the call: a mend that runs only before the
+    documents exist passes any "was it mended" assertion and ships the same
+    wrong sheet.
+    """
+    import datetime as dt
+
+    from typer.testing import CliRunner
+
+    from sun_study import cli
+    from sun_study.archicad.read import GeoLocation
+    from sun_study.archicad.sun_eyes import SunEye
+
+    order: list[str] = []
+
+    class Connection:
+        def run_tapir(self, command: str, parameters: object = None) -> dict[str, object]:
+            if command == "GetCurrentWindowType":
+                return {"currentWindowType": "FloorPlan"}
+            return {}
+
+    def mend(_connection: object) -> tuple[int, int, str]:
+        order.append("mend")
+        return 1, 1, ""
+
+    def documents(*args: object, **kwargs: object) -> list[object]:
+        order.append("make_documents")
+        return []
+
+    noon = dt.datetime(2026, 6, 21, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=10)))
+    eye = SunEye(when=noon, true_bearing_deg=0.0, project_bearing_deg=0.0, altitude_deg=32.0)
+
+    monkeypatch.setattr(cli, "_connect", lambda *a, **k: Connection())
+    monkeypatch.setattr(cli, "show_every_storey", lambda *a, **k: "")
+    monkeypatch.setattr(cli, "mend_document_filters", mend)
+    monkeypatch.setattr(cli, "remove_previous", lambda *a, **k: (0, 0))
+    monkeypatch.setattr(
+        cli, "read_geo_location", lambda *a, **k: GeoLocation(-33.9, 151.2, 37.0, 0.0)
+    )
+    monkeypatch.setattr(cli, "sun_eyes", lambda *a, **k: [eye])
+    monkeypatch.setattr(cli, "sun_eye_layer_combination", lambda *a, **k: ("combo", []))
+    monkeypatch.setattr(cli, "planned_renovation_filter", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "make_sun_eye_documents", documents)
+    monkeypatch.setattr(cli, "make_sun_eye_views", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "make_sun_eye_sheets", lambda *a, **k: (0, 0))
+
+    CliRunner().invoke(cli.app, ["sun-views", "--port", "1"])
+
+    assert order.count("mend") == 2, f"mended {order.count('mend')} times, not before and after"
+    assert order.index("make_documents") < order.index("mend", 1), (
+        "the documents this run made were never mended; only earlier runs' were"
+    )

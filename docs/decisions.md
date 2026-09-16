@@ -3270,3 +3270,48 @@ reports a successful delete and removes nothing (`clear_database`), and now a
 window move reports success and does not move. Every one of them was found the
 same way — by counting afterwards rather than by reading the response. Assume
 the answer describes the request, not the outcome.
+
+### D101 — The documents a run makes are mended after it makes them, not only the ones it found
+
+Reported 16 September 2026: *"the sun views are not drawn directly because by
+default there is filter on views created — filtering 0.AHD floor"*. The same
+complaint as [D98](#d98--the-3d-windows-storey-filter-is-the-add-ons-to-set-because-a-saved-view-keeps-it),
+after D98 shipped.
+
+D98 found three copies of the storey filter — the window, each 3D Document,
+each saved view — and set the first two. It set the second one in the wrong
+place. `mend_document_filters` was called once, at the top of the run:
+
+| step | what it reaches |
+|---|---|
+| `show_every_storey` | the 3D window |
+| `mend_document_filters` | documents **already there** |
+| `remove_previous` | deletes the last run's views and layouts |
+| `make_sun_eye_documents` | **makes this run's documents** |
+| `make_sun_eye_sheets` | places **those** on the layouts |
+
+So the mend only ever reached documents left by earlier runs, and every
+document the run made kept whatever `CreateDocumentFrom3D` gave it. Those are
+the databases the sheets place. A first run on a clean project — which has no
+earlier documents at all — therefore had nothing mended and every sheet wrong.
+
+D98 had the mechanism right and the timing wrong: it reasoned that a document
+"made while the window was filtered" keeps that filter, and then mended before
+any document of this run existed. A document carries its own copy **from the
+moment it is created**, so the only moment the mend is worth anything is after
+creation.
+
+So the mend runs again over what was just made. It is cheap — one call per
+document, read back as D98 already required — and unconditional, because the
+alternative is a sheet that is wrong and does not say so.
+
+**The test is about order, not about the call**, exactly as D99's was: a mend
+that runs only before the documents exist passes any "was it mended" assertion
+and ships the identical wrong sheet. The test asserts two mends and that the
+second falls after the making.
+
+Still unmended, and still true: the third copy, in the saved view. Nothing in
+`API_NavigatorView` carries a storey range and `Set3DFilter` reaches a window
+or a document and nothing else. The sheets place documents, so they are now
+right; a person opening the *view* may still meet the filter, and redefining
+from the current window is still the only cure.
