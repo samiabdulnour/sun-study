@@ -1391,68 +1391,61 @@ def test_cancelling_remembers_the_place_too(hidden_window: Any) -> None:
     assert "+250+180" in (window._chooser_geometry or "")
 
 
-# -- a height cut this building justifies ----------------------------------
+# -- a height band, as two of this building's own storeys --------------------
 
 
-def test_the_height_cut_comes_from_the_project_not_a_placeholder(hidden_window: Any) -> None:
-    """100 m is wrong twice over: on a townhouse it lets a parked hotlink
-    master through, and on a tower it cuts off the top ten storeys."""
-    hidden_window.options = replace(hidden_window.options, top_storey_m=42.5)
-    hidden_window.exclude.delete(0, "end")
-    hidden_window.exclude.insert(0, window.DEFAULT_EXCLUDE_ABOVE_M)
-
+def test_the_band_pickers_are_filled_from_the_projects_own_storeys(hidden_window: Any) -> None:
+    """A band is chosen from what the building has, not typed from memory."""
+    hidden_window.options = replace(
+        hidden_window.options, storey_names=("AHD", "GROUND", "LEVEL 01", "ROOF")
+    )
     hidden_window._offer_height_cut()
 
-    assert hidden_window.exclude.get() == "58", "42.5 m top storey plus 15 m headroom"
+    assert list(hidden_window.storey_from["values"]) == ["AHD", "GROUND", "LEVEL 01", "ROOF"]
+    assert list(hidden_window.storey_to["values"]) == ["AHD", "GROUND", "LEVEL 01", "ROOF"]
 
 
-def test_a_typed_height_cut_outranks_the_project(hidden_window: Any) -> None:
-    """A figure somebody typed is a decision. So is one restored from saved
-    settings, which is the same thing arriving a day later."""
-    hidden_window.options = replace(hidden_window.options, top_storey_m=42.5)
-    hidden_window.exclude.delete(0, "end")
-    hidden_window.exclude.insert(0, "120")
-
+def test_nothing_is_chosen_for_the_person(hidden_window: Any) -> None:
+    """Which storeys are the building and which are parked geometry is a
+    judgement this cannot make: one real project defines 134 storeys running
+    to 422.5 m at a regular 3.2 m spacing, with no gap to say where the tower
+    stops. A band guessed too low silently removes the top of the building
+    from every percentage and nothing in the drawing shows it."""
+    hidden_window.options = replace(hidden_window.options, storey_names=("AHD", "LEVEL 01", "ROOF"))
     hidden_window._offer_height_cut()
 
-    assert hidden_window.exclude.get() == "120"
+    assert hidden_window.storey_from.get() == "", "an empty band measures everything"
+    assert hidden_window.storey_to.get() == ""
+    assert hidden_window._band_args() == []
 
 
-def test_storeys_that_will_not_read_leave_the_placeholder_alone(hidden_window: Any) -> None:
-    """An empty box means 'measure everything, however high', which is the
-    failure this setting exists to prevent. So a project that will not give up
-    its storeys keeps the default rather than losing it."""
-    hidden_window.options = replace(hidden_window.options, top_storey_m=None)
-    hidden_window.exclude.delete(0, "end")
-    hidden_window.exclude.insert(0, window.DEFAULT_EXCLUDE_ABOVE_M)
-
+def test_storeys_that_will_not_read_leave_the_pickers_alone(hidden_window: Any) -> None:
+    """An unreadable storey list is a failure to read, not a statement that
+    the project has no storeys."""
+    hidden_window.storey_from.set("GROUND")
+    hidden_window.options = replace(hidden_window.options, storey_names=())
     hidden_window._offer_height_cut()
 
-    assert hidden_window.exclude.get() == window.DEFAULT_EXCLUDE_ABOVE_M
+    assert hidden_window.storey_from.get() == "GROUND", "a chosen storey is a decision"
 
 
-def test_the_top_storey_is_read_off_whatever_key_archicad_used() -> None:
-    """'level' is what Tapir answers with; 'elevation' costs nothing to accept."""
-    assert probe._highest_storey([{"level": 3.0}, {"level": 42.5}, {"level": 0.0}]) == 42.5
-    assert probe._highest_storey([{"elevation": 12.0}]) == 12.0
-    assert probe._highest_storey([]) is None
-    assert probe._highest_storey("not a list") is None
-    assert probe._highest_storey([{"index": 0}]) is None, "no level is not a level of zero"
+def test_a_chosen_band_becomes_the_two_storey_flags(hidden_window: Any) -> None:
+    """Either end may be left open, and both open is the whole model."""
+    hidden_window.storey_from.set("AHD")
+    hidden_window.storey_to.set("ROOF")
+    assert hidden_window._band_args() == [
+        "--exclude-below-storey",
+        "AHD",
+        "--exclude-above-storey",
+        "ROOF",
+    ]
 
+    hidden_window.storey_from.set("")
+    assert hidden_window._band_args() == ["--exclude-above-storey", "ROOF"]
 
-def test_storeys_that_describe_parked_masters_are_refused(hidden_window: Any) -> None:
-    """A project can park its hotlink masters on real storeys. The reference
-    project defines 134 of them running to 422.5 m at a regular 3.2 m spacing,
-    with no gap to tell the tower from the masters above it -- so the top
-    storey is not the top of the building, and a cut above the placeholder
-    excludes nothing at all."""
-    hidden_window.options = replace(hidden_window.options, top_storey_m=422.5)
-    hidden_window.exclude.delete(0, "end")
-    hidden_window.exclude.insert(0, window.DEFAULT_EXCLUDE_ABOVE_M)
-
-    hidden_window._offer_height_cut()
-
-    assert hidden_window.exclude.get() == window.DEFAULT_EXCLUDE_ABOVE_M, "left alone"
+    (facade,) = hidden_window.jobs()
+    assert flag(facade.args, "--exclude-above-storey") == ["ROOF"]
+    assert "--exclude-above" not in facade.args, "the metre flag is gone from the window"
 
 
 def test_the_shadow_study_names_views_and_never_layers(hidden_window: Any, tmp_path: Path) -> None:
@@ -1601,17 +1594,18 @@ def test_the_site_analysis_waits_for_an_address(hidden_window: Any) -> None:
     assert hidden_window.settings()["site_anchor"] == "Project location"
 
 
-def test_the_day_in_general_reaches_every_solar_tool_but_the_shadow_diagram(
+def test_a_ticked_day_reaches_every_solar_tool_but_the_shadow_diagram(
     hidden_window: Any,
 ) -> None:
-    """One box, and the plans, the facade, the communal study and the sun
-    views all run on that day. The shadow diagram keeps its own list of days,
+    """One set of ticks, and the plans, the facade, the communal study and the
+    sun views all run on those days. The shadow diagram keeps its own list,
     because it is drawn for all three at once."""
     hidden_window.do_plans.set(True)
     hidden_window.do_communal.set(True)
     hidden_window.do_shadows.set(True)
     hidden_window.do_sun_eyes.set(True)
-    hidden_window.day.set("Summer solstice, 21 December")
+    hidden_window.days["winter"].set(False)
+    hidden_window.days["summer"].set(True)
 
     by_name = {job.label: job.args for job in hidden_window.jobs()}
     assert flag(by_name["solar analysis: facade"], "--date") == ["summer"]
@@ -1619,6 +1613,22 @@ def test_the_day_in_general_reaches_every_solar_tool_but_the_shadow_diagram(
     assert flag(by_name["solar analysis: communal open space"], "--date") == ["summer"]
     assert flag(by_name["sun views"], "--date") == ["summer"]
     assert "--date" not in by_name["shadow diagram"]
+
+
+def test_several_ticked_days_run_each_tool_once_per_day(hidden_window: Any) -> None:
+    """The reason the box became ticks. A council wants midwinter for the test
+    and the equinox beside it to show the year, and picking one at a time meant
+    running the tool again and remembering to change the box.
+
+    Each run carries its own date, so the sets stand beside each other in the
+    project rather than the second replacing the first -- and the queued jobs
+    say which day they are for, or two identical labels would be waiting."""
+    hidden_window.days["equinox"].set(True)
+
+    jobs = hidden_window.jobs()
+    assert len(jobs) == 2, "one facade run per day"
+    assert [flag(job.args, "--date") for job in jobs] == [[], ["equinox"]]
+    assert "21 June" in jobs[0].label and "21 September" in jobs[1].label
 
 
 def test_the_rulesets_own_day_sends_nothing_so_the_names_stay_as_they_were(
@@ -1629,18 +1639,28 @@ def test_the_rulesets_own_day_sends_nothing_so_the_names_stay_as_they_were(
     assert "--date" not in facade.args
     assert "--date" not in plans.args
 
-    hidden_window.day.set("06-21")
+    # Typed as a date rather than ticked, and still the ruleset's own day.
+    hidden_window.days["winter"].set(False)
+    hidden_window.custom_day.insert(0, "06-21")
     assert "--date" not in hidden_window.jobs()[0].args
 
 
-def test_a_typed_day_is_sent_as_typed_and_the_command_line_judges_it(hidden_window: Any) -> None:
-    hidden_window.day.set("9-22")
-    (facade,) = hidden_window.jobs()
-    assert flag(facade.args, "--date") == ["09-22"]
+def test_a_custom_day_runs_as_well_as_the_ticks_and_is_judged_by_the_command(
+    hidden_window: Any,
+) -> None:
+    """As well as, not instead of: the usual pair plus one is three runs."""
+    hidden_window.custom_day.insert(0, "9-22")
+    jobs = hidden_window.jobs()
+    assert [flag(job.args, "--date") for job in jobs] == [[], ["09-22"]]
 
-    hidden_window.day.set("autumn")
-    (facade,) = hidden_window.jobs()
-    assert flag(facade.args, "--date") == ["autumn"]
+    hidden_window.custom_day.delete(0, "end")
+    hidden_window.custom_day.insert(0, "autumn")
+    assert flag(hidden_window.jobs()[1].args, "--date") == ["autumn"]
+
+    # Ticked and typed as the same day is one run, not two over the top.
+    hidden_window.custom_day.delete(0, "end")
+    hidden_window.custom_day.insert(0, "06-21")
+    assert len(hidden_window.jobs()) == 1
 
 
 def test_the_future_context_tick_reaches_the_site_command_with_its_settings(

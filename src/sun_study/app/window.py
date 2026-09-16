@@ -61,7 +61,6 @@ does.
 
 from __future__ import annotations
 
-import math
 import queue
 import sys
 import tkinter as tk
@@ -86,18 +85,6 @@ HINT = "#5a5a5a"
 #: guess, offered rather than applied: the picker is filled with them and the
 #: list stays editable, because the next project names its slabs differently.
 SKIN_WORDS = ("Wall.External", "Floor.", "Balustrade", "Screens")
-
-#: What "Ignore above" says before a project has been read. A placeholder, and
-#: named so the test for "nobody has touched this" cannot drift from the value
-#: the field is built with.
-DEFAULT_EXCLUDE_ABOVE_M = "100"
-
-#: Headroom over the topmost storey. A roof, a lift overrun and a parapet are
-#: all real and all within a storey or two of the top slab; hotlinked masters
-#: are parked far higher -- 157 to 281 m on the reference project. 15 m clears
-#: the first and is nowhere near the second, and is the same figure
-#: ``ingest.scene`` uses to decide when overhead geometry is suspicious.
-STOREY_HEADROOM_M = 15.0
 
 #: What each study is called, in the one place all three callers read it
 #: from: the line above Run that says what is queued, the ``──`` rule the log
@@ -501,6 +488,9 @@ class Job:
 class Window:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        #: The assessment days, by short name, ticked or not. Built before
+        #: the sections are, because the Model tab fills it as it is drawn.
+        self.days: dict[str, tk.BooleanVar] = {}
         self.root.title(PRODUCT)
         # Never taller than the screen. A window opened past the bottom edge
         # cannot be dragged back by its title bar, so everything below the
@@ -760,34 +750,6 @@ class Window:
         )
         self.sheets["values"] = [title for title, _ in self.SHEET_CHOICES]
         self.sheets.set(self.SHEET_CHOICES[1][0])
-        self.year, row = self._entry(
-            frame,
-            row,
-            "Year",
-            "2024",
-            "Which year's assessment day to use.",
-            "The assessment runs on the day chosen below, 21 June unless "
-            "another is picked. The year only shifts the sun positions "
-            "slightly; it is here so a study can be repeated against the "
-            "same day as an earlier report.",
-        )
-        self.day, row = self._combo(
-            frame,
-            row,
-            "Day",
-            "Winter solstice unless a council asks for another.",
-            "The day every solar tool studies: the apartment plans, the "
-            "facade bands, the communal open space and the sun views. 21 June "
-            "is the shortest day, the worst case the ADG assesses, and the "
-            "only day its two-hour test means anything. The equinox and "
-            "midsummer show the year; a run on either carries the day in "
-            "every layer, view, sheet and property it makes, so it stands "
-            "beside the midwinter one rather than over it. The shadow "
-            "diagram has its own list of days and does not read this one. "
-            "Type a date as MM-DD for any other day.",
-        )
-        self.day["values"] = [title for _, title in ASSESSMENT_DAYS.values()]
-        self.day.set(ASSESSMENT_DAYS["winter"][1])
 
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
         row += 1
@@ -878,20 +840,94 @@ class Window:
             "The layer state every solar tool exports from. Set once for the project.",
         )
         row += 1
-        self.exclude, row = self._entry(
+        self.storey_from, row = self._combo(
             frame,
             row,
-            "Ignore above (m)",
-            DEFAULT_EXCLUDE_ABOVE_M,
-            "Drops anything sitting entirely above this height.",
-            "Hotlinked unit-type masters are parked high above the real "
-            "building — 157 to 281 m on this project — on the same layers as "
-            "the building itself, so height is the only thing that separates "
-            "them. Left in, they join the area being measured and quietly "
-            "change every percentage. Filled in from the project when it is "
-            "read: the topmost storey plus 15 m, which clears a roof and a "
-            "lift overrun and is far below anything parked. Type over it and "
-            "the typed figure is kept. Clear the box to keep everything.",
+            "Measure from storey",
+            "The storey the building starts at. Leave empty for no lower limit.",
+            "The height band, as two storeys rather than a figure in metres. "
+            "A storey is a sentence about the building -- 'from the datum to "
+            "the lift overrun' -- and it carries to the next project; a metre "
+            "figure has to be looked up per project and is wrong invisibly "
+            "when it is wrong. Measured twice: on one project a cut at 195 m "
+            "read as generous and removed nothing at all, because the storey "
+            "it meant sits at 49.8 m with a quarter kilometre of parked "
+            "hotlink masters above it. Filled from the project when it is "
+            "read.",
+        )
+        self.storey_to, row = self._combo(
+            frame,
+            row,
+            "...to storey",
+            "The storey the building ends at. Leave empty for no upper limit.",
+            "Everything outside the two storeys is dropped before anything is "
+            "measured. That is what keeps hotlinked unit-type masters out of "
+            "the result: they are parked away from the building on the same "
+            "layers as it, so nothing but position separates them -- above it "
+            "on some projects and below the datum on others, which is why "
+            "both ends are asked for. An element is kept when any part of it "
+            "reaches the band, so a wall crossing either end stays whole.",
+        )
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
+        row += 1
+
+        # The day and the year sit with the solar tools rather than in
+        # General, because they are not general: the site drawings do not read
+        # them, and a setting shown to somebody drawing a context plan is a
+        # setting they have to decide not to care about.
+        #
+        # Days are ticked and not picked, because a study is usually asked for
+        # on more than one. A council wants midwinter for the test and the
+        # equinox beside it to show the year, and choosing one at a time meant
+        # running the whole tool again and remembering to change the box.
+        # Every ticked day runs the tools once each, and every name a run
+        # makes carries its day, so the sets stand beside each other in the
+        # project rather than over each other.
+        self._caption(frame, row, "Which days every solar tool studies.")
+        row += 1
+        days = ttk.Frame(frame)
+        days.grid(row=row, column=0, columnspan=2, sticky="w")
+        for column, (name, (_, title)) in enumerate(ASSESSMENT_DAYS.items()):
+            state = tk.BooleanVar(value=name == "winter")
+            self.days[name] = state
+            box = ttk.Checkbutton(
+                days, text=title.split(",")[0], variable=state, command=self._sync
+            )
+            box.grid(row=0, column=column, sticky="w", padx=(0, PAD))
+            Tooltip(
+                box,
+                f"{title}. "
+                + (
+                    "The shortest day, the worst case the ADG assesses and the only "
+                    "day its two-hour test means anything. Left ticked unless a "
+                    "council asks otherwise."
+                    if name == "winter"
+                    else "Shows the year beside the midwinter case. A run on this day "
+                    "carries it in every layer, view, sheet and property it makes."
+                ),
+            )
+        row += 1
+        self.custom_day, row = self._entry(
+            frame,
+            row,
+            "Custom day",
+            "",
+            "Any other day, as MM-DD. Runs in addition to the ticks.",
+            "For a council that asks for a date the three ticks do not cover "
+            "-- the 22nd rather than the 21st, or a day named in a DCP. "
+            "Written MM-DD, e.g. 07-15. It runs as well as whatever is "
+            "ticked, so the usual pair plus one is three runs of each tool "
+            "rather than a choice between them. The shadow diagram keeps its "
+            "own list of days and does not read this.",
+        )
+        self.year, row = self._entry(
+            frame,
+            row,
+            "Year",
+            "2024",
+            "Which year's sun positions to use.",
+            "The year only shifts the sun positions slightly; it is here so a "
+            "study can be repeated against the same day as an earlier report.",
         )
         self.combination, row = self._combo(
             frame,
@@ -2095,11 +2131,12 @@ class Window:
             "communal_window": self.communal_window,
             "communal_hours": self.communal_hours,
             "communal_height": self.communal_height,
-            "day": self.day,
+            "custom_day": self.custom_day,
             "communal_grid": self.communal_grid,
             "communal_csv": self.communal_csv,
             "master_layout": self.master,
-            "exclude_above": self.exclude,
+            "storey_from": self.storey_from,
+            "storey_to": self.storey_to,
             "year": self.year,
             "layer_combination": self.combination,
             "subject_layers": self.subject,
@@ -2329,48 +2366,32 @@ class Window:
         self._offer_height_cut()
 
     def _offer_height_cut(self) -> None:
-        """Put this building's own height in "Ignore above", not a placeholder.
+        """Fill the band's two pickers from the project's own storeys.
 
-        100 m is a guess that is wrong twice over: on a townhouse it cuts
-        nothing and lets a parked hotlink master through, and on a tower it
-        cuts the top ten storeys off the thing being measured. The project
-        knows its own storeys, so the cut is offered from them -- the topmost
-        storey plus enough headroom for a roof and a lift overrun.
+        The lists are the project's, so a band can be chosen from what the
+        building actually has rather than typed from memory. Nothing is
+        selected on the caller's behalf: a band is a judgement about which
+        storeys are the building and which are parked geometry, and this
+        cannot tell them apart -- one real project defines 134 storeys running
+        to 422.5 m at a regular 3.2 m spacing the whole way, with no gap to
+        say where the tower stops and the masters begin.
 
-        Only over the placeholder. A figure somebody typed, or one restored
-        from saved settings, is a decision and outranks anything read here;
-        the tooltip says so. An unreadable storey list leaves the placeholder
-        alone rather than clearing the field, because an empty box means
-        "measure everything, however high" and that is the failure this
-        setting exists to prevent.
+        Guessing there would be worse than not guessing. A band set too low
+        silently removes the top of the building from every percentage, and
+        nothing in the drawing shows it. So the choice is offered and left.
 
-        And only when the answer is *lower* than the placeholder. A project
-        can park its hotlink masters on real storeys, and then the storey list
-        describes the parked geometry rather than the building: the reference
-        project defines 134 storeys running to 422.5 m, at a regular 3.2 m
-        spacing the whole way, with no gap to tell the tower from the masters
-        above it. A cut at 437 m excludes nothing, which makes it worse than
-        the placeholder rather than better -- so it is refused, and the reason
-        is printed rather than swallowed.
+        A value already chosen -- typed, or restored from saved settings --
+        is kept: it is a decision, and it outranks anything read here.
         """
-        top = self.options.top_storey_m
-        if top is None or self.exclude.get().strip() != DEFAULT_EXCLUDE_ABOVE_M:
+        names = list(self.options.storey_names)
+        for box in (self.storey_from, self.storey_to):
+            box["values"] = names
+        if not names:
             return
-        cut = math.ceil(top + STOREY_HEADROOM_M)
-        if cut >= float(DEFAULT_EXCLUDE_ABOVE_M):
-            self._write(
-                f"Left 'Ignore above' at {DEFAULT_EXCLUDE_ABOVE_M} m. This project's "
-                f"highest storey is at {top:g} m, which would put the cut at {cut} m "
-                f"-- above everything, so it would exclude nothing. That usually means "
-                f"the hotlink masters are parked on storeys of their own. Set it by "
-                f"hand to just above the real building."
-            )
-            return
-        self.exclude.delete(0, "end")
-        self.exclude.insert(0, str(cut))
         self._write(
-            f"Ignore above set to {cut} m from the project: its highest storey is at "
-            f"{top:g} m, plus {STOREY_HEADROOM_M:g} m for a roof and a lift overrun."
+            f"Storeys read from the project: {len(names)}, {names[0]!r} to {names[-1]!r}. "
+            f"Pick the band to measure -- everything outside it is dropped, which is how "
+            f"parked hotlink masters are kept out of the result."
         )
 
     @staticmethod
@@ -2541,22 +2562,77 @@ class Window:
                 return ["--sheets", word]
         return ["--sheets", chosen]
 
-    def _day_args(self) -> list[str]:
-        """``--date`` for the day chosen in General, or nothing on the
-        ruleset's own day so the command's names are the ones it has always
-        made. A title from the list becomes its short name; anything else is
-        sent as typed and the command line says what it makes of it."""
-        chosen = self.day.get().strip()
-        if not chosen:
+    def _band_args(self) -> list[str]:
+        """The height band, as the two storey flags or nothing at all.
+
+        Either end may be left empty, which is that end left open. Empty on
+        both is the whole model measured, which is what the field means and
+        not a failure to fill it in -- a project with no parked masters needs
+        no band, and every project had none before this setting existed.
+        """
+        args: list[str] = []
+        if self.storey_from.get().strip():
+            args += ["--exclude-below-storey", self.storey_from.get().strip()]
+        if self.storey_to.get().strip():
+            args += ["--exclude-above-storey", self.storey_to.get().strip()]
+        return args
+
+    def _day_args(self, day: str) -> list[str]:
+        """``--date`` for one day, or nothing on the ruleset's own.
+
+        Nothing for midwinter so the command's names stay the ones it has
+        always made, and a short name for the rest. Anything unparseable is
+        sent as typed and the command line says what it makes of it.
+        """
+        if not day:
             return []
-        for name, (_, title) in ASSESSMENT_DAYS.items():
-            if chosen == title:
-                return [] if name == "winter" else ["--date", name]
+        if day in ASSESSMENT_DAYS:
+            return [] if day == "winter" else ["--date", day]
         try:
-            mmdd = parse_day(chosen)
+            mmdd = parse_day(day)
         except ValueError:
-            return ["--date", chosen]
+            return ["--date", day]
         return [] if mmdd == ASSESSMENT_DAYS["winter"][0] else ["--date", day_name(mmdd)]
+
+    def chosen_days(self) -> list[str]:
+        """Every day the solar tools should run for, in the order they are read.
+
+        The ticks first, in the order the list defines -- the assessment day
+        before the ones that illustrate it -- then whatever was typed as a
+        custom day. A run with nothing ticked and nothing typed studies the
+        ruleset's own day rather than refusing: an empty set is somebody
+        clearing the boxes, not somebody asking for no study, and the
+        midwinter case is the one the controls turn on.
+
+        Duplicates are dropped, so ticking winter and typing 06-21 is one run
+        and not two identical ones over the top of each other.
+        """
+        days = [name for name in ASSESSMENT_DAYS if name in self.days and self.days[name].get()]
+        typed = self.custom_day.get().strip()
+        if typed:
+            try:
+                mmdd = parse_day(typed)
+            except ValueError:
+                days.append(typed)
+            else:
+                named = day_name(mmdd)
+                if named not in days:
+                    days.append(named)
+        return days or ["winter"]
+
+    def _day_label(self, day: str) -> str:
+        """How a day reads on a queued job, or "" for the only day there is.
+
+        Silent when one day is studied, because the label is then the tool's
+        own name and has always been; a suffix on every job would be noise on
+        the ordinary run. With several, the day is what tells two otherwise
+        identical jobs apart while they wait.
+        """
+        if len(self.chosen_days()) < 2:
+            return ""
+        if day in ASSESSMENT_DAYS:
+            return f" -- {ASSESSMENT_DAYS[day][1].split(', ')[-1]}"
+        return f" -- {day}"
 
     def _window(self) -> tuple[str, str]:
         """The communal study's assessment window, as start and end.
@@ -2636,8 +2712,7 @@ class Window:
                 args += ["--hide-layer", name]
             if self.combination.get():
                 args += ["--layer-combination", self.combination.get()]
-            if self.exclude.get().strip():
-                args += ["--exclude-above", self.exclude.get().strip()]
+            args += self._band_args()
             args += [
                 "--model-bands",
                 "--model-flat" if self.do_floors.get() else "--no-model-flat",
@@ -2647,9 +2722,17 @@ class Window:
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             args += ["--year", self.year.get().strip() or "2024"]
-            args += self._day_args()
-            args += self._sheet_args()
-            made.append(Job(FACADE_JOB, args))
+            # One run per day ticked. Each carries its own date, and a
+            # command names everything it makes after the day it studied,
+            # so the sets stand beside each other in the project instead of
+            # the second quietly replacing the first.
+            for day in self.chosen_days():
+                made.append(
+                    Job(
+                        FACADE_JOB + self._day_label(day),
+                        [*args, *self._day_args(day), *self._sheet_args()],
+                    )
+                )
 
         if self.do_plans.get():
             args = [
@@ -2688,8 +2771,7 @@ class Window:
                 args += ["--hide-layer", name]
             for stamp in self._listed(self.instants):
                 args += ["--plan-instant", stamp]
-            if self.exclude.get().strip():
-                args += ["--exclude-above", self.exclude.get().strip()]
+            args += self._band_args()
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             if self.shadow_subset.get():
@@ -2697,9 +2779,17 @@ class Window:
             if self.adg_subset.get():
                 args += ["--adg-subset", self.adg_subset.get()]
             args += ["--year", self.year.get().strip() or "2024"]
-            args += self._day_args()
-            args += self._sheet_args()
-            made.append(Job(PLANS_JOB, args))
+            # One run per day ticked. Each carries its own date, and a
+            # command names everything it makes after the day it studied,
+            # so the sets stand beside each other in the project instead of
+            # the second quietly replacing the first.
+            for day in self.chosen_days():
+                made.append(
+                    Job(
+                        PLANS_JOB + self._day_label(day),
+                        [*args, *self._day_args(day), *self._sheet_args()],
+                    )
+                )
 
         if self.do_communal.get():
             args = [
@@ -2723,8 +2813,7 @@ class Window:
                 args += ["--layer-combination", self.combination.get()]
             for name in self._listed(self.hide):
                 args += ["--hide-layer", name]
-            if self.exclude.get().strip():
-                args += ["--exclude-above", self.exclude.get().strip()]
+            args += self._band_args()
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             if self.adg_subset.get():
@@ -2753,9 +2842,17 @@ class Window:
             if self.do_hourly.get():
                 args += ["--zone-hourly"]
             args += ["--year", self.year.get().strip() or "2024"]
-            args += self._day_args()
-            args += self._sheet_args()
-            made.append(Job(COMMUNAL_JOB, args))
+            # One run per day ticked. Each carries its own date, and a
+            # command names everything it makes after the day it studied,
+            # so the sets stand beside each other in the project instead of
+            # the second quietly replacing the first.
+            for day in self.chosen_days():
+                made.append(
+                    Job(
+                        COMMUNAL_JOB + self._day_label(day),
+                        [*args, *self._day_args(day), *self._sheet_args()],
+                    )
+                )
 
         if self.do_shadows.get():
             args = [
@@ -2788,8 +2885,7 @@ class Window:
                 args += ["--shadow-favourite", self.shadow_favourite.get().strip()]
             if self.shadow_storey.get().strip():
                 args += ["--shadow-storey", self.shadow_storey.get().strip()]
-            if self.exclude.get().strip():
-                args += ["--exclude-above", self.exclude.get().strip()]
+            args += self._band_args()
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             if self.shadow_study_subset.get():
@@ -2823,9 +2919,17 @@ class Window:
             if self.master.get():
                 args += ["--master-layout", self.master.get()]
             args += ["--year", self.year.get().strip() or "2024"]
-            args += self._day_args()
-            args += self._sheet_args()
-            made.append(Job(SUN_EYE_JOB, args))
+            # One run per day ticked. Each carries its own date, and a
+            # command names everything it makes after the day it studied,
+            # so the sets stand beside each other in the project instead of
+            # the second quietly replacing the first.
+            for day in self.chosen_days():
+                made.append(
+                    Job(
+                        SUN_EYE_JOB + self._day_label(day),
+                        [*args, *self._day_args(day), *self._sheet_args()],
+                    )
+                )
 
         if self.do_site.get() and self.site_address.get().strip():
             args = [

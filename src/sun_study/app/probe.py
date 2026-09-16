@@ -90,6 +90,15 @@ class ProjectOptions:
 
     storeys: tuple[int, ...] = ()
 
+    storey_names: tuple[str, ...] = ()
+    """Every storey's name, bottom to top, as Archicad spells it.
+
+    So the window can offer the height band as two storeys rather than a
+    figure in metres. Ordered by level and not by index, because that is the
+    order a person reads them in on the storey settings dialog; unnamed
+    storeys are left out, since a name is what the command line takes.
+    """
+
     top_storey_m: float | None = None
     """Level of the highest storey, in metres above project zero.
 
@@ -268,9 +277,33 @@ def options(port: int) -> ProjectOptions:
                 if isinstance(row, dict) and isinstance(row.get("index"), int)
             )
         ),
+        storey_names=_storey_names((storeys or {}).get("stories") or []),
         top_storey_m=_highest_storey((storeys or {}).get("stories") or []),
         problems=tuple(problems),
     )
+
+
+def _storey_names(rows: object) -> tuple[str, ...]:
+    """Storey names in the order a person reads them: lowest first.
+
+    By level rather than by index. The two usually agree, and where they do
+    not it is the level that matches the storey settings dialog somebody is
+    looking at while they choose.
+
+    A storey with no name is skipped rather than given a made-up one: the
+    command line takes a name, and a blank cannot be typed or matched.
+    """
+    named: list[tuple[float, str]] = []
+    if not isinstance(rows, list):
+        return ()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "")).strip()
+        level = row.get("level")
+        if name and isinstance(level, (int, float)):
+            named.append((float(level), name))
+    return tuple(name for _, name in sorted(named))
 
 
 def _highest_storey(rows: object) -> float | None:

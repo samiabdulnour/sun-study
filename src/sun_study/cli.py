@@ -2819,6 +2819,7 @@ def scene_config(
     offset: float = 0.05,
     context_radius: float | None = None,
     exclude_above: float | None = None,
+    exclude_below: float | None = None,
     patch_grid: float | None = None,
 ) -> SceneConfig:
     """Turn the shared scene options into a config.
@@ -2840,6 +2841,7 @@ def scene_config(
         surface_offset_m=offset,
         context_radius_m=context_radius,
         exclude_above_m=exclude_above,
+        exclude_below_m=exclude_below,
         floor_patch_spacing_m=patch_grid,
     )
 
@@ -2962,6 +2964,57 @@ def _export_for_massing(
     if note:
         typer.secho(note, fg=typer.colors.YELLOW)
     return written
+
+
+def _storey_band(
+    port: int,
+    timeout: float,
+    *,
+    above: str | None,
+    below: str | None,
+    metres: float | None = None,
+) -> tuple[float | None, float | None]:
+    """The height band as two levels, from storeys named at the command line.
+
+    Resolved once, here, so everything downstream sees numbers and only this
+    function knows a storey was ever named. Returns ``(ceiling, floor)``, both
+    in project metres and either of them ``None`` for an end left open.
+
+    The point of naming storeys is that "from the datum to the lift overrun"
+    is a sentence about the building and survives being carried to the next
+    project, while 80 is a figure somebody looks up per project and gets wrong
+    invisibly. Two measurements say why. On Kogarah a cut at 195 m read as
+    generous and removed nothing at all, because the storey it meant sits at
+    49.8 with a quarter kilometre of parked masters above it. On Silverwater
+    the masters are parked *below* the datum -- UNIT TYPES at -12.35 m, SKETCH
+    - LG at -37.95 m, against AHD at -9.15 -- so a ceiling alone could not
+    reach them however it was set.
+
+    ``metres`` is whatever ``--exclude-above`` carried, and a named storey
+    wins over it: the name is the more specific instruction and the one that
+    can be checked against the project.
+    """
+    if not above and not below:
+        return metres, None
+
+    ceiling, floor = metres, None
+    try:
+        connection = _connect(port, timeout, switch_database=False)
+        if above:
+            ceiling = storey_level(connection, above)
+        if below:
+            floor = storey_level(connection, below)
+    except ArchicadError as error:
+        typer.secho(str(error), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from error
+
+    named = " to ".join(
+        f"{name!r} ({level:g} m)"
+        for name, level in ((below, floor), (above, ceiling))
+        if name is not None and level is not None
+    )
+    typer.echo(f"  keeping the band {named}; everything outside it is dropped")
+    return ceiling, floor
 
 
 def _frame_turn(connection: ArchicadConnection, result: PipelineResult | MassingResult) -> float:
@@ -3554,34 +3607,9 @@ def massing(
             hide=tuple(hide_layer or ()),
         )
 
-    # Storeys resolved to metres once, here, so everything below sees numbers
-    # and only this block knows a storey was ever named. The point of naming
-    # them is that "from the datum to the lift overrun" is a sentence about the
-    # building and survives being carried to the next project, while 80 is a
-    # figure somebody looks up per project and gets wrong invisibly -- on
-    # Kogarah a cut at 195 m read as generous and removed nothing at all,
-    # because the storey it meant sits at 49.8 with a quarter kilometre of
-    # parked masters above it (see `read.storey_level`).
-    exclude_below: float | None = None
-    if exclude_above_storey or exclude_below_storey:
-        try:
-            levels = _connect(port, timeout, switch_database=False)
-            if exclude_above_storey:
-                exclude_above = storey_level(levels, exclude_above_storey)
-            if exclude_below_storey:
-                exclude_below = storey_level(levels, exclude_below_storey)
-        except ArchicadError as error:
-            typer.secho(str(error), fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=2) from error
-        named = " to ".join(
-            f"{name!r} ({level:g} m)"
-            for name, level in (
-                (exclude_below_storey, exclude_below),
-                (exclude_above_storey, exclude_above),
-            )
-            if name is not None and level is not None
-        )
-        typer.echo(f"  keeping the band {named}; everything outside it is dropped")
+    exclude_above, exclude_below = _storey_band(
+        port, timeout, above=exclude_above_storey, below=exclude_below_storey, metres=exclude_above
+    )
 
     config = MassingConfig(
         timezone=timezone,
@@ -5451,6 +5479,18 @@ def archicad_run(
             ),
         ),
     ] = None,
+    exclude_below_storey: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude-below-storey",
+            help=(
+                "Bottom of the band to keep -- name the storey the building starts "
+                "at, e.g. '0.AHD'. The other end of --exclude-above-storey: a project "
+                "can park its hotlink masters below the datum as well as above it, "
+                "and a ceiling alone cannot reach those."
+            ),
+        ),
+    ] = None,
     layers_as_shown: Annotated[
         bool,
         typer.Option(
@@ -5503,20 +5543,9 @@ def archicad_run(
 
     connection = _connect(port, timeout)
     typer.echo(describe_connection(connection))
-    if exclude_above_storey:
-        # A storey, resolved to its level once, here -- so every use below
-        # sees a number and only this line knows the storey existed. Named
-        # rather than measured because "above the lift overrun" is a sentence
-        # about the building that travels between projects, while 49.8 is a
-        # number to look up and get wrong invisibly.
-        try:
-            exclude_above = storey_level(connection, exclude_above_storey)
-        except ArchicadError as error:
-            typer.secho(str(error), fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=2) from error
-        typer.echo(
-            f"  ignoring everything above '{exclude_above_storey}', which is at {exclude_above:g} m"
-        )
+    exclude_above, exclude_below = _storey_band(
+        port, timeout, above=exclude_above_storey, below=exclude_below_storey, metres=exclude_above
+    )
 
     typer.echo("")
 
@@ -5532,6 +5561,7 @@ def archicad_run(
         grid=grid,
         offset=offset,
         exclude_above=exclude_above,
+        exclude_below=exclude_below,
         # A series needs the patch, so asking for one is asking for both.
         patch_grid=patch_grid
         or (
@@ -6151,7 +6181,38 @@ def shadows(
     require_layer: Annotated[list[str] | None, typer.Option("--require-layer")] = None,
     hide_layer: Annotated[list[str] | None, typer.Option("--hide-layer")] = None,
     layer_combination: Annotated[str | None, typer.Option("--layer-combination")] = None,
-    exclude_above: Annotated[float | None, typer.Option("--exclude-above")] = None,
+    exclude_above: Annotated[
+        float | None,
+        typer.Option(
+            "--exclude-above",
+            help=(
+                "Drop geometry lying entirely above this height, in project metres. "
+                "Prefer --exclude-above-storey: a storey is a sentence about the "
+                "building, a metre figure is a number to look up and get wrong."
+            ),
+        ),
+    ] = None,
+    exclude_above_storey: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude-above-storey",
+            help=(
+                "Top of the band to keep -- name the storey the building ends at, "
+                "e.g. 'LIFT OVERRUN'. Takes precedence over --exclude-above."
+            ),
+        ),
+    ] = None,
+    exclude_below_storey: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude-below-storey",
+            help=(
+                "Bottom of the band to keep -- name the storey the building starts "
+                "at, e.g. '0.AHD'. Hotlink masters parked below the datum are not "
+                "reachable by a ceiling however it is set."
+            ),
+        ),
+    ] = None,
     shadow_datum: Annotated[
         float | None,
         typer.Option("--shadow-datum", help="Level the shadows land on. Default: project zero."),
@@ -6219,9 +6280,13 @@ def shadows(
         raise typer.Exit(code=2)
 
     connection = _connect(port, timeout)
+    exclude_above, exclude_below = _storey_band(
+        port, timeout, above=exclude_above_storey, below=exclude_below_storey, metres=exclude_above
+    )
     config = MassingConfig(
         timezone=timezone,
         exclude_above_m=exclude_above,
+        exclude_below_m=exclude_below,
         subject_layers=tuple(subject_layer or ()),
         context_layers=tuple(context_layer or ()),
         shadow_sources=_shadow_source_rules(shadow_source or [], shadow_scenario or []),
