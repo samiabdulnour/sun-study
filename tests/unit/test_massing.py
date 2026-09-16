@@ -840,3 +840,71 @@ def test_a_skipped_surface_costs_nothing_rather_than_being_computed_and_dropped(
         f"a zone study took {zone_only:.3f}s against {whole_site:.3f}s for the "
         f"whole site, which is not the saving this exists for"
     )
+
+
+def test_the_height_cut_keeps_a_band_and_not_only_a_ceiling() -> None:
+    """A building has a bottom as well as a top, and both are named storeys.
+
+    "Ignore above 80 m" is a number to look up per project and get wrong
+    invisibly; "from 0.AHD to LIFT OVERRUN" is a sentence about the building
+    that carries to the next one. The cut therefore takes a band, and an
+    element is kept when any part of it reaches that band -- a wall crossing
+    either end stays whole, because this decides what the study sees, not
+    where geometry is sliced.
+    """
+    from pathlib import Path
+
+    from sun_study.core.geometry import box
+    from sun_study.ingest.ifc import IfcElement, IfcModel
+    from sun_study.ingest.scene import _cut_above
+
+    def at(z0: float, z1: float, name: str) -> IfcElement:
+        return IfcElement(
+            global_id=name,
+            ifc_class="IfcWall",
+            name=name,
+            long_name="",
+            predefined_type="",
+            storey=None,
+            mesh=box((0.0, 0.0, z0), (1.0, 1.0, z1)),
+        )
+
+    below = at(-20.0, -12.0, "basement plant")
+    inside = at(0.0, 30.0, "the building")
+    crossing = at(45.0, 65.0, "lift overrun and a parked master above it")
+    above = at(150.0, 160.0, "parked hotlink master")
+    model = IfcModel(
+        path=Path("band.ifc"),
+        schema="IFC4",
+        latitude_deg=-33.8,
+        longitude_deg=151.0,
+        true_north_bearing_deg=0.0,
+        site_elevation_m=0.0,
+        length_unit_scale=1.0,
+        elements=(below, inside, crossing, above),
+    )
+
+    # Ceiling only: the old behaviour, unchanged.
+    kept, dropped = _cut_above(model, 60.0)
+    assert dropped == 1
+    assert {e.name for e in kept.elements} == {
+        "basement plant",
+        "the building",
+        "lift overrun and a parked master above it",
+    }
+
+    # A band: the basement goes too, and the crossing element is kept whole.
+    kept, dropped = _cut_above(model, 60.0, -1.0)
+    assert dropped == 2
+    assert {e.name for e in kept.elements} == {
+        "the building",
+        "lift overrun and a parked master above it",
+    }
+
+    # Neither end named is the whole model, untouched.
+    kept, dropped = _cut_above(model, None, None)
+    assert dropped == 0 and len(kept.elements) == 4
+
+    # A floor on its own is a floor on its own.
+    kept, dropped = _cut_above(model, None, 100.0)
+    assert dropped == 3 and {e.name for e in kept.elements} == {"parked hotlink master"}

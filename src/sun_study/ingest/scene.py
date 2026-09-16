@@ -188,6 +188,15 @@ class SceneConfig:
     a low winter sun -- at 20 degrees elevation, 2.7 m out.
     """
 
+    exclude_below_m: float | None = None
+    """Drop every element lying entirely below this height, in project metres.
+
+    The other end of the band `exclude_above_m` opens. Named from a storey at
+    the command line -- the datum storey rather than a number -- for the reason
+    `read.storey_level` gives: a level is a sentence about the building, and a
+    metre figure is something to look up and get wrong invisibly.
+    """
+
     exclude_above_m: float | None = None
     """Drop every element whose geometry lies entirely above this height, in
     project metres.
@@ -272,11 +281,7 @@ class SceneConfig:
             if self.floor_patch_spacing_m
             else ""
         )
-        cut = (
-            f"geometry above {self.exclude_above_m:g} m dropped | "
-            if self.exclude_above_m is not None
-            else ""
-        )
+        cut = _describe_band(self.exclude_below_m, self.exclude_above_m)
         return (
             f"timezone {self.timezone} | living rooms matched by [{rooms}] | "
             f"{zones}{context}"
@@ -1085,7 +1090,7 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
     not noise to be removed.
     """
     orientation = model.orientation(config.timezone)
-    model, cut_above = _cut_above(model, config.exclude_above_m)
+    model, cut_above = _cut_above(model, config.exclude_above_m, config.exclude_below_m)
 
     all_spaces = model.of_class("IfcSpace")
     open_space_zones = tuple(
@@ -1290,8 +1295,25 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
     )
 
 
-def _cut_above(model: IfcModel, height_m: float | None) -> tuple[IfcModel, int]:
-    """Remove every element that lies entirely above ``height_m``.
+def _describe_band(floor_m: float | None, ceiling_m: float | None) -> str:
+    """How the height band reads in the settings line, or "" when it is open.
+
+    One sentence for the three shapes it takes, because a run that silently
+    dropped a third of the model is the thing this line exists to prevent.
+    """
+    if floor_m is None and ceiling_m is None:
+        return ""
+    if floor_m is None:
+        return f"geometry above {ceiling_m:g} m dropped | "
+    if ceiling_m is None:
+        return f"geometry below {floor_m:g} m dropped | "
+    return f"geometry outside {floor_m:g}..{ceiling_m:g} m dropped | "
+
+
+def _cut_above(
+    model: IfcModel, height_m: float | None, floor_m: float | None = None
+) -> tuple[IfcModel, int]:
+    """Keep the band between ``floor_m`` and ``height_m``; drop what misses it.
 
     Done to the model rather than to the occluder set, because a parked
     hotlink master brings its Zones with it: on the reference project four of
@@ -1299,13 +1321,29 @@ def _cut_above(model: IfcModel, height_m: float | None) -> tuple[IfcModel, int]:
     157 m, and counting them as apartments is the same mistake as letting them
     cast a shadow. Cutting once, before anything is selected, keeps the two
     from drifting apart.
+
+    A band rather than a ceiling because a building has a bottom as well as a
+    top, and the two ends are named the same way: from the datum storey to the
+    lift overrun. Masters are usually parked overhead, so the ceiling does most
+    of the work, but a project that parks them *under* the site gets the same
+    answer from the same sentence instead of needing a different idea.
+
+    Either end may be ``None``, which is that end left open. An element is kept
+    when any part of it reaches the band -- its lowest point at or below the
+    ceiling, its highest at or above the floor -- so a wall crossing the cut is
+    kept whole rather than sliced. Nothing here trims geometry; this decides
+    which elements the study sees at all.
     """
-    if height_m is None:
+    if height_m is None and floor_m is None:
         return model, 0
     kept = tuple(
         element
         for element in model.elements
-        if not len(element.mesh.vertices) or float(element.mesh.vertices[:, 2].min()) <= height_m
+        if not len(element.mesh.vertices)
+        or (
+            (height_m is None or float(element.mesh.vertices[:, 2].min()) <= height_m)
+            and (floor_m is None or float(element.mesh.vertices[:, 2].max()) >= floor_m)
+        )
     )
     return replace(model, elements=kept), len(model.elements) - len(kept)
 
@@ -1360,6 +1398,15 @@ class MassingConfig:
     """Settings for a massing-stage study."""
 
     timezone: str
+
+    exclude_below_m: float | None = None
+    """Drop every element lying entirely below this height, in project metres.
+
+    The other end of the band `exclude_above_m` opens. Named from a storey at
+    the command line -- the datum storey rather than a number -- for the reason
+    `read.storey_level` gives: a level is a sentence about the building, and a
+    metre figure is something to look up and get wrong invisibly.
+    """
 
     exclude_above_m: float | None = None
     """Drop every element lying entirely above this height, in project metres.
@@ -1531,11 +1578,7 @@ class MassingConfig:
                 if self.zone_layers or self.zone_names
                 else ""
             )
-            + (
-                f"geometry above {self.exclude_above_m:g} m dropped | "
-                if self.exclude_above_m is not None
-                else ""
-            )
+            + _describe_band(self.exclude_below_m, self.exclude_above_m)
             + "vegetation excluded"
         )
 
@@ -1619,7 +1662,7 @@ def massing_subject(model: IfcModel, config: MassingConfig) -> MassingSubject:
     of facade and the top band went from 1.0% to 4.2% -- a plausible-looking
     number describing geometry nobody is proposing to build.
     """
-    model, cut_above = _cut_above(model, config.exclude_above_m)
+    model, cut_above = _cut_above(model, config.exclude_above_m, config.exclude_below_m)
     # IfcSpace is a void, never a solid; it would shade the building from
     # inside. Everything else occludes, subject and context alike.
     solids = model.occluders()
@@ -2073,7 +2116,7 @@ def build_shadow_scene_from_files(
     def mesh_of(paths: Sequence[Path]) -> tuple[TriangleMesh, list[IfcElement]]:
         elements: list[IfcElement] = []
         for path in paths:
-            model, _ = _cut_above(model_for(path), config.exclude_above_m)
+            model, _ = _cut_above(model_for(path), config.exclude_above_m, config.exclude_below_m)
             elements.extend(e for e in model.occluders() if e.mesh.triangle_count)
         return TriangleMesh.concatenate([e.mesh for e in elements]), elements
 

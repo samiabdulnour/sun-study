@@ -2987,7 +2987,31 @@ def massing(
             help=(
                 "Drop geometry lying entirely above this height, in project "
                 "metres. A massing study measures area, so parked hotlink "
-                "masters join the denominator rather than merely shading it."
+                "masters join the denominator rather than merely shading it. "
+                "Prefer --exclude-above-storey: a storey is a sentence about "
+                "the building, a metre figure is a number to get wrong."
+            ),
+        ),
+    ] = None,
+    exclude_above_storey: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude-above-storey",
+            help=(
+                "Top of the band to keep -- name the storey the building ends at, "
+                "e.g. 'LIFT OVERRUN'. Takes precedence over --exclude-above."
+            ),
+        ),
+    ] = None,
+    exclude_below_storey: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude-below-storey",
+            help=(
+                "Bottom of the band to keep -- name the storey the building starts "
+                "at, e.g. '0.AHD'. With --exclude-above-storey this states the study "
+                "as two storey names instead of a height: everything outside the two "
+                "is dropped, which is what parks hotlink masters out of the result."
             ),
         ),
     ] = None,
@@ -3411,6 +3435,35 @@ def massing(
             hide=tuple(hide_layer or ()),
         )
 
+    # Storeys resolved to metres once, here, so everything below sees numbers
+    # and only this block knows a storey was ever named. The point of naming
+    # them is that "from the datum to the lift overrun" is a sentence about the
+    # building and survives being carried to the next project, while 80 is a
+    # figure somebody looks up per project and gets wrong invisibly -- on
+    # Kogarah a cut at 195 m read as generous and removed nothing at all,
+    # because the storey it meant sits at 49.8 with a quarter kilometre of
+    # parked masters above it (see `read.storey_level`).
+    exclude_below: float | None = None
+    if exclude_above_storey or exclude_below_storey:
+        try:
+            levels = _connect(port, timeout, switch_database=False)
+            if exclude_above_storey:
+                exclude_above = storey_level(levels, exclude_above_storey)
+            if exclude_below_storey:
+                exclude_below = storey_level(levels, exclude_below_storey)
+        except ArchicadError as error:
+            typer.secho(str(error), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from error
+        named = " to ".join(
+            f"{name!r} ({level:g} m)"
+            for name, level in (
+                (exclude_below_storey, exclude_below),
+                (exclude_above_storey, exclude_above),
+            )
+            if name is not None and level is not None
+        )
+        typer.echo(f"  keeping the band {named}; everything outside it is dropped")
+
     config = MassingConfig(
         timezone=timezone,
         context_name_prefixes=tuple(context) if context else ("Context",),
@@ -3418,6 +3471,7 @@ def massing(
         ground_spacing_m=ground_grid,
         ground_margin_m=ground_margin,
         exclude_above_m=exclude_above,
+        exclude_below_m=exclude_below,
         subject_layers=tuple(subject_layer or ()),
         context_layers=tuple(context_layer or ()),
         ground_level_m=ground_level,
