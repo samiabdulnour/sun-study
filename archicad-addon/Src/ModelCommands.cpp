@@ -400,7 +400,23 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 			zonesErr);
 	}
 
-	// The sight first, and this is the whole of why the first live run
+	// Rebuild the 3D model, explicitly, before anything is read.
+	//
+	// The caller has just changed which layers are visible, and the model does
+	// not follow a layer change on its own -- it holds whatever was converted
+	// when somebody last generated it. Writing the 3D filter back with the
+	// kit's must-convert flag rebuilds after a *filter* change and, measured on
+	// Silverwater on 17 September 2026, not after a layer one: an export taken
+	// straight after `export_state` switched `07 | Fills.Areas` on carried the
+	// same 22 layers as before, and none of that layer's Zones.
+	//
+	// So the model is regenerated outright. This is the documented way to make
+	// Archicad build it, and it is what a person does by opening the 3D window.
+	// Failure is not fatal: a model already converted under the right layers is
+	// still the right model, and the counts in the response say what was found.
+	ACAPI_Automate (APIDo_Show3DID);
+
+	// The sight second, and this is the whole of why the first live run
 	// returned nothing.
 	//
 	// `ACAPI_3D_GetNum` does not read "the 3D model"; it reads whichever

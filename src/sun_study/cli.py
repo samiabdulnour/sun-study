@@ -2937,7 +2937,21 @@ def _export_for_massing(
     against the same export is how a change of grid or threshold is compared
     honestly.
     """
-    connection = _connect(port, timeout)
+    # Without moving the current database, which the native route cannot
+    # survive. `ensure_model_database` exists because most reads here are
+    # scoped to the current database, and it moves to a floor plan; but the
+    # add-on's export reads the *3D window's* sight, and with the database
+    # moved off it the rebuild no longer reaches the geometry being walked.
+    #
+    # Measured on Silverwater, 17 September 2026: standalone the export carried
+    # 19,354 elements and 1,359 Zones, and the identical export through this
+    # function carried 17,994 and none -- the same stale 22 layers as before
+    # the rebuild was forced at all.
+    #
+    # Nothing here needs the move. This function reads the project's name and
+    # its layers, and both are project-wide rather than per database; the IFC
+    # route keeps its own guard against exporting from a sheet.
+    connection = _connect(port, timeout, switch_database=False)
     destination = Path(tempfile.gettempdir()) / "sun-study"
     destination.mkdir(parents=True, exist_ok=True)
     name = str((connection.run_tapir("GetProjectInfo", {}) or {}).get("projectName") or "archicad")
