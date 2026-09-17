@@ -3,12 +3,18 @@
 // Why a palette and not a menu
 // ----------------------------
 //
-// An Archicad add-on cannot put an icon on a menu item. `ACAPI_Register_Menu`
-// takes a string resource, a prompt, a menu code and flags, and nothing else;
-// Tapir declares ten 'GICN' icons and every one of them is used by its
-// palette, never by its menu. So a palette is the only surface in Archicad
-// that can show a drawing, and this is the smallest one worth having: seven
-// buttons, 28 px tall, no state of its own.
+// Not, as this said until 17 September 2026, because a menu item cannot carry
+// an icon. It can: Tapir's compiled menu strings end with `^32503` and
+// `^32510`, its own 'GICN' ids, and they draw. That was read straight out of
+// the shipped TapirAddOn_AC26_Win.apx, and it means `ACAPI_Register_Menu`
+// taking no icon argument proves nothing -- the icon rides in the string.
+//
+// The reason that survives is smaller and still good: a menu item is one
+// click into a hidden list, and seven studies read as seven words a colleague
+// has to stop and parse. A palette puts all seven on screen at once as
+// pictures, which is the printer driver's logic and the reason the icons were
+// drawn in the first place. The menu item should get its icon too; the two are
+// not in competition.
 //
 // What a button can honestly do
 // -----------------------------

@@ -5,17 +5,41 @@
 /* [  2] */		"Solar analysis for Archicad: sun eye views, shadow diagrams and ADG solar access."
 }
 
-// One menu, two items. Registered twice it was drawn twice: the menu bar's
-// "Loriini" held two submenus both called "Loriini", one per resource, and the
-// palette sat inside the second. Archicad builds a submenu per registered menu
-// resource, so two resources are two submenus however they are named.
+// One menu resource per item. Two things were wrong before, and only the
+// second was obvious:
 //
-// The first line is the menu, the rest are its items in order. A second line
-// naming it again is what produced the nesting in the first place.
+//   1. Each resource carried the name line *twice*. The first line names the
+//      submenu; a second one is another level of submenu, so "Loriini" held a
+//      "Loriini" that held the item -- nested and looking greyed. It also
+//      pushed the real item to index 2 while the handler looked for index 1,
+//      so clicking it did nothing.
+//
+//   2. The item strings carried no enable flags, so Archicad left them live on
+//      the floor plan and greyed everywhere else -- including the 3D window,
+//      which is where a solar study is usually started from.
+//
+// Collapsing the two resources into one with two items is NOT the fix, and was
+// tried on 17 September 2026: Archicad dispatches the second item as though it
+// were the first, so "Solar Analysis Palette" started the app. Tapir, which
+// works, registers ten menu resources of exactly one item each, and says so in
+// its own ResourceIds.hpp. Read from the shipped TapirAddOn_AC26_Win.apx, each
+// of its menus compiles to one name line and one item:
+//
+//   "Tapir" "About Tapir...^E3^ES^EE^EI^ED^EL^EW^ET^EM^32503"
+//   "Tapir" "Tapir Palette^E3^ES^EE^EI^ED^EL^EW^ET^EM"
+//
+// The trailing `^E<x>` codes are the enable flags copied verbatim from that
+// working binary rather than guessed. (Tapir's `^32503` is a menu item icon,
+// which this add-on does not use yet -- see ResourceIds.hpp.)
+
 'STR#' ID_ADDON_MENU "Menu Description" {
 /* [   ] */		"Loriini"
-/* [  1] */			"Solar Analysis..."
-/* [  2] */			"Solar Analysis Palette"
+/* [  1] */			"Solar Analysis...^E3^ES^EE^EI^ED^EL^EW^ET^EM"
+}
+
+'STR#' ID_PALETTE_MENU "Palette Menu Description" {
+/* [   ] */		"Loriini"
+/* [  1] */			"Solar Analysis Palette^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 // The palette: seven 28 px buttons in a row, so 196 wide and 28 tall.

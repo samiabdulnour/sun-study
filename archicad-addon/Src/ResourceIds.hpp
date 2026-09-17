@@ -23,15 +23,30 @@
 #define ID_ADDON_INFO_NAME				1
 #define ID_ADDON_INFO_DESC				2
 
-// The add-on's one menu, and its items in the order the 'STR#' lists them.
+// The menus. One resource per item, each holding exactly one name line and
+// exactly one item -- which is the only shape Archicad dispatches correctly.
 //
-// One resource and not two. Archicad draws a submenu for every registered menu
-// resource, so a second one put a second "Loriini" submenu beside the first
-// with the palette hidden inside it -- which is what it looked like in
-// Archicad on 17 September 2026.
+// Both items still appear under a single "Loriini" submenu, because Archicad
+// groups menu resources that share a name line. The opposite was assumed on
+// 17 September 2026 and is wrong: collapsing these into one resource with two
+// items made Archicad dispatch the second item as the first, so the palette
+// entry started the app instead. Tapir registers ten one-item resources and
+// its own header says the shape is "own resID, exactly one item -- confirmed
+// working end to end".
+//
+// Adding a *second* name line to a resource is the other trap, and was the
+// original bug: it nests another submenu inside the first and shifts the item
+// to index 2, so the handler's `case 1` never fires.
 #define ID_ADDON_MENU				32500
 #define ID_ADDON_MENU_OPEN				1
-#define ID_ADDON_MENU_PALETTE			2
+
+#define ID_PALETTE_MENU				32501
+#define ID_PALETTE_MENU_SHOW			1
+
+// A menu item CAN carry an icon, contrary to what the palette's header says:
+// Tapir's compiled menu strings end with `^32503` and `^32510`, which are its
+// own 'GICN' ids. Not used here yet -- worth doing, but not in the same change
+// as a menu that has already been rebuilt three times.
 
 // -- 'GDLG' and 'DLGH' -----------------------------------------------------
 

@@ -20,9 +20,10 @@
 // the study itself -- the analysis lives in Python, where it is tested -- they
 // start the app and get out of the way.
 //
-// The palette exists because a menu item cannot carry an icon. Archicad offers
-// no way to put one there, so a palette is the only surface in the application
-// that can show a drawing; see LoriiniPalette.hpp.
+// The palette shows all seven studies at once as pictures rather than as a
+// hidden list of words. It is not, as this said until 17 September 2026, the
+// only surface that can show a drawing -- a menu item carries an icon in its
+// own string, which Tapir does; see LoriiniPalette.hpp.
 
 #include "Commands.hpp"
 #include "DrawingCommands.hpp"
@@ -50,17 +51,15 @@
 
 GSErrCode __ACENV_CALL MenuCommandHandler (const API_MenuParams* menuParams)
 {
-	// One menu, so the item index is the whole question.
-	if (menuParams->menuItemRef.menuResID != ID_ADDON_MENU) {
-		return NoError;
-	}
-
-	switch (menuParams->menuItemRef.itemIndex) {
-		case ID_ADDON_MENU_OPEN:
+	// The resource is the question, not the item index: each menu here holds
+	// exactly one item, because that is the only shape Archicad dispatches
+	// correctly. See ResourceIds.hpp for what happens when it does not.
+	switch (menuParams->menuItemRef.menuResID) {
+		case ID_ADDON_MENU:
 			Loriini::StartTheApp (GS::EmptyUniString);
 			break;
 
-		case ID_ADDON_MENU_PALETTE:
+		case ID_PALETTE_MENU:
 			// A toggle. Asked of HasInstance first so that choosing it when no
 			// palette has ever been opened does not build one in order to hide
 			// it.
@@ -102,11 +101,17 @@ API_AddonType __ACDLL_CALL CheckEnvironment (API_EnvirParams* envir)
 
 GSErrCode __ACDLL_CALL RegisterInterface (void)
 {
-	// Once. Archicad draws a submenu per registered menu resource, so
-	// registering a second one for the palette gave the menu bar two "Loriini"
-	// submenus side by side with the palette inside the second.
-	return ACAPI_Register_Menu (ID_ADDON_MENU, 0, MenuCode_UserDef,
-								MenuFlag_SeparatorBefore);
+	// Two resources, one item each. They share a name line, so Archicad puts
+	// both items under the one "Loriini" submenu -- which is how Tapir gets ten
+	// items into one menu.
+	GSErrCode err = ACAPI_Register_Menu (ID_ADDON_MENU, 0, MenuCode_UserDef,
+										 MenuFlag_SeparatorBefore);
+	if (err != NoError) {
+		return err;
+	}
+
+	return ACAPI_Register_Menu (ID_PALETTE_MENU, 0, MenuCode_UserDef,
+								MenuFlag_Default);
 }
 
 
@@ -117,6 +122,11 @@ GSErrCode __ACDLL_CALL RegisterInterface (void)
 GSErrCode __ACENV_CALL Initialize (void)
 {
 	GSErrCode err = ACAPI_Install_MenuHandler (ID_ADDON_MENU, MenuCommandHandler);
+	if (err != NoError) {
+		return err;
+	}
+
+	err = ACAPI_Install_MenuHandler (ID_PALETTE_MENU, MenuCommandHandler);
 	if (err != NoError) {
 		return err;
 	}
