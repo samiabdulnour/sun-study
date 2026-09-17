@@ -13,6 +13,10 @@ namespace {
 const char* const MAGIC = "LORIINIM";
 const UInt32 FORMAT_VERSION = 1;
 
+// As `Projection.cpp` has it: the kit offers no constant and a literal at the
+// point of use is a literal somebody has to count the digits of.
+const double PI = 3.14159265358979323846;
+
 
 // A file written a field at a time, little-endian, as the reader expects.
 //
@@ -37,10 +41,15 @@ public:
 	// and a null terminator is not a length.
 	void Text (const GS::UniString& value)
 	{
-		const GS::UniString::ConstUTF8Ptr utf8 = value.ToUTF8 ();
-		const UInt32 length = static_cast<UInt32> (strlen (utf8.Get ()));
+		// `auto` because the type `ToCStr` returns is private to
+		// `GS::UniString`, and CC_UTF8 because the default is the system code
+		// page -- a layer named with anything outside it would arrive here as
+		// mojibake, and layer names are what every selection is made on.
+		const auto utf8 = value.ToCStr (CC_UTF8);
+		const char* bytes = utf8.Get ();
+		const UInt32 length = static_cast<UInt32> (strlen (bytes));
 		U32 (length);
-		Bytes (utf8.Get (), length);
+		Bytes (bytes, length);
 	}
 
 	bool Save (const GS::UniString& path) const
@@ -120,9 +129,9 @@ std::map<short, GS::UniString> StoreyNames ()
 // space occludes, and the scene builder treats every occluder alike, so a
 // coarse mapping here costs nothing and a fine one would be a second table to
 // keep in step with Archicad's element list.
-GS::UniString IfcClassOf (API_ElemTypeID type)
+GS::UniString IfcClassOf (const API_ElemType& elemType)
 {
-	switch (type) {
+	switch (elemType.typeID) {
 		case API_ZoneID:		return "IfcSpace";
 		case API_WallID:		return "IfcWall";
 		case API_SlabID:		return "IfcSlab";
@@ -332,7 +341,7 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 
 		out.Text (APIGuidToString (entry.first));
 		out.Text (layers.Of (head.layer));
-		out.Text (IfcClassOf (head.typeID));
+		out.Text (IfcClassOf (head.type));
 
 		// The element id, which is what an --shadow-source "LABEL=prefix"
 		// rule matches on.
