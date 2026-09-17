@@ -1,5 +1,6 @@
 #include "ModelCommands.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -364,7 +365,18 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 	}
 	out.F64 (place.latitude);
 	out.F64 (place.longitude);
-	out.F64 (place.north * 180.0 / PI);
+	// The bearing of the model's **+Y axis**, which is what
+	// `core.orientation.SiteOrientation.true_north_bearing_deg` means -- its
+	// own banner calls it "true north bearing of model +Y". Archicad's
+	// `place.north` is not that: on Silverwater it is 23.548 degrees while the
+	// project's +Y stands at 293.548, and `cli._frame_turn` already converts
+	// between them with this same 270 offset.
+	//
+	// Writing the raw field would have rotated every sun vector by 270
+	// degrees. The drawing would have failed loudly -- the plan fit would be
+	// out by a quarter turn -- but the *numbers* would have been wrong
+	// quietly, which is the half nobody checks.
+	out.F64 (std::fmod (270.0 + place.north * 180.0 / PI, 360.0));
 	out.F64 (place.altitude);
 	out.U32 (static_cast<UInt32> (byElement.size ()));
 
