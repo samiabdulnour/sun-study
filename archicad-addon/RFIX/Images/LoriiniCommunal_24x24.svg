@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="24" height="24" viewBox="0 0 32 32">
+  <!-- communal: sample dots over the ground, and the patch that clears -->
+  <polygon points="2.00,19.50 16.00,11.50 30.00,19.50 16.00,27.50" fill="#EDEBE4" stroke="#3C3C3A" stroke-width="1.69" stroke-linejoin="round"/>
+  <polygon points="9.50,19.50 16.00,15.80 22.50,19.50 16.00,23.20" fill="#F6E2BE" stroke="none"/>
+  <circle cx="16.00" cy="14.60" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="11.20" cy="17.40" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="20.80" cy="17.40" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="16.00" cy="19.50" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="6.40" cy="20.20" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="25.60" cy="20.20" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="11.20" cy="22.30" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="20.80" cy="22.30" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="16.00" cy="24.90" r="0.85" fill="#3C3C3A" stroke="none"/>
+  <circle cx="26.80" cy="5.40" r="2.60" fill="#D98A1E" stroke="none"/>
+</svg>

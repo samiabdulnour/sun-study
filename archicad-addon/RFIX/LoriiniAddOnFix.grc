@@ -1,4 +1,41 @@
-﻿'MDID' 32500 "Add-On Identifier" {
+#include "ResourceIds.hpp"
+
+'MDID' 32500 "Add-On Identifier" {
 	963603759
 	126224928
+}
+
+// The palette's buttons. Each names an SVG under Images, and the resource
+// compiler appends the size it finds -- the files are <base>_24x24.svg.
+//
+// Written by scripts/make_icons.py from the same coordinates as the window's
+// own icons, so the palette and the window cannot drift apart. Do not
+// hand-edit the SVGs; edit the script and run it.
+
+'GICN' ID_ICON_LOGO "LoriiniLogo" {
+	"LoriiniLogo"
+}
+
+'GICN' ID_ICON_FACADE "LoriiniFacade" {
+	"LoriiniFacade"
+}
+
+'GICN' ID_ICON_APARTMENTS "LoriiniApartments" {
+	"LoriiniApartments"
+}
+
+'GICN' ID_ICON_COMMUNAL "LoriiniCommunal" {
+	"LoriiniCommunal"
+}
+
+'GICN' ID_ICON_SHADOW "LoriiniShadow" {
+	"LoriiniShadow"
+}
+
+'GICN' ID_ICON_VIEWS "LoriiniViews" {
+	"LoriiniViews"
+}
+
+'GICN' ID_ICON_SITE "LoriiniSite" {
+	"LoriiniSite"
 }

@@ -219,8 +219,12 @@ def test_the_window_opens_as_normal_inside_the_term(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(licence, "has_expired", lambda today=None: False)
 
     opened = []
-    monkeypatch.setattr("sun_study.app.window.launch", lambda: opened.append(True))
+    # `launch` takes the study a palette button asked for, and a plain run
+    # passes nothing. Recorded rather than ignored, so this also pins that an
+    # ordinary start does not arrive preselected.
+    monkeypatch.setattr("sun_study.app.window.launch", lambda study="": opened.append(study))
+    monkeypatch.setattr(sys, "argv", ["Loriini.exe"])
 
     entry.main()
 
-    assert opened == [True]
+    assert opened == [""], "opened, and not preselected to any one study"

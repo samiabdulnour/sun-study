@@ -39,9 +39,13 @@ def main() -> None:
         _say_and_stop(str(expired))
         return
 
-    from sun_study.app.window import launch
+    from sun_study.app.window import launch, wanted_study
 
-    launch()
+    # A palette button in Archicad passes `--study <name>`; the menu item and
+    # a plain double-click pass nothing. Read here rather than inside the
+    # window so that the one place this program decides which half it is has
+    # both answers in front of it.
+    launch(wanted_study(sys.argv[1:]))
 
 
 def _say_and_stop(message: str) -> None:

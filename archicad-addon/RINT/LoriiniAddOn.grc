@@ -1,10 +1,53 @@
-﻿'STR#' 32000 "Add-on Name and Description" {
+#include "ResourceIds.hpp"
+
+'STR#' ID_ADDON_INFO "Add-on Name and Description" {
 /* [  1] */		"Loriini"
 /* [  2] */		"Solar analysis for Archicad: sun eye views, shadow diagrams and ADG solar access."
 }
 
-'STR#' 32500 "Menu Description" {
+'STR#' ID_ADDON_MENU "Menu Description" {
 /* [   ] */		"Loriini"
 /* [   ] */		"Loriini"
 /* [  1] */			"Solar Analysis..."
+}
+
+'STR#' ID_PALETTE_MENU "Palette Menu Description" {
+/* [   ] */		"Loriini"
+/* [   ] */		"Loriini"
+/* [  1] */			"Solar Analysis Palette"
+}
+
+// The palette: seven 28 px buttons in a row, so 196 wide and 28 tall.
+//
+// `leftCaption | close` is what gives it a title bar it can be dragged by and
+// a close box, and matches every other add-on palette in Archicad. `noFrame`
+// on the buttons is what stops each one drawing a push-button border around a
+// 24 px drawing, which at this size reads as a grid of boxes rather than a
+// row of pictures.
+//
+// The item numbers are the order below, and ResourceIds.hpp names them. The
+// palette's constructor pairs each button with its number: swap two and a
+// button quietly does another button's job.
+
+'GDLG' ID_PALETTE Palette | leftCaption | close   0   0  196  28  "Loriini"  {
+/* [  1] */ IconButton                 0   0  28  28    ID_ICON_LOGO noFrame
+/* [  2] */ IconButton                28   0  28  28    ID_ICON_FACADE noFrame
+/* [  3] */ IconButton                56   0  28  28    ID_ICON_APARTMENTS noFrame
+/* [  4] */ IconButton                84   0  28  28    ID_ICON_COMMUNAL noFrame
+/* [  5] */ IconButton               112   0  28  28    ID_ICON_SHADOW noFrame
+/* [  6] */ IconButton               140   0  28  28    ID_ICON_VIEWS noFrame
+/* [  7] */ IconButton               168   0  28  28    ID_ICON_SITE noFrame
+}
+
+// The hover text, which is the whole of how somebody learns what seven
+// unlabelled drawings do. Worth as much as the icons.
+
+'DLGH' ID_PALETTE Loriini_Palette {
+1    "Open Loriini"                            OpenButton
+2    "Facade bands (massing stage)"            FacadeButton
+3    "Apartments, against the ADG"             ApartmentsButton
+4    "Communal open space"                     CommunalButton
+5    "Shadow diagram"                          ShadowButton
+6    "Sun views"                               ViewsButton
+7    "Site analysis"                           SiteButton
 }

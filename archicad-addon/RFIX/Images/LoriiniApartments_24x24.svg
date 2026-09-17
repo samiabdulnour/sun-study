@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="24" height="24" viewBox="0 0 32 32">
+  <!-- apartments: one dwelling lit through its living-room glass -->
+  <polygon points="3.00,3.00 23.00,3.00 23.00,25.00 19.00,29.00 3.00,29.00" fill="#FFFFFF" stroke="#3C3C3A" stroke-width="1.69" stroke-linejoin="round"/>
+  <polygon points="19.00,25.00 23.00,25.00 19.00,29.00" fill="#E6E5DF" stroke="#3C3C3A" stroke-width="1.69" stroke-linejoin="round"/>
+  <polygon points="6.00,7.00 13.00,7.00 13.00,13.50 6.00,13.50" fill="#FFFFFF" stroke="#3C3C3A" stroke-width="1.43" stroke-linejoin="round"/>
+  <polygon points="13.00,7.00 20.00,7.00 20.00,13.50 13.00,13.50" fill="#FFFFFF" stroke="#3C3C3A" stroke-width="1.43" stroke-linejoin="round"/>
+  <polygon points="6.00,13.50 13.00,13.50 13.00,20.00 6.00,20.00" fill="#FFFFFF" stroke="#3C3C3A" stroke-width="1.43" stroke-linejoin="round"/>
+  <polygon points="13.00,13.50 20.00,13.50 20.00,20.00 13.00,20.00" fill="#C3D7F5" stroke="#1E63C8" stroke-width="1.82" stroke-linejoin="round"/>
+  <polygon points="19.40,14.40 13.80,19.60 19.40,19.60" fill="#F6E2BE" stroke="none"/>
+  <polyline points="20.00,13.70 20.00,20.30" fill="none" stroke="#D98A1E" stroke-width="2.08" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="26.80" cy="5.40" r="2.60" fill="#D98A1E" stroke="none"/>
+</svg>
