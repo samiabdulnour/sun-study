@@ -12,7 +12,7 @@ namespace {
 // `ingest/native.py`. Both sides carry them so a mismatched add-on and tool
 // say so instead of reading one layout as another.
 const char* const MAGIC = "LORIINIM";
-const UInt32 FORMAT_VERSION = 2;
+const UInt32 FORMAT_VERSION = 3;
 
 // As `Projection.cpp` has it: the kit offers no constant and a literal at the
 // point of use is a literal somebody has to count the digits of.
@@ -250,6 +250,33 @@ GS::UniString ZoneNameOf (const API_Guid& guid, const API_ElemType& elemType)
 }
 
 
+// One vertex, moved out of its body's own frame into the project's.
+//
+// `API_BodyType` carries a `tranmat`, and ignoring it is only harmless for the
+// bodies that happen to be built in world coordinates. Walls and slabs are;
+// **library parts are not**. A window or a door is a GDL object whose body is
+// modelled about its own origin, so an untransformed walk puts every one of
+// them within a few centimetres of z = 0 whatever storey it belongs to.
+//
+// Measured on Kogarah, 17 September 2026: all 106 marked living-room openings
+// came out at z 0.10..0.20 m while their apartments stood at 23..43 m, so the
+// nearest room was 23 m away, every opening resolved to nothing, and the study
+// assessed 0 of 91 apartments. The massing and communal studies were unharmed
+// and that is the tell -- they occlude with walls and slabs and never look at
+// an opening.
+//
+// `tmx` is 3x4, row-major, the fourth column the offset -- the same layout
+// `Projection.cpp` builds by hand.
+API_Coord3D Placed (const API_Tranmat& tm, double x, double y, double z)
+{
+	API_Coord3D out = {};
+	out.x = tm.tmx[0] * x + tm.tmx[1] * y + tm.tmx[2] * z + tm.tmx[3];
+	out.y = tm.tmx[4] * x + tm.tmx[5] * y + tm.tmx[6] * z + tm.tmx[7];
+	out.z = tm.tmx[8] * x + tm.tmx[9] * y + tm.tmx[10] * z + tm.tmx[11];
+	return out;
+}
+
+
 // One element's triangles, gathered from every body Archicad converted for it.
 //
 // The polygons are split into convex ones before fanning. A body's polygons
@@ -329,7 +356,7 @@ bool AddBody (Int32 bodyIndex, Triangles& into)
 			if (ACAPI_3D_GetComponent (&vertex) != NoError) {
 				continue;
 			}
-			contour.push_back ({ vertex.vert.x, vertex.vert.y, vertex.vert.z });
+			contour.push_back (Placed (body.body.tranmat, vertex.vert.x, vertex.vert.y, vertex.vert.z));
 		}
 
 		// A fan from the first corner. Archicad's 3D polygons are planar and

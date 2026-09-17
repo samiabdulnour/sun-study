@@ -58,11 +58,18 @@ __all__ = ["MAGIC", "VERSION", "NativeModelError", "read_native_model"]
 #: instead of somewhere downstream as a geometry error.
 MAGIC = b"LORIINIM"
 
-#: The format's version. The add-on writes it and this refuses anything else:
+#: The format's version. Version 3 is the first whose geometry is placed
+#: through each body's own transform: before it, library parts -- every
+#: window and door -- arrived in their own local frames, clustered around
+#: z = 0 whatever storey they belonged to. A file written by an older add-on
+#: is refused rather than read, because that geometry is wrong in a way
+#: nothing downstream could detect.
+#:
+#: The add-on writes it and this refuses anything else:
 #: an add-on and a reader that disagree about the layout would otherwise read
 #: each other's bytes as coordinates, which produces a model rather than an
 #: error and is the worst outcome available.
-VERSION = 2
+VERSION = 3
 
 #: Triangle coordinates are float32. At a kilometre from the project origin
 #: that resolves to well under a tenth of a millimetre, which is finer than the

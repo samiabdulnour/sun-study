@@ -257,3 +257,27 @@ def test_a_zones_own_name_travels_beside_its_element_id(tmp_path: Path) -> None:
 
     assert _named_one_of(zone, ("NON RESIDENTIAL",))
     assert not _named_one_of(zone, ("RETAIL",))
+
+
+def test_version_two_is_refused_because_its_library_parts_were_misplaced(
+    tmp_path: Path,
+) -> None:
+    """Version 2 wrote each body's vertices without its `tranmat`.
+
+    Harmless for a wall or a slab, which are built in world coordinates, and
+    wrong for every library part: a window is a GDL object modelled about its
+    own origin, so on Kogarah all 106 marked living-room openings arrived at
+    z 0.10..0.20 m while their apartments stood at 23..43 m. Every opening
+    resolved to no room and the study assessed 0 of 91 apartments.
+
+    Refused rather than read, because that geometry is wrong in a way nothing
+    downstream can see -- the file parses, the walls are in the right place,
+    and only the openings are quietly somewhere else.
+    """
+    path = write_model(
+        tmp_path / "old.loriini",
+        [{"guid": "g", "layer": "L", "kind": "IfcWindow", "name": "W*", "triangles": FLAT}],
+        version=2,
+    )
+    with pytest.raises(NativeModelError, match="version"):
+        read_native_model(path)
