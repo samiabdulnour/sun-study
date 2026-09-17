@@ -301,7 +301,12 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 			"generates the model, then run this again.",
 			APIERR_GENERAL);
 	}
-	ACAPI_3D_SelectSight (sight);
+	// Two arguments: the sight to switch to, and the one being left. The
+	// previous sight is handed back so it can be restored, and it is --
+	// leaving an add-on's choice of sight selected would change what every
+	// later 3D call in the session reads.
+	void* previous = nullptr;
+	ACAPI_3D_SelectSight (sight, &previous);
 
 	Int32 bodyCount = 0;
 	GSErrCode err = ACAPI_3D_GetNum (API_BodyID, &bodyCount);
@@ -387,6 +392,11 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 		if (!triangles.xyz.empty ()) {
 			out.Bytes (triangles.xyz.data (), triangles.xyz.size () * sizeof (float));
 		}
+	}
+
+	if (previous != nullptr) {
+		void* ignored = nullptr;
+		ACAPI_3D_SelectSight (previous, &ignored);
 	}
 
 	if (!out.Save (path)) {
