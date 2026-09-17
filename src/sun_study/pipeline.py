@@ -33,7 +33,7 @@ from sun_study.core.occlusion import Occluder
 from sun_study.core.patches import Rectangle, merge_lit_cells
 from sun_study.core.sampling import SamplePoints
 from sun_study.core.solar import assessment_times, solar_position
-from sun_study.ingest.ifc import IfcModel, read_ifc
+from sun_study.ingest.ifc import IfcModel, read_model
 from sun_study.ingest.scene import (
     MassingConfig,
     MassingScene,
@@ -289,7 +289,7 @@ def run_assessment(
             f"{config.timezone!r}; the run would use two different zones."
         )
 
-    model = read_ifc(ifc_path)
+    model = read_model(ifc_path)
     scene = build_scene(model, config)
 
     times = assessment_times(
@@ -468,7 +468,7 @@ def run_massing(
             f"{config.timezone!r}; the run would use two different zones."
         )
 
-    model = read_ifc(ifc_path)
+    model = read_model(ifc_path)
     scene = build_massing_scene(model, config)
 
     times = assessment_times(
