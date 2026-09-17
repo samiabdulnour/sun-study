@@ -2917,6 +2917,7 @@ def _export_for_massing(
     require: Sequence[str],
     hide: Sequence[str],
     only: Sequence[str] = (),
+    route: str = "auto",
 ) -> Path:
     """Export the open project, and return where it landed.
 
@@ -2978,6 +2979,27 @@ def _export_for_massing(
     # The IFC route stays, and not only as a fallback: it is how a file on
     # disk is analysed at all, and --ifc-in snapshots are how a run is
     # repeated without paying for the export again.
+    # Which route, said out loud rather than inferred. `auto` prefers the
+    # add-on and falls back; `ifc` and `native` are for a run that needs to
+    # know what it got -- a deliverable on the proven path, or a comparison
+    # between the two.
+    if route == "ifc":
+        typer.echo(f"  exporting the open project to {out} ...")
+        with export_state(
+            connection,
+            combination=combination,
+            only=tuple(only),
+            require=tuple(require),
+            hide=tuple(hide),
+        ) as plan:
+            typer.echo(plan.describe())
+            written = export_ifc(connection, out)
+        typer.echo(f"  exported {written.stat().st_size / 1e6:.1f} MB")
+        note = oversized_export_note(written)
+        if note:
+            typer.secho(note, fg=typer.colors.YELLOW)
+        return written
+
     native = out.with_suffix(".loriini")
     typer.echo(f"  exporting the open project to {native} ...")
     with export_state(
@@ -2988,15 +3010,21 @@ def _export_for_massing(
         hide=tuple(hide),
     ) as plan:
         typer.echo(plan.describe())
-        written = export_model(connection, native)
-        if written is None:
+        made: Path | None = export_model(connection, native)
+        if made is None and route == "native":
+            raise ArchicadError(
+                "The installed Loriini add-on has no ExportModel, and --export native "
+                "was asked for. Install the current add-on build, or use --export ifc."
+            )
+        if made is None:
             typer.secho(
                 "  the installed Loriini add-on has no ExportModel, so this falls back "
                 "to an IFC export; install the current build to skip it.",
                 fg=typer.colors.YELLOW,
             )
             typer.echo(f"  exporting to {out} instead ...")
-            written = export_ifc(connection, out)
+            made = export_ifc(connection, out)
+        written = made
     typer.echo(f"  exported {written.stat().st_size / 1e6:.1f} MB")
     if written.suffix.lower() == ".ifc":
         note = oversized_export_note(written)
@@ -3221,6 +3249,19 @@ def massing(
             ),
         ),
     ] = None,
+    export_route: Annotated[
+        str,
+        typer.Option(
+            "--export",
+            help=(
+                "Where the geometry comes from: 'auto' uses the add-on's own model "
+                "and falls back to an IFC export, 'ifc' always exports an IFC, "
+                "'native' refuses rather than fall back. Say it explicitly for a "
+                "run whose result has to be attributable to one route -- a "
+                "deliverable on the proven path, or a comparison between the two."
+            ),
+        ),
+    ] = "auto",
     zone_fill: Annotated[
         str,
         typer.Option(
@@ -3619,6 +3660,7 @@ def massing(
 
     if ifc is None:
         ifc = _export_for_massing(
+            route=export_route,
             port=port,
             timeout=timeout,
             combination=layer_combination,

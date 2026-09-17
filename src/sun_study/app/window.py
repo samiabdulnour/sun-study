@@ -2458,9 +2458,7 @@ class Window:
         carrying = list(self.options.zone_layers)
         seen = {" ".join(name.split()).casefold() for name in carrying}
         rest = [
-            name
-            for name in self.options.layers
-            if " ".join(name.split()).casefold() not in seen
+            name for name in self.options.layers if " ".join(name.split()).casefold() not in seen
         ]
         return tuple(carrying + rest)
 
