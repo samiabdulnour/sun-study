@@ -60,17 +60,32 @@ void StartTheApp (const GS::UniString& study)
 #if defined (WINDOWS)
 	const GS::UniString path = application.ToDisplayText ();
 
-	// Held in a named local rather than built inside the call: the pointer
-	// handed to ShellExecuteW borrows the string's buffer, and a temporary
-	// would be gone before Windows read it.
+	// Both the string *and* the wide buffer it lends out are held in named
+	// locals, which is the half the first version missed.
+	//
+	// `ToUStr ()` does not return a pointer into the UniString; it returns a
+	// helper object that owns the wide buffer, and `Get ()` points into that.
+	// Keeping only the UniString alive therefore left `parameters` dangling at
+	// the semicolon, because the helper died there. It happened to be harmless
+	// from the menu, which passes no study and leaves the pointer null, and
+	// would have bitten the first palette button anybody pressed.
+	//
+	// `auto` because the helper's type is private to GS::UniString -- the same
+	// reason `Support.cpp` spells `ToCStr ()`'s result that way.
 	const GS::UniString arguments = study.IsEmpty () ? GS::UniString () : "--study " + study;
+	const auto argumentChars = arguments.ToUStr ();
 	LPCWSTR parameters = nullptr;
 	if (!arguments.IsEmpty ()) {
-		parameters = reinterpret_cast<LPCWSTR> (arguments.ToUStr ().Get ());
+		parameters = reinterpret_cast<LPCWSTR> (argumentChars.Get ());
 	}
 
+	// The path's buffer is held the same way, for the same reason. It was safe
+	// where it stood -- a temporary lives to the end of the full expression it
+	// is written in -- but two pointers into two helper objects with different
+	// lifetimes is a thing to have to work out rather than read.
+	const auto pathChars = path.ToUStr ();
 	const HINSTANCE started = ShellExecuteW (nullptr, L"open",
-											 reinterpret_cast<LPCWSTR> (path.ToUStr ().Get ()),
+											 reinterpret_cast<LPCWSTR> (pathChars.Get ()),
 											 parameters, nullptr, SW_SHOWNORMAL);
 	// ShellExecute returns a value above 32 on success. The convention is
 	// odd and worth naming rather than leaving as a bare number.
