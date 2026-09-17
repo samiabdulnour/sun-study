@@ -3421,3 +3421,50 @@ An add-on too old to have `ExportModel` falls back to it with a line saying so.
 Unproven at the time of writing: the add-on is C++ and builds in CI, so the
 format is pinned from both ends by a Python writer in the tests, and the first
 live run is what confirms the add-on writes what the reader expects.
+
+### D104 — The native route is the one to use, and the IFC stays as the way back
+
+Verified on Silverwater's `L2 COS ANALYSIS OPT 2`, 17 September 2026, against
+the same study run through the IFC an hour earlier. Three runs, two entirely
+independent geometry pipelines:
+
+| | IFC | native, from 3D | native, from a floor plan |
+|---|---|---|---|
+| zone measured | 990.4 m2 | 1021.7 m2 | 1021.7 m2 |
+| **sunlit >=2 hrs** | **514.41 m2** | **513.25 m2** | **514.01 m2** |
+| share | 51.94% | 50.23% | 50.31% |
+| export | 664.8 MB | 68.9 MB | 67.1 MB |
+| export time | minutes | ~25 s | ~25 s |
+
+**The sunlit area agrees to 0.4 m2 -- 0.08%.** That is the number the study
+reports and the one a consultant would check, and two pipelines that share no
+code landed on it from different starting states.
+
+**The denominator says the native route is the more faithful of the two.**
+Archicad reports that Zone as 1,022.9 m2. The native read gives 1,021.7 -- a
+tenth of a percent out. The IFC gives 990.4, which is 32 m2 short: the export
+is losing a little of the Zone, and nothing in an IFC-only run would ever say
+so. The percentages differ between the routes for that reason alone.
+
+**And it runs unattended**, which was the whole point. The last run began with
+Archicad on a floor plan, the Zones hidden in "Filter Elements in 3D" *and*
+their layers switched off -- the ordinary state of a real project, since nobody
+wants zone solids in a rendering. The add-on switched to the 3D window, forced
+the Zone filter on, rebuilt the model with the layers `export_state` had just
+made visible, walked it, and put the filter back.
+
+**The IFC route stays, and not only for an add-on too old to have
+`ExportModel`.** It is how a file on disk is analysed at all, how a model from
+another office is read, and `--ifc-in` snapshots are how a run is repeated
+without paying for the export again. `--export ifc` forces it outright, which
+is what a deliverable on the proven path should use until the native route has
+a few more projects behind it; `--export native` refuses rather than fall back,
+which is what a comparison needs. `auto` prefers the add-on and says so in
+yellow when it falls back.
+
+*Not yet proven, and worth saying plainly.* One project, one zone, one day. The
+hole handling in the body walk -- a wall's window is a polygon with an inner
+contour, and the contour is walked to its first zero separator -- has been
+exercised by these runs and not by a case built to break it. The apartment
+penetration study, which depends on sunlight coming *through* those windows, has
+not been run this way at all.
