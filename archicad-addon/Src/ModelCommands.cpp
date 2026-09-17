@@ -151,6 +151,63 @@ GS::UniString IfcClassOf (const API_ElemType& elemType)
 }
 
 
+// Zones shown in the 3D model for the length of one export, then put back.
+//
+// A Zone is what a communal-open-space study *measures*, and on a real project
+// it is almost always switched off in "Filter Elements in 3D" -- nobody wants
+// zone solids in a rendering. So the first live export carried 17,640 elements
+// and not one space, and the study had nothing to measure.
+//
+// The alternative was to ask each office to tick the box, which is the same
+// "configure every machine by hand" that sent the IFC route to the wall
+// (D103). So the filter is set here, the model is regenerated, and the
+// previous setting is restored whichever way the command leaves.
+//
+// The struct is read, modified and written rather than built, for the reason
+// D98 gives: it also carries the storey filter, the marquee and the cut
+// planes, and a command that composed it from nothing would throw away
+// somebody's settings without mentioning it. `convert` is the kit's "must
+// convert" flag -- without it the setting changes and the model goes on
+// showing what it already converted, which reads exactly like doing nothing.
+class ZonesInTheModel {
+public:
+	explicit ZonesInTheModel (GSErrCode& err)
+	{
+		err = ACAPI_Environment (APIEnv_Get3DImageSetsID, &settings);
+		if (err != NoError) {
+			return;
+		}
+		const auto found = settings.elemTypeFilter.find (API_ZoneID);
+		wasShown = found != settings.elemTypeFilter.end () ? found->second : false;
+		if (wasShown) {
+			return;			// already on; nothing to change and nothing to put back
+		}
+
+		API_3DFilterAndCutSettings wanted = settings;
+		wanted.elemTypeFilter[API_ZoneID] = true;
+		bool convert = true;
+		err = ACAPI_Environment (APIEnv_Change3DImageSetsID, &wanted, &convert);
+		changed = err == NoError;
+	}
+
+	~ZonesInTheModel ()
+	{
+		if (!changed) {
+			return;
+		}
+		bool convert = true;
+		ACAPI_Environment (APIEnv_Change3DImageSetsID, &settings, &convert);
+	}
+
+	bool WasAlreadyShown () const		{ return wasShown; }
+
+private:
+	API_3DFilterAndCutSettings settings = {};
+	bool wasShown = false;
+	bool changed = false;
+};
+
+
 // One element's triangles, gathered from every body Archicad converted for it.
 //
 // The polygons are split into convex ones before fanning. A body's polygons
@@ -272,7 +329,11 @@ GS::Optional<GS::UniString> ExportModelCommand::GetResponseSchema () const
 			"path": { "type": "string" },
 			"elements": { "type": "integer" },
 			"triangles": { "type": "integer" },
-			"bytes": { "type": "integer" }
+			"bytes": { "type": "integer" },
+			"zonesWereShown": {
+				"type": "boolean",
+				"description": "Whether Zones were already on in the 3D filter, or switched on for this export."
+			}
 		},
 		"additionalProperties": false
 	})");
@@ -284,6 +345,17 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 	GS::UniString path;
 	if (!parameters.Get ("path", path) || path.IsEmpty ()) {
 		return Failed ("ExportModel needs a 'path' to write to.", APIERR_BADPARS);
+	}
+
+	// Zones into the model before the sight is taken, because turning them on
+	// regenerates it. Held for the length of the export and put back after.
+	GSErrCode zonesErr = NoError;
+	const ZonesInTheModel zones (zonesErr);
+	if (zonesErr != NoError) {
+		return Failed (
+			"Could not switch Zones on in the 3D filter, so the study would have "
+			"nothing to measure. Show Zones in 'Filter Elements in 3D' and run again.",
+			zonesErr);
 	}
 
 	// The sight first, and this is the whole of why the first live run
@@ -421,6 +493,9 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 	answer.Add ("elements", static_cast<Int32> (byElement.size ()));
 	answer.Add ("triangles", static_cast<Int32> (triangleTotal));
 	answer.Add ("bytes", static_cast<Int32> (out.Size ()));
+	// Said, because a run that found no Zones needs to know whether they were
+	// switched on for it or were there already.
+	answer.Add ("zonesWereShown", zones.WasAlreadyShown ());
 	return answer;
 }
 

@@ -23,10 +23,20 @@
 // quantities, no classifications, no materials -- the analysis has never read
 // any of them, and they are the entire reason the IFC was 692 MB.
 //
-// Zones are deliberately not written. Their outlines, names, storeys and
-// categories already come over the JSON API through Tapir, which is how the
-// drawing side has always read them; asking for the same fact twice is how the
-// two answers get to disagree.
+// Zones ARE written, and they have to be switched on to get them.
+//
+// A Zone is what a communal-open-space study measures, and on a real project
+// it is almost always off in "Filter Elements in 3D" -- nobody wants zone
+// solids in a rendering. The first live export on Silverwater carried 17,640
+// elements and not one space. So the filter is set for the length of the
+// export and put back after, which is the same read-modify-write `Set3DFilter`
+// already does for the storey range (D98).
+//
+// Taken from the model rather than built from the 2D outline on purpose:
+// Archicad's own zone solid is cut against the terrain, and a prism raised
+// from the outline is not. `ingest.scene.zone_surface_grid` exists because
+// that difference is real -- on one project a terrain-cut zone had 1,314 m2
+// of flat pieces out of 1,887 m2 of actual surface.
 //
 // Triangulation, and why it is not a fan over whatever Archicad gives
 // -------------------------------------------------------------------
