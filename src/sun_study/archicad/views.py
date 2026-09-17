@@ -178,6 +178,25 @@ def ensure_layer_combination(
     return name
 
 
+#: Windows it is safe to delete this tool's views and layouts from.
+#:
+#: The question this guard asks is "am I standing in something about to be
+#: deleted?", and the answer for these two is no. A floor plan is never
+#: deleted. The plain 3D model window is not a saved view or a layout either --
+#: it is *the* 3D window, and `remove_previous` deletes navigator items under
+#: the tool's prefix, which that is not.
+#:
+#: `Document3D` is deliberately absent and is the whole reason D99 was widened:
+#: a 3D *Document* is a navigator item, a sun-view run is left standing in one,
+#: and deleting it from inside is what closed Archicad three times.
+#:
+#: The 3D window earned its place here on 17 September 2026, when the native
+#: export -- which can only read the 3D window's sight -- met this guard on the
+#: way to drawing and was refused. Refusing was right by the old rule and wrong
+#: about the risk: nothing here deletes the 3D window.
+SAFE_TO_DELETE_FROM = ("FloorPlan", "3DModel")
+
+
 def _stand_somewhere_safe(connection: ArchicadConnection) -> None:
     """Move to the floor plan before anything is deleted, unless already there.
 
@@ -199,7 +218,7 @@ def _stand_somewhere_safe(connection: ArchicadConnection) -> None:
     except ArchicadError:
         return
     kind = here.get("currentWindowType") if isinstance(here, dict) else None
-    if not kind or kind == "FloorPlan":
+    if not kind or kind in SAFE_TO_DELETE_FROM:
         return
 
     with suppress(ArchicadError):
