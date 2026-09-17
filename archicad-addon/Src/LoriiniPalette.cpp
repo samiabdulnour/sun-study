@@ -26,7 +26,18 @@ LoriiniPalette::LoriiniPalette ()
 	, siteButton (GetReference (), ID_PALETTE_ITEM_SITE)
 {
 	Attach (*this);
-	AttachToAllItems (*this);
+	// Each button by name rather than `AttachToAllItems`, which the 26
+	// devkit does not declare -- it is a later addition, and CI found it as
+	// "identifier not found". `DG::Item::Attach` is the long-standing form
+	// and says the same thing; the cost is that a button added above has to
+	// be added here too, which the destructor's mirror image makes obvious.
+	openButton.Attach (*this);
+	facadeButton.Attach (*this);
+	apartmentsButton.Attach (*this);
+	communalButton.Attach (*this);
+	shadowButton.Attach (*this);
+	viewsButton.Attach (*this);
+	siteButton.Attach (*this);
 
 	BeginEventProcessing ();
 }
@@ -34,7 +45,13 @@ LoriiniPalette::LoriiniPalette ()
 
 LoriiniPalette::~LoriiniPalette ()
 {
-	DetachFromAllItems (*this);
+	openButton.Detach (*this);
+	facadeButton.Detach (*this);
+	apartmentsButton.Detach (*this);
+	communalButton.Detach (*this);
+	shadowButton.Detach (*this);
+	viewsButton.Detach (*this);
+	siteButton.Detach (*this);
 	EndEventProcessing ();
 }
 
