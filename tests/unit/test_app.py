@@ -1686,3 +1686,33 @@ def test_the_future_context_tick_reaches_the_site_command_with_its_settings(
     hidden_window.do_site_future.set(False)
     site = next(job for job in hidden_window.jobs() if job.args[0] == "site")
     assert "--future" not in site.args
+
+
+def test_a_zone_layer_can_be_any_layer_the_project_has(hidden_window: Any) -> None:
+    """Which layer holds the Zones is the office's decision, not a fact this
+    can derive.
+
+    The picker used to offer only layers the probe had found Zones on, which
+    looked like help and was a trap: a project keeping its communal areas on a
+    fills layer, or one whose zones sit on a storey the probe did not read, had
+    no way to say so -- the answer was simply not in the list.
+
+    Reported from the window on 17 September 2026: "there is only few layer
+    selections in selection zone option ... companies could have completely
+    different structure".
+    """
+    hidden_window.options = replace(
+        hidden_window.options,
+        layers=("06 | Zone.Units", "07 | Fills.Areas", "10 | Calc.COS", "01 | Wall.External"),
+        zone_layers=("06 | Zone.Units",),
+    )
+    hidden_window._offer()
+
+    for picker in (hidden_window.apartments, hidden_window.balconies, hidden_window.communal):
+        offered = list(picker["values"])
+        assert "07 | Fills.Areas" in offered, "a fills layer is where one real project keeps them"
+        assert "10 | Calc.COS" in offered
+        assert "01 | Wall.External" in offered, "even a layer with no zones on it today"
+        # The help survives the widening: a layer that really does carry zones
+        # is still offered first.
+        assert offered[0] == "06 | Zone.Units"

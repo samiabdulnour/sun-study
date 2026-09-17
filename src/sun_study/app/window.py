@@ -2337,17 +2337,18 @@ class Window:
             ),
         )
         self._only_what_this_project_has()
-        self._fill(self.apartments, found.zone_layers, ("Zone.Unit", "Zone."))
+        choices = self._zone_layer_choices()
+        self._fill(self.apartments, choices, ("Zone.Unit", "Zone."))
         # The balconies are usually on the apartments' own layer -- one
         # project keeps 15 units, 20 balconies and the storage on
         # "06 | Zone.Units" -- so that is the first candidate, and a layer
         # carrying open-space-sized zones is the next.
         self._fill(
             self.balconies,
-            found.zone_layers,
+            choices,
             (self.apartments.get(), *(kind.layer for kind in found.zone_kinds if kind.open_space)),
         )
-        self._fill(self.communal, found.zone_layers, ("Zone.", "Calc."))
+        self._fill(self.communal, choices, ("Zone.", "Calc."))
         self._offer_zone_names()
         # "VERTICAL - No Scale" before "COVER/NO SCALE": both say no scale and
         # one of them is a cover sheet.
@@ -2439,6 +2440,29 @@ class Window:
             box.insert(0, ", ".join(kept))
         if lost:
             self._write(f"Not layers in this project, so left out: {_some(lost)}")
+
+    def _zone_layer_choices(self) -> tuple[str, ...]:
+        """Every layer, with the ones carrying Zones first.
+
+        Offered in full rather than narrowed to what the probe found zones on.
+        The narrowing looked like help and was a trap: which layer holds the
+        zones is the office's decision, not a fact this can derive, and a
+        project that keeps its communal areas on a fills layer, or on one whose
+        zones are hidden, or on a layer whose zones sit on a storey the probe
+        did not read, then has no way to say so. The picker simply did not
+        offer the answer.
+
+        Ordering keeps the help without the limit: a layer the project really
+        does keep zones on is at the top, and every other layer is under it.
+        """
+        carrying = list(self.options.zone_layers)
+        seen = {" ".join(name.split()).casefold() for name in carrying}
+        rest = [
+            name
+            for name in self.options.layers
+            if " ".join(name.split()).casefold() not in seen
+        ]
+        return tuple(carrying + rest)
 
     def _fill(self, box: ttk.Combobox, values: tuple[str, ...], prefer: tuple[str, ...]) -> None:
         """Offer these, and pick the likeliest -- without overriding a choice.
