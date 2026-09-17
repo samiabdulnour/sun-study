@@ -2939,6 +2939,39 @@ def report_assessment(
             typer.echo(f"  wrote {write_json(json_out, result.assessment, header)}")
 
 
+def _export_by_route(connection: ArchicadConnection, out: Path, route: str) -> Path:
+    """Write the geometry by the route asked for, and return the file.
+
+    Shared by the two commands that export, so they cannot drift on which
+    route they take or on what a missing add-on means. Called from inside the
+    caller's own ``export_state``: which layers are visible is the caller's
+    business, and the add-on rebuilds the 3D model, so the rebuild has to
+    happen after they are set.
+
+    ``auto`` prefers the add-on and falls back with a line saying so; ``ifc``
+    always exports an IFC, which is what a deliverable on the proven path
+    should use; ``native`` refuses rather than fall back, which is what a
+    comparison between the two needs.
+    """
+    if route == "ifc":
+        return export_ifc(connection, out)
+
+    made = export_model(connection, out.with_suffix(".loriini"))
+    if made is not None:
+        return made
+    if route == "native":
+        raise ArchicadError(
+            "The installed Loriini add-on has no ExportModel, and --export native was "
+            "asked for. Install the current add-on build, or use --export ifc."
+        )
+    typer.secho(
+        "  the installed Loriini add-on has no ExportModel, so this falls back to an "
+        "IFC export; install the current build to skip it.",
+        fg=typer.colors.YELLOW,
+    )
+    return export_ifc(connection, out)
+
+
 def _export_for_massing(
     *,
     port: int,
@@ -3009,29 +3042,7 @@ def _export_for_massing(
     # The IFC route stays, and not only as a fallback: it is how a file on
     # disk is analysed at all, and --ifc-in snapshots are how a run is
     # repeated without paying for the export again.
-    # Which route, said out loud rather than inferred. `auto` prefers the
-    # add-on and falls back; `ifc` and `native` are for a run that needs to
-    # know what it got -- a deliverable on the proven path, or a comparison
-    # between the two.
-    if route == "ifc":
-        typer.echo(f"  exporting the open project to {out} ...")
-        with export_state(
-            connection,
-            combination=combination,
-            only=tuple(only),
-            require=tuple(require),
-            hide=tuple(hide),
-        ) as plan:
-            typer.echo(plan.describe())
-            written = export_ifc(connection, out)
-        typer.echo(f"  exported {written.stat().st_size / 1e6:.1f} MB")
-        note = oversized_export_note(written)
-        if note:
-            typer.secho(note, fg=typer.colors.YELLOW)
-        return written
-
-    native = out.with_suffix(".loriini")
-    typer.echo(f"  exporting the open project to {native} ...")
+    typer.echo(f"  exporting the open project to {out} ...")
     with export_state(
         connection,
         combination=combination,
@@ -3040,22 +3051,10 @@ def _export_for_massing(
         hide=tuple(hide),
     ) as plan:
         typer.echo(plan.describe())
-        made: Path | None = export_model(connection, native)
-        if made is None and route == "native":
-            raise ArchicadError(
-                "The installed Loriini add-on has no ExportModel, and --export native "
-                "was asked for. Install the current add-on build, or use --export ifc."
-            )
-        if made is None:
-            typer.secho(
-                "  the installed Loriini add-on has no ExportModel, so this falls back "
-                "to an IFC export; install the current build to skip it.",
-                fg=typer.colors.YELLOW,
-            )
-            typer.echo(f"  exporting to {out} instead ...")
-            made = export_ifc(connection, out)
-        written = made
+        written = _export_by_route(connection, out, route)
     typer.echo(f"  exported {written.stat().st_size / 1e6:.1f} MB")
+    # Only an IFC can be bloated by the properties a translator writes; the
+    # native file carries none, so the note would be nonsense about it.
     if written.suffix.lower() == ".ifc":
         note = oversized_export_note(written)
         if note:
@@ -5602,6 +5601,17 @@ def archicad_run(
             ),
         ),
     ] = None,
+    export_route: Annotated[
+        str,
+        typer.Option(
+            "--export",
+            help=(
+                "Where the geometry comes from: 'auto' uses the add-on's own model "
+                "and falls back to an IFC export, 'ifc' always exports an IFC, "
+                "'native' refuses rather than fall back."
+            ),
+        ),
+    ] = "auto",
     layers_as_shown: Annotated[
         bool,
         typer.Option(
@@ -5732,7 +5742,7 @@ def archicad_run(
                 _warn_if_zone_layers_hidden(
                     connection, require_layer or [], role="layers named by --require-layer"
                 )
-                exported = export_ifc(connection, destination)
+                exported = _export_by_route(connection, destination, export_route)
         except ArchicadError as error:
             typer.secho(str(error), fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2) from error
