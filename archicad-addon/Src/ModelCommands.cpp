@@ -414,7 +414,13 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 	// Archicad build it, and it is what a person does by opening the 3D window.
 	// Failure is not fatal: a model already converted under the right layers is
 	// still the right model, and the counts in the response say what was found.
-	ACAPI_Automate (APIDo_Show3DID);
+	// `APIDo_ChangeWindowID` onto the 3D window, which is the documented way
+	// and the one a person takes by clicking the 3D button. There is no
+	// `APIDo_Show3DID` in this kit; switching *to* the window is what builds
+	// the model.
+	API_WindowInfo intoThe3D = {};
+	intoThe3D.typeID = APIWind_3DModelID;
+	ACAPI_Automate (APIDo_ChangeWindowID, &intoThe3D);
 
 	// The sight second, and this is the whole of why the first live run
 	// returned nothing.
