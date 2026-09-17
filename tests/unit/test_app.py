@@ -1716,3 +1716,50 @@ def test_a_zone_layer_can_be_any_layer_the_project_has(hidden_window: Any) -> No
         # The help survives the widening: a layer that really does carry zones
         # is still offered first.
         assert offered[0] == "06 | Zone.Units"
+
+
+def test_a_rerun_clears_the_last_one_under_the_same_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-running after the model changed is the ordinary case.
+
+    Geometry moves, the study is asked again, and what it drew before is a
+    picture of a building that no longer exists. The fills were always
+    replaced -- each layer is cleared before it is drawn -- but the views and
+    layouts were only reused by name, so a run producing a different set left
+    the old ones standing beside the new, and somebody had to know which sheet
+    was which.
+
+    The prefix is what makes the other half of the rule work: the same one
+    replaces, a different one leaves the first alone, so two options can stand
+    side by side in one project (D93). That is why this asserts the prefix it
+    was given rather than merely that something was cleared.
+    """
+    from types import SimpleNamespace
+
+    import typer
+
+    from sun_study import cli
+
+    asked: list[str] = []
+    monkeypatch.setattr(typer, "echo", lambda *a, **k: None)
+    monkeypatch.setattr(typer, "secho", lambda *a, **k: None)
+
+    def remember(_connection: object, prefix: str) -> tuple[int, int]:
+        asked.append(prefix)
+        return 3, 0
+
+    monkeypatch.setattr(cli, "remove_previous", remember)
+    # Stops the run immediately after the clearing, which is all this pins.
+    monkeypatch.setattr(cli, "elements_by_ifc_ids", lambda *a, **k: {})
+
+    result = SimpleNamespace(
+        zone=object(),
+        zone_minutes=(0.0,),
+        model=SimpleNamespace(of_class=lambda _kind: []),
+        scene=SimpleNamespace(zone_samples=(1.0,)),
+    )
+
+    cli.report_zone_bands(object(), result, layer_prefix="14 |", spacing_m=0.5)  # type: ignore[arg-type]
+
+    assert asked == ["14 |"], "cleared, and scoped to this run's own prefix"

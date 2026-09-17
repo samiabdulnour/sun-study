@@ -1117,6 +1117,36 @@ def report_zone_bands(
         typer.secho("  no zone surface to draw", fg=typer.colors.RED, err=True)
         return True
 
+    # Last run's views and layouts, before this one makes any.
+    #
+    # Re-running after the model changed is the ordinary case, not an odd one:
+    # geometry moves, the study is asked again, and what it made before is now
+    # a drawing of a building that no longer exists. The fills were already
+    # replaced -- `clear_layer` empties each layer before drawing -- but the
+    # views and layouts were only ever reused by name, so a run that produced a
+    # different set of them left the old ones standing beside the new. Somebody
+    # then has to know which sheet is which, which is exactly the thing a
+    # re-run should not leave behind.
+    #
+    # Scoped to this tool's own prefix, which is what makes the other half of
+    # the rule work: run again under the same `--layer-prefix` and the previous
+    # results are replaced; run under a different one and nothing of the first
+    # is touched, so two options can stand side by side in one project (D93).
+    #
+    # Once per run rather than per sheet: two sets of sheets are made below,
+    # and each calling this would delete what the other had just finished.
+    gone, left = remove_previous(connection, layer_prefix)
+    if gone:
+        typer.echo(
+            f"  removed {gone} view(s) and layout(s) from the last run under {layer_prefix!r}"
+        )
+    if left:
+        typer.secho(
+            f"  {left} view(s) or layout(s) under {layer_prefix!r} could not be removed; "
+            f"they are from an earlier run and will sit beside this one",
+            fg=typer.colors.YELLOW,
+        )
+
     exported = {space.global_id: space for space in result.model.of_class("IfcSpace")}
     found = elements_by_ifc_ids(connection, list(exported))
     paired = {ifc_id: guids[0] for ifc_id, guids in found.items() if len(guids) == 1}
