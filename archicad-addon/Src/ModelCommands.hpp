@@ -36,6 +36,16 @@
 // precisely the sunlight coming through it. So the polygons are split into
 // *convex* ones first, where a fan is exact by construction.
 //
+// The sight, which is not optional
+// --------------------------------
+// `ACAPI_3D_GetNum` and `ACAPI_3D_GetComponent` do not read "the 3D
+// model". They read whichever *sight* is selected, and an add-on starts
+// with none selected -- so with the 3D window converted and in front, the
+// body count still comes back 0. Measured on Silverwater, 17 September
+// 2026, where the first live run wrote a 48-byte file and reported success.
+// `ACAPI_3D_GetCurrentWindowSight` then `ACAPI_3D_SelectSight` is what
+// makes the rest of this work at all.
+//
 // The file is a private format between this command and `ingest/native.py`,
 // versioned so a mismatched pair says so rather than reading each other's
 // bytes as coordinates -- which would produce a model instead of an error, and

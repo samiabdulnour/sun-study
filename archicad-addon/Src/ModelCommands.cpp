@@ -285,12 +285,41 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 		return Failed ("ExportModel needs a 'path' to write to.", APIERR_BADPARS);
 	}
 
-	// The bodies come from the converted 3D model, so it has to exist before
-	// they can be counted. Asking for the count is what builds it.
+	// The sight first, and this is the whole of why the first live run
+	// returned nothing.
+	//
+	// `ACAPI_3D_GetNum` does not read "the 3D model"; it reads whichever
+	// *sight* is currently selected, and an add-on starts with none. Measured
+	// on Silverwater, 17 September 2026: with the 3D window converted and in
+	// front, the body count came back 0 and the command wrote a 48-byte file
+	// and called it success. Nothing about that reads as "you did not select
+	// a sight".
+	void* sight = nullptr;
+	if (ACAPI_3D_GetCurrentWindowSight (&sight) != NoError || sight == nullptr) {
+		return Failed (
+			"Could not reach the 3D window's model. Open the 3D window so Archicad "
+			"generates the model, then run this again.",
+			APIERR_GENERAL);
+	}
+	ACAPI_3D_SelectSight (sight);
+
 	Int32 bodyCount = 0;
 	GSErrCode err = ACAPI_3D_GetNum (API_BodyID, &bodyCount);
 	if (err != NoError) {
 		return Failed ("Could not read the 3D model. Generate the 3D view and try again.", err);
+	}
+
+	// An empty model is refused rather than written. It can be honest -- every
+	// layer hidden is a real state -- but the likelier cause by far is that the
+	// 3D model has not been generated, and a 48-byte file reported as a
+	// success is the shape of failure this project keeps meeting: the run says
+	// it worked, the study measures nothing, and nothing says which happened.
+	if (bodyCount == 0) {
+		return Failed (
+			"The 3D model holds no geometry. Open the 3D window so Archicad generates "
+			"it -- and check the layers the study needs are switched on -- then run "
+			"this again.",
+			APIERR_GENERAL);
 	}
 
 	const std::map<short, GS::UniString> storeys = StoreyNames ();
