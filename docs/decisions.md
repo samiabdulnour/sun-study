@@ -3468,3 +3468,61 @@ contour, and the contour is walked to its first zero separator -- has been
 exercised by these runs and not by a case built to break it. The apartment
 penetration study, which depends on sunlight coming *through* those windows, has
 not been run this way at all.
+
+### D105 — An Archicad menu is one resource per item, and the compiled add-on is the reference
+
+Loriini's menu was broken for most of 17 September 2026 and the fix went the
+wrong way once before it went the right way. Both the wrong turn and the right
+one came from the same place, so it is worth writing down which.
+
+The original `RINT/LoriiniAddOn.grc` declared two menu resources, one for
+"Solar Analysis..." and one for "Solar Analysis Palette", and each carried the
+name line `"Loriini"` **twice**. The first line names the submenu. A second one
+is another submenu inside it. So the menu bar held `Loriini > Loriini > Solar
+Analysis...`, which reads as greyed-out nesting, and the duplicate also pushed
+the real item from index 1 to index 2, where `MenuCommandHandler`'s `case
+ID_ADDON_MENU_OPEN` — which is 1 — never saw it. Nothing happened when it was
+clicked.
+
+The diagnosis was that Archicad draws a submenu per registered menu resource,
+so the two resources were collapsed into one holding two items. That is wrong,
+and it shipped: Archicad dispatched the second item as though it were the
+first, and choosing "Solar Analysis Palette" started the app.
+
+What settled it was not more reasoning. Tapir has a working menu of ten items
+in the same Archicad, and its own `ResourceIds.hpp` records the shape in a
+comment: "own resID, exactly one item — confirmed working end to end (menu
+display AND click dispatch)". Reading the shipped `TapirAddOn_AC26_Win.apx` off
+the Desktop shows the same thing compiled, one `STR#` per item:
+
+    36 00 00 00  "Tapir"  "About Tapir...^E3^ES^EE^EI^ED^EL^EW^ET^EM^32503"
+    2f 00 00 00  "Tapir"  "Tapir Palette^E3^ES^EE^EI^ED^EL^EW^ET^EM"
+
+Resources that share a name line are grouped into one submenu, which is how ten
+resources make one menu. So: one resource per item, one name line, one item at
+index 1, and dispatch on `menuItemRef.menuResID` rather than on an item index
+that only ever has one value.
+
+That dump carried two further facts neither the signature of
+`ACAPI_Register_Menu` nor a grep of Tapir's sources would give.
+
+The `^E<x>` codes are enable flags. Without them an add-on item is live on the
+floor plan and greyed everywhere else — including the 3D window, which is where
+a solar study is normally started. Loriini's items had none. They are now copied
+verbatim from the working binary rather than guessed.
+
+And the trailing `^32503` and `^32510` are Tapir's own `'GICN'` ids, so **a menu
+item does carry an icon**, in its string. D-note and memory had both recorded
+the opposite, reasoned from `ACAPI_Register_Menu` taking no icon argument and
+from `iconId`/`menuIcon` appearing nowhere in Tapir's source — which they do
+not, because the icon is never passed in code. That wrong conclusion is what
+justified the palette as "the only surface in Archicad that can show a
+drawing". The palette is still worth having, for the reason that survives — all
+seven studies visible at once as pictures beats a hidden list of words — but it
+was not forced, and the menu item should get its icon too.
+
+**The general lesson, which cost four restarts:** for resource-level questions
+the compiled `.apx` is the reference, not the header signature and not a grep of
+somebody's source. A hex dump around a known caption shows the whole `STR#`
+block — length, name line, item — and settles in seconds what reasoning from
+the API got wrong twice.
