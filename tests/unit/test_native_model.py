@@ -47,6 +47,7 @@ def write_model(
         out += _text(str(element["layer"]))
         out += _text(str(element["kind"]))
         out += _text(str(element["name"]))
+        out += _text(str(element.get("long_name", "")))
         out += _text(str(element.get("storey", "")))
         triangles = np.asarray(element["triangles"], dtype=np.float32).reshape(-1, 3, 3)
         out += struct.pack("<I", len(triangles))
@@ -218,3 +219,41 @@ def test_the_two_formats_are_told_apart_by_their_bytes_not_their_name(tmp_path: 
     neither.write_bytes(b"not a model at all")
     with pytest.raises(Exception, match=r"(?i)ifc|pars|open|read"):
         read_model(neither)
+
+
+def test_a_zones_own_name_travels_beside_its_element_id(tmp_path: Path) -> None:
+    """They are different strings and it is the name a study selects on.
+
+    On Silverwater the communal open space carries the element ID
+    "Communal Open Space" and the name "NON RESIDENTIAL", and --zone-name is
+    given the latter. Archicad's own IFC export makes the same split -- ID into
+    Name, name into LongName -- and `scene._named_one_of` checks both, so the
+    file carries both and keeps the mapping.
+
+    Written the wrong way round, the study finds no Zone and reports a level
+    with nothing on it rather than a filter that missed.
+    """
+    path = write_model(
+        tmp_path / "zones.loriini",
+        [
+            {
+                "guid": "z1",
+                "layer": "07 | Fills.Areas",
+                "kind": "IfcSpace",
+                "name": "Communal Open Space",
+                "long_name": "NON RESIDENTIAL",
+                "storey": "LEVEL 02",
+                "triangles": FLAT,
+            }
+        ],
+    )
+
+    zone = read_native_model(path).elements[0]
+    assert zone.name == "Communal Open Space", "the element ID, as IFC puts in Name"
+    assert zone.long_name == "NON RESIDENTIAL", "the zone name, as IFC puts in LongName"
+
+    # And the selection the study actually makes finds it.
+    from sun_study.ingest.scene import _named_one_of
+
+    assert _named_one_of(zone, ("NON RESIDENTIAL",))
+    assert not _named_one_of(zone, ("RETAIL",))

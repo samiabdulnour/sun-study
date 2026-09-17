@@ -62,7 +62,7 @@ MAGIC = b"LORIINIM"
 #: an add-on and a reader that disagree about the layout would otherwise read
 #: each other's bytes as coordinates, which produces a model rather than an
 #: error and is the worst outcome available.
-VERSION = 1
+VERSION = 2
 
 #: Triangle coordinates are float32. At a kilometre from the project origin
 #: that resolves to well under a tenth of a millimetre, which is finer than the
@@ -117,6 +117,12 @@ def read_native_model(path: str | Path, timezone_hint: str = "") -> IfcModel:
         layer, at = _text(blob, at)
         kind, at = _text(blob, at)
         name, at = _text(blob, at)
+        # The Zone's own name, which is not its element ID: on one project the
+        # ID is "Communal Open Space" and the name is "NON RESIDENTIAL", and it
+        # is the name a study selects on. Archicad's IFC export makes the same
+        # split between Name and LongName, and `scene._named_one_of` checks
+        # both because which one holds what varies by translator.
+        long_name, at = _text(blob, at)
         storey, at = _text(blob, at)
         (triangles,) = struct.unpack_from("<I", blob, at)
         at += 4
@@ -138,7 +144,7 @@ def read_native_model(path: str | Path, timezone_hint: str = "") -> IfcModel:
                 global_id=guid,
                 ifc_class=kind,
                 name=name,
-                long_name="",
+                long_name=long_name,
                 predefined_type="",
                 storey=storey or None,
                 mesh=mesh,

@@ -12,7 +12,7 @@ namespace {
 // `ingest/native.py`. Both sides carry them so a mismatched add-on and tool
 // say so instead of reading one layout as another.
 const char* const MAGIC = "LORIINIM";
-const UInt32 FORMAT_VERSION = 1;
+const UInt32 FORMAT_VERSION = 2;
 
 // As `Projection.cpp` has it: the kit offers no constant and a literal at the
 // point of use is a literal somebody has to count the digits of.
@@ -221,6 +221,33 @@ private:
 	bool wasShown = false;
 	bool changed = false;
 };
+
+
+// A Zone's own name, which is not its element ID and is what a study selects on.
+//
+// Archicad keeps two strings on a Zone and they are easy to mistake for each
+// other. On Silverwater's communal open space the element ID is
+// "Communal Open Space" and the *name* is "NON RESIDENTIAL" -- and it is the
+// name that `--zone-name` matches. Archicad's own IFC export writes the ID
+// into `Name` and the name into `LongName`, and `scene._named_one_of` checks
+// both for exactly that reason, so this file carries both and keeps the same
+// mapping.
+//
+// Empty for anything that is not a Zone. Only Zones have a second string, and
+// inventing one for a wall would be a field nothing sets and everything has to
+// read past.
+GS::UniString ZoneNameOf (const API_Guid& guid, const API_ElemType& elemType)
+{
+	if (elemType.typeID != API_ZoneID) {
+		return GS::UniString ();
+	}
+	API_Element element = {};
+	element.header.guid = guid;
+	if (ACAPI_Element_Get (&element) != NoError) {
+		return GS::UniString ();
+	}
+	return GS::UniString (element.zone.roomName);
+}
 
 
 // One element's triangles, gathered from every body Archicad converted for it.
@@ -482,6 +509,10 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 		ACAPI_Database (APIDb_GetElementInfoStringID,
 						const_cast<API_Guid*> (&entry.first), &identifier);
 		out.Text (identifier);
+
+		// The Zone's own name, beside the element ID, exactly as Archicad's IFC
+		// export separates Name from LongName.
+		out.Text (ZoneNameOf (entry.first, head.type));
 
 		const auto storey = storeys.find (head.floorInd);
 		out.Text (storey == storeys.end () ? GS::UniString () : storey->second);
