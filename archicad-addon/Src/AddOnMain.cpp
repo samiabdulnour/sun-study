@@ -50,28 +50,24 @@
 
 GSErrCode __ACENV_CALL MenuCommandHandler (const API_MenuParams* menuParams)
 {
-	// Two menu resources, and Archicad says which one was clicked. Switched on
-	// the resource id rather than on the item index alone: both menus have an
-	// item 1, and a `case 1:` here is how the wrong one ends up doing the
-	// other one's job.
-	switch (menuParams->menuItemRef.menuResID) {
-		case ID_ADDON_MENU:
-			if (menuParams->menuItemRef.itemIndex == ID_ADDON_MENU_OPEN) {
-				Loriini::StartTheApp (GS::EmptyUniString);
-			}
+	// One menu, so the item index is the whole question.
+	if (menuParams->menuItemRef.menuResID != ID_ADDON_MENU) {
+		return NoError;
+	}
+
+	switch (menuParams->menuItemRef.itemIndex) {
+		case ID_ADDON_MENU_OPEN:
+			Loriini::StartTheApp (GS::EmptyUniString);
 			break;
 
-		case ID_PALETTE_MENU:
-			if (menuParams->menuItemRef.itemIndex == ID_PALETTE_MENU_SHOW) {
-				// A toggle, and the menu item carries a tick to say which way
-				// it is. Asked of HasInstance first so that choosing "hide" on
-				// a palette nobody has opened does not build one in order to
-				// hide it.
-				if (LoriiniPalette::HasInstance () && LoriiniPalette::Instance ().IsVisible ()) {
-					LoriiniPalette::Instance ().Hide ();
-				} else {
-					LoriiniPalette::Instance ().Show ();
-				}
+		case ID_ADDON_MENU_PALETTE:
+			// A toggle. Asked of HasInstance first so that choosing it when no
+			// palette has ever been opened does not build one in order to hide
+			// it.
+			if (LoriiniPalette::HasInstance () && LoriiniPalette::Instance ().IsVisible ()) {
+				LoriiniPalette::Instance ().Hide ();
+			} else {
+				LoriiniPalette::Instance ().Show ();
 			}
 			break;
 
@@ -106,15 +102,11 @@ API_AddonType __ACDLL_CALL CheckEnvironment (API_EnvirParams* envir)
 
 GSErrCode __ACDLL_CALL RegisterInterface (void)
 {
-	GSErrCode err = ACAPI_Register_Menu (ID_ADDON_MENU, 0, MenuCode_UserDef,
-										 MenuFlag_SeparatorBefore);
-	if (err != NoError) {
-		return err;
-	}
-
-	// The palette's own item, directly under the first and without a second
-	// separator, so the two read as one Loriini group.
-	return ACAPI_Register_Menu (ID_PALETTE_MENU, 0, MenuCode_UserDef, MenuFlag_Default);
+	// Once. Archicad draws a submenu per registered menu resource, so
+	// registering a second one for the palette gave the menu bar two "Loriini"
+	// submenus side by side with the palette inside the second.
+	return ACAPI_Register_Menu (ID_ADDON_MENU, 0, MenuCode_UserDef,
+								MenuFlag_SeparatorBefore);
 }
 
 
@@ -125,11 +117,6 @@ GSErrCode __ACDLL_CALL RegisterInterface (void)
 GSErrCode __ACENV_CALL Initialize (void)
 {
 	GSErrCode err = ACAPI_Install_MenuHandler (ID_ADDON_MENU, MenuCommandHandler);
-	if (err != NoError) {
-		return err;
-	}
-
-	err = ACAPI_Install_MenuHandler (ID_PALETTE_MENU, MenuCommandHandler);
 	if (err != NoError) {
 		return err;
 	}

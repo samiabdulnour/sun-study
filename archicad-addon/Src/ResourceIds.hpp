@@ -23,17 +23,15 @@
 #define ID_ADDON_INFO_NAME				1
 #define ID_ADDON_INFO_DESC				2
 
-// "Solar Analysis...", which starts the app. Its number is also the menu
-// resource id Archicad hands back in API_MenuItemRef, so the handler switches
-// on it.
+// The add-on's one menu, and its items in the order the 'STR#' lists them.
+//
+// One resource and not two. Archicad draws a submenu for every registered menu
+// resource, so a second one put a second "Loriini" submenu beside the first
+// with the palette hidden inside it -- which is what it looked like in
+// Archicad on 17 September 2026.
 #define ID_ADDON_MENU				32500
 #define ID_ADDON_MENU_OPEN				1
-
-// "Solar Analysis Palette", which shows and hides the strip of buttons. Its
-// own resource rather than a second item under the first, because Archicad
-// dispatches on the menu resource id and a checked state belongs to one item.
-#define ID_PALETTE_MENU				32501
-#define ID_PALETTE_MENU_SHOW			1
+#define ID_ADDON_MENU_PALETTE			2
 
 // -- 'GDLG' and 'DLGH' -----------------------------------------------------
 

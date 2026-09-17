@@ -90,8 +90,8 @@ void LoriiniPalette::SetMenuItemCheckedState (bool isChecked)
 	API_MenuItemRef	itemRef = {};
 	GSFlags			itemFlags = {};
 
-	itemRef.menuResID = ID_PALETTE_MENU;
-	itemRef.itemIndex = ID_PALETTE_MENU_SHOW;
+	itemRef.menuResID = ID_ADDON_MENU;
+	itemRef.itemIndex = ID_ADDON_MENU_PALETTE;
 
 	// The Archicad 26 spelling. Newer kits have ACAPI_MenuItem_GetMenuItemFlags
 	// for the same thing; this add-on is compiled against 26 only, so the

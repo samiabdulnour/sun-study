@@ -5,16 +5,17 @@
 /* [  2] */		"Solar analysis for Archicad: sun eye views, shadow diagrams and ADG solar access."
 }
 
+// One menu, two items. Registered twice it was drawn twice: the menu bar's
+// "Loriini" held two submenus both called "Loriini", one per resource, and the
+// palette sat inside the second. Archicad builds a submenu per registered menu
+// resource, so two resources are two submenus however they are named.
+//
+// The first line is the menu, the rest are its items in order. A second line
+// naming it again is what produced the nesting in the first place.
 'STR#' ID_ADDON_MENU "Menu Description" {
 /* [   ] */		"Loriini"
-/* [   ] */		"Loriini"
 /* [  1] */			"Solar Analysis..."
-}
-
-'STR#' ID_PALETTE_MENU "Palette Menu Description" {
-/* [   ] */		"Loriini"
-/* [   ] */		"Loriini"
-/* [  1] */			"Solar Analysis Palette"
+/* [  2] */			"Solar Analysis Palette"
 }
 
 // The palette: seven 28 px buttons in a row, so 196 wide and 28 tall.
