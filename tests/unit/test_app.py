@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 else:
     tk = pytest.importorskip("tkinter", reason="this machine has no tkinter")
 
-from sun_study.app import preferences, probe, window
+from sun_study.app import icons, preferences, probe, window
 from sun_study.app.runner import CLI_MARKER, child_environment, command_prefix
 from sun_study.archicad import naming
 from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS, Instance
@@ -1763,3 +1763,108 @@ def test_a_rerun_clears_the_last_one_under_the_same_prefix(
     cli.report_zone_bands(object(), result, layer_prefix="14 |", spacing_m=0.5)  # type: ignore[arg-type]
 
     assert asked == ["14 |"], "cleared, and scoped to this run's own prefix"
+
+
+# -- the icons -------------------------------------------------------------
+#
+# The set is drawn by ``scripts/make_icons.py`` and looked up by each field's
+# own label, which buys a small diff at forty call sites and costs exactly one
+# thing: a renamed label silently loses its picture. That is the intended
+# failure -- a bare label beats a wrong one -- so it is the thing worth a test.
+
+
+def every_text(widget: Any) -> set[str]:
+    """Every piece of text on this widget and everything under it."""
+    found: set[str] = set()
+    try:
+        text = widget.cget("text")
+    except (tk.TclError, AttributeError):
+        text = ""
+    if isinstance(text, str) and text:
+        found.add(text)
+    for child in widget.winfo_children():
+        found |= every_text(child)
+    return found
+
+
+def test_every_icon_the_tables_name_is_actually_on_disk(hidden_window: Any) -> None:
+    """A table entry pointing at a file nobody drew would fail silently."""
+    named = (
+        set(icons.BY_LABEL.values()) | set(icons.BY_SECTION.values()) | set(icons.BY_STUDY.values())
+    )
+    missing = sorted(name for name in named if icons.named(name, icons.DEFAULT_SIZE) is None)
+    assert not missing, f"named in a table but not drawn: {missing}"
+
+
+def test_every_labelled_icon_matches_a_label_the_window_really_uses(
+    hidden_window: Any,
+) -> None:
+    """The lookup is by label, so a typo in the table is an icon that never shows.
+
+    Worth pinning because the labels are not identifiers: four of them carry
+    an em dash and one is the word "Days". A table keyed on a string nobody
+    renders is dead weight that looks like a working icon.
+    """
+    on_screen = every_text(hidden_window.root)
+    orphans = sorted(label for label in icons.BY_LABEL if label not in on_screen)
+    assert not orphans, f"in BY_LABEL but no such label in the window: {orphans}"
+
+
+def test_every_tab_carries_its_own_icon(hidden_window: Any) -> None:
+    for index, title in enumerate(hidden_window.titles):
+        assert hidden_window.tabs.tab(index, "image"), f"{title} has no icon"
+    for index, title in enumerate(hidden_window.solar_titles):
+        assert hidden_window.solar_tabs.tab(index, "image"), f"{title} has no icon"
+
+
+@pytest.mark.parametrize(
+    ("asked", "tick", "section"),
+    [
+        ("facade", "study_facade", window.Window.FACADE),
+        ("apartments", "study_plans", window.Window.DIAGRAMS),
+        ("communal", "study_communal", window.Window.DIAGRAMS),
+        ("shadow", "study_shadows", window.Window.SHADOWS),
+        ("views", "study_sun_eyes", window.Window.EYE),
+        ("site", "study_site", window.Window.SITE),
+    ],
+)
+def test_a_palette_button_ticks_its_study_and_opens_its_section(
+    hidden_window: Any, asked: str, tick: str, section: str
+) -> None:
+    """What the add-on's palette buttons reach, one per study."""
+    assert hidden_window.ask_for(asked) is True
+    assert hidden_window._ticks()[tick].get() is True, f"{asked} was not ticked"
+    showing = hidden_window._open_section()
+    assert showing == section, f"{asked} opened {showing} rather than {section}"
+
+
+def test_a_study_nobody_has_heard_of_leaves_the_window_alone(hidden_window: Any) -> None:
+    """A misspelt environment variable must not stop the window opening."""
+    before = {name: box.get() for name, box in hidden_window._ticks().items()}
+    assert hidden_window.ask_for("shadow-diagrams") is False
+    assert hidden_window.ask_for("") is False
+    after = {name: box.get() for name, box in hidden_window._ticks().items()}
+    assert after == before, "an unknown study changed something"
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ([], ""),
+        (["--study", "shadow"], "shadow"),
+        (["--study", "site"], "site"),
+        # A flag with nothing after it must not read past the end.
+        (["--study"], ""),
+        # Not ours, and not an error either.
+        (["--verbose"], ""),
+        (["/dde", "--study", "facade"], "facade"),
+    ],
+)
+def test_the_palette_argument_is_read_off_the_command_line(argv: list[str], expected: str) -> None:
+    """How a palette button says which study it stood for.
+
+    An argument rather than an environment variable: the add-on would have to
+    set the variable on Archicad's own process, and every program Archicad
+    started afterwards would inherit it.
+    """
+    assert window.wanted_study(argv) == expected

@@ -5,6 +5,11 @@ from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('C:/Users/SamiAbdulnour/Documents/Adobe/Photoshop/sun-study/assets/loriini.ico', 'assets')]
+# The window's icons. PNGs rather than a drawing library: Tk reads them
+# itself, so Pillow stays a development dependency and out of the bundle --
+# it is in `excludes` below, and `scripts/make_icons.py` is what needs it.
+# `sun_study.app.icons` looks for them at exactly this path under _MEIPASS.
+datas += [('C:/Users/SamiAbdulnour/Documents/Adobe/Photoshop/sun-study/assets/icons', 'assets/icons')]
 binaries = []
 hiddenimports = []
 datas += collect_data_files('tzdata')

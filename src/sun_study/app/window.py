@@ -61,16 +61,20 @@ does.
 
 from __future__ import annotations
 
+import math
 import queue
 import sys
 import tkinter as tk
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
+from itertools import pairwise
 from pathlib import Path
 from tkinter import filedialog, scrolledtext, ttk
+from typing import ClassVar
 
 from sun_study import AUTHOR, PRODUCT, __version__
-from sun_study.app import preferences, probe
+from sun_study.app import icons, preferences, probe, theme
 from sun_study.app.runner import Run
 from sun_study.archicad import naming
 from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS
@@ -78,8 +82,19 @@ from sun_study.cli import DEFAULT_SHADOW_DATES, DEFAULT_SHADOW_HOURS
 from sun_study.disclaimer import STATUS
 from sun_study.rules.days import ASSESSMENT_DAYS, day_name, parse_day
 
-PAD = 8
-HINT = "#5a5a5a"
+PAD = theme.PAD
+#: Kept as a name because a dozen widgets still pass it directly. The value
+#: is the theme's, so the window and the styles cannot disagree about it.
+HINT = theme.HINT
+
+#: How the add-on's palette says which study its button stood for. Read out of
+#: the command line by ``app.__main__`` and handed to ``Window.ask_for``.
+#:
+#: A command-line argument rather than an environment variable, because the
+#: add-on would have to set that variable on Archicad's own process -- and it
+#: would then be inherited by every other program Archicad started for the
+#: rest of the session.
+STUDY_FLAG = "--study"
 
 #: Layer name fragments that mark the envelope a facade study measures. A
 #: guess, offered rather than applied: the picker is filled with them and the
@@ -97,6 +112,26 @@ COMMUNAL_JOB = "solar analysis: communal open space"
 SHADOW_JOB = "shadow diagram"
 SUN_EYE_JOB = "sun views"
 SITE_JOB = "site tools"
+
+#: What a queued study is called on a chip in the run bar and in the summary,
+#: and which icon it wears. Keyed on the job name so the chips, the tab ticks
+#: and the log all read from the same list -- a study called one thing on a
+#: chip and another in the log is a study somebody cannot follow.
+CHIPS: dict[str, tuple[str, str]] = {
+    FACADE_JOB: ("Facade", "facade"),
+    PLANS_JOB: ("Apartments", "apartments"),
+    COMMUNAL_JOB: ("Communal", "communal"),
+    SHADOW_JOB: ("Shadow diagram", "shadow"),
+    SUN_EYE_JOB: ("Sun views", "views"),
+    SITE_JOB: ("Site analysis", "site_analysis"),
+}
+
+#: The schematic in the summary pane. Not a rendering of the project -- the
+#: printer driver's paper preview is not the document either -- but the sun
+#: and the shadows do follow the first hour asked for, because a shadow that
+#: does not move when the hour changes is worse than no shadow at all.
+PREVIEW_W = 186
+PREVIEW_H = 158
 
 
 class Tooltip:
@@ -178,7 +213,7 @@ class Scroller(ttk.Frame):
         super().__init__(parent)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
-        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, background=theme.SURFACE)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.bar.grid(row=0, column=1, sticky="ns")
@@ -477,6 +512,74 @@ class LayerChooser(tk.Toplevel):
         self._close()
 
 
+class Tiles(ttk.Frame):
+    """A row of drawn choices, in place of a dropdown with three phrasings.
+
+    The printer driver's own move, and the reason the icons exist at all:
+    paper source, two-sided printing and pages-per-sheet are rows of little
+    pictures, and a person picks the shape they meant instead of reading four
+    wordings of it and deciding which one is nearest.
+
+    It answers ``get``, ``delete`` and ``insert`` the way the Combobox it
+    replaces does, because that is the interface ``Window.apply`` puts a saved
+    settings file back through -- so a file saved by the old window still
+    restores into this one, which is the whole reason the interface is copied
+    rather than improved.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        choices: Sequence[tuple[str, str, str]],
+        on_change: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._chosen = choices[0][0]
+        self._on_change = on_change
+        self._buttons: dict[str, ttk.Button] = {}
+        for column, (value, icon, detail) in enumerate(choices):
+            button = ttk.Button(
+                self,
+                style="Tile.TButton",
+                command=partial(self._pick, value),
+                **icons.button_options(icon, 24),
+            )
+            button.grid(row=0, column=column, padx=(0, 2))
+            # Every tile says what it is in words as well. Seven unlabelled
+            # drawings are only learnable if something names them, and this is
+            # also what the window's own test for explained controls looks for.
+            Tooltip(button, detail)
+            self._buttons[value] = button
+        self._paint()
+
+    def _pick(self, value: str) -> None:
+        self.set(value)
+        if self._on_change is not None:
+            self._on_change()
+
+    def _paint(self) -> None:
+        for value, button in self._buttons.items():
+            button.configure(style="TileOn.TButton" if value == self._chosen else "Tile.TButton")
+
+    def get(self) -> str:
+        """The chosen value, spelled exactly as the caller listed it."""
+        return self._chosen
+
+    def set(self, value: str) -> None:
+        """Choose one. A value nobody offered is ignored."""
+        if value in self._buttons:
+            self._chosen = value
+            self._paint()
+
+    # -- what makes it a drop-in for the Combobox it replaced --------------
+    def delete(self, first: object = 0, last: object = None) -> None:
+        """Nothing to clear: one of the tiles is always the chosen one."""
+
+    def insert(self, index: object, value: str) -> None:
+        """How ``Window.apply`` restores a saved choice."""
+        self.set(value)
+
+
 @dataclass
 class Job:
     """One command to run, and what to call it while it runs."""
@@ -556,6 +659,12 @@ class Window:
     FACADE = DIAGRAMS
 
     def _build(self) -> None:
+        # Before any widget exists: ttk reads a style when a widget is made,
+        # so restyling afterwards leaves whatever was built first looking like
+        # the old theme.
+        theme.apply(self.root)
+        self.root.configure(background=theme.CHROME)
+
         wheel_reaches_the_pointer(self.root)
 
         # The bottom of the window is built first and packed to the bottom,
@@ -563,11 +672,22 @@ class Window:
         # Run has to be findable without hunting through sections, and a log
         # that scrolls off the top during a run is a log nobody reads --
         # which is most of what this window has to say while it works.
-        base = ttk.Frame(self.root, padding=(PAD, 0, PAD, PAD))
+        base = ttk.Frame(self.root, style="Chrome.TFrame", padding=(PAD, 0, PAD, PAD))
         base.pack(side="bottom", fill="x")
         base.columnconfigure(0, weight=1)
 
         self._project_picker()
+
+        # The settings and the summary share a row, so the summary stays put
+        # while a tab is changed and scrolled -- which is the whole of its
+        # job. It is the printer driver's paper preview: a colleague filling
+        # in the shadow tab can still see what day, what hour and which
+        # studies are queued without leaving the page to find out.
+        middle = ttk.Frame(self.root, style="Chrome.TFrame")
+        middle.pack(side="top", fill="both", expand=True)
+        self.middle = middle
+
+        self._summary(middle)
         self._sections()
         self._controls(base)
         self._sync()
@@ -581,7 +701,7 @@ class Window:
         colleague naming zones for the diagrams should not have to leave the
         page to see which project they are naming them in.
         """
-        top = ttk.Frame(self.root, padding=(PAD, PAD, PAD, 0))
+        top = ttk.Frame(self.root, style="Chrome.TFrame", padding=(PAD, PAD, PAD, 2))
         top.pack(side="top", fill="x")
         top.columnconfigure(1, weight=1)
         row = 0
@@ -589,15 +709,21 @@ class Window:
         # Listed, never assumed: each instance gets its own port, so the
         # default is right only for whichever started first, and two projects
         # open is the ordinary case in an office.
-        label = ttk.Label(top, text="Archicad")
+        label = ttk.Label(top, text="Archicad", style="Chrome.TLabel")
         label.grid(row=row, column=0, sticky="w")
-        picker = ttk.Frame(top)
+        picker = ttk.Frame(top, style="Chrome.TFrame")
         picker.grid(row=row, column=1, sticky="ew", pady=2)
         picker.columnconfigure(0, weight=1)
         self.instance = ttk.Combobox(picker, state="readonly", values=[])
         self.instance.grid(row=0, column=0, sticky="ew")
         self.instance.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
-        rescan = ttk.Button(picker, text="Refresh", command=self.refresh, width=9)
+        rescan = ttk.Button(
+            picker,
+            text="Refresh",
+            command=self.refresh,
+            width=11,
+            **icons.button_options("refresh"),
+        )
         rescan.grid(row=0, column=1, padx=(6, 0))
         Tooltip(
             rescan,
@@ -607,11 +733,11 @@ class Window:
             "in the sections below.",
         )
         row += 1
-        self._hint(
+        ttk.Label(
             top,
-            row,
-            "The open project to measure. Check the name if you have two open.",
-        )
+            text="The open project to measure. Check the name if you have two open.",
+            style="ChromeHint.TLabel",
+        ).grid(row=row, column=1, sticky="w")
         row += 1
         for target in (label, self.instance):
             Tooltip(
@@ -623,7 +749,9 @@ class Window:
                 "after opening or closing a project.",
             )
 
-        self.status = ttk.Label(top, text="", foreground=HINT, wraplength=620, justify="left")
+        self.status = ttk.Label(
+            top, text="", style="ChromeHint.TLabel", wraplength=620, justify="left"
+        )
         self.status.grid(row=row, column=1, sticky="w", pady=(0, 4))
 
     def _sections(self) -> None:
@@ -641,8 +769,8 @@ class Window:
         will run says so on its own label, and the line above Run names every
         study queued whichever tab is showing.
         """
-        self.tabs = ttk.Notebook(self.root)
-        self.tabs.pack(side="top", fill="both", expand=True, padx=PAD, pady=(4, 0))
+        self.tabs = ttk.Notebook(self.middle)
+        self.tabs.pack(side="right", fill="both", expand=True, padx=(4, PAD), pady=(2, 0))
 
         #: Every tab's title in tab order, and every tab's pane. The
         #: notebook's own labels grow a tick when the study in them will run,
@@ -659,7 +787,7 @@ class Window:
         # outside and four inside: what the export starts from, then a tool
         # per tab.
         holder = ttk.Frame(self.tabs)
-        self.tabs.add(holder, text=self.SOLAR)
+        self.tabs.add(holder, text=self.SOLAR, **icons.section_options(self.SOLAR))
         self.titles.append(self.SOLAR)
         self.solar_tabs = ttk.Notebook(holder)
         self.solar_tabs.pack(fill="both", expand=True)
@@ -668,6 +796,168 @@ class Window:
         self._diagrams(self._solar_section(self.DIAGRAMS))
         self._shadows(self._solar_section(self.SHADOWS))
         self._sun_eyes(self._solar_section(self.EYE))
+
+    def _summary(self, parent: ttk.Frame) -> None:
+        """What the run will draw, down the left, whichever tab is showing.
+
+        Lifted from the print dialog, which puts a picture of a sheet and the
+        words "100% / Letter" beside the settings rather than making anybody
+        assemble that from six separate fields. Here it is the schematic, the
+        day and hour, the sheet it lands on, and the studies that are queued.
+
+        None of it is a control. Everything here is read from fields that live
+        in the tabs, so there is exactly one place to change any of it and
+        this is a second place to see it.
+        """
+        pane = ttk.Frame(parent, style="Chrome.TFrame", padding=(PAD, 2, 0, PAD))
+        pane.pack(side="left", fill="y")
+
+        ttk.Label(pane, text="What it will draw", style="ChromeHint.TLabel").pack(anchor="w")
+
+        self.preview = tk.Canvas(
+            pane,
+            width=PREVIEW_W,
+            height=PREVIEW_H,
+            background=theme.SURFACE,
+            highlightthickness=1,
+            highlightbackground=theme.LINE,
+        )
+        self.preview.pack(anchor="w", pady=(4, 7))
+
+        self.preview_day = ttk.Label(pane, text="", style="ChromeStrong.TLabel")
+        self.preview_day.pack(anchor="w")
+        self.preview_sheet = ttk.Label(
+            pane, text="", style="ChromeHint.TLabel", justify="left", wraplength=PREVIEW_W
+        )
+        self.preview_sheet.pack(anchor="w", pady=(1, 0))
+
+        ttk.Separator(pane).pack(fill="x", pady=(11, 8))
+
+        ttk.Label(pane, text="Queued, in order", style="ChromeHint.TLabel").pack(anchor="w")
+        #: Rebuilt by ``_sync`` rather than hidden and shown: the list is at
+        #: most six rows and destroying them is simpler to be sure of than
+        #: keeping six widgets and a count in step.
+        self.queued_rows = ttk.Frame(pane, style="Chrome.TFrame")
+        self.queued_rows.pack(anchor="w", fill="x", pady=(5, 0))
+
+    def _first_hour(self) -> int:
+        """The first whole hour the shadow diagram was asked for, or noon.
+
+        Only the preview reads this, so anything unparseable is noon rather
+        than an error: the field itself is checked properly by the run.
+        """
+        for piece in self.shadow_hours.get().split(","):
+            try:
+                hour = int(piece.strip())
+            except ValueError:
+                continue
+            if 0 <= hour <= 23:
+                return hour
+        return 12
+
+    def _draw_preview(self) -> None:
+        """The schematic, with the sun where the chosen hour puts it.
+
+        Sydney, so the morning sun is north-east and throws its shadows
+        south-west; at three it is north-west and throws them south-east. The
+        arithmetic is one line and it is what makes the panel worth having.
+        """
+        canvas = self.preview
+        canvas.delete("all")
+        wide, tall = PREVIEW_W, PREVIEW_H
+
+        # The sheet, with its title block bottom right.
+        canvas.create_rectangle(10, 8, wide - 10, tall - 10, outline=theme.LINE, fill=theme.SURFACE)
+        canvas.create_rectangle(
+            wide - 58, tall - 34, wide - 14, tall - 14, outline=theme.BLUE, fill=theme.BLUE_TINT
+        )
+
+        middle_x, middle_y = wide / 2, tall / 2 + 6
+        # The ground, on the same axis as every block in the icon set.
+        canvas.create_polygon(
+            middle_x - 60,
+            middle_y,
+            middle_x,
+            middle_y - 30,
+            middle_x + 60,
+            middle_y,
+            middle_x,
+            middle_y + 30,
+            fill="#EDEBE4",
+            outline="#C6C5BE",
+        )
+
+        hour = self._first_hour()
+        lean = math.radians((12 - hour) * 15)
+        sun_x = middle_x + math.sin(lean) * 52
+        sun_y = 30 - math.cos(lean) * 14
+        stretch = 1.0 + abs(12 - hour) / 3.0
+
+        for centre_x, centre_y, half in (
+            (middle_x - 22, middle_y + 2, 11),
+            (middle_x + 20, middle_y - 4, 8),
+        ):
+            drop_x = -math.sin(lean) * 22 * stretch
+            drop_y = math.cos(lean) * 11 * stretch
+            canvas.create_polygon(
+                centre_x - half,
+                centre_y,
+                centre_x,
+                centre_y - half / 2,
+                centre_x + half + drop_x,
+                centre_y + drop_y,
+                centre_x + drop_x,
+                centre_y + half / 2 + drop_y,
+                fill="#B9B7AF",
+                outline="",
+            )
+            canvas.create_polygon(
+                centre_x - half,
+                centre_y,
+                centre_x,
+                centre_y - half / 2,
+                centre_x + half,
+                centre_y,
+                centre_x,
+                centre_y + half / 2,
+                fill=theme.SURFACE,
+                outline="#3C3C3A",
+            )
+
+        canvas.create_oval(sun_x - 7, sun_y - 7, sun_x + 7, sun_y + 7, fill=theme.SUN, outline="")
+
+        # North, in interface blue because it is not a thing that was built.
+        canvas.create_polygon(20, 20, 26, 36, 20, 32, 14, 36, fill=theme.BLUE, outline="")
+
+    def _refresh_summary(self, queued: list[str]) -> None:
+        """Put the panel back in step with the fields and the ticks."""
+        self._draw_preview()
+
+        hour = self._first_hour()
+        day = (self.shadow_dates.get().split(",") or [""])[0].strip()
+        self.preview_day.config(text=f"{day or '21 Jun'}  ·  {hour:02d}:00")
+
+        sheets = self.sheets.get() or "one layout"
+        self.preview_sheet.config(
+            text=f"{self.master.get() or 'no master chosen'}\n1:{self.eye_scale.get() or '200'}"
+            f"  ·  {sheets.split(',')[0].lower()}"
+        )
+
+        for old in self.queued_rows.winfo_children():
+            old.destroy()
+        if not queued:
+            ttk.Label(self.queued_rows, text="nothing ticked", style="ChromeHint.TLabel").pack(
+                anchor="w"
+            )
+            return
+        for place, name in enumerate(queued, start=1):
+            label, icon = CHIPS.get(name, (name, ""))
+            row = ttk.Frame(self.queued_rows, style="Chrome.TFrame")
+            row.pack(anchor="w", fill="x", pady=1)
+            ttk.Label(row, text=f"{place}", style="ChromeHint.TLabel", width=2).pack(side="left")
+            ttk.Label(row, text=label, style="Chrome.TLabel", **icons.button_options(icon)).pack(
+                side="left"
+            )
 
     def _section(self, title: str) -> ttk.Frame:
         """One tab, and the frame its settings are built into.
@@ -680,7 +970,7 @@ class Window:
         longest tab still has to be able to reach the bottom of it.
         """
         pane = Scroller(self.tabs)
-        self.tabs.add(pane, text=title)
+        self.tabs.add(pane, text=title, **icons.section_options(title))
         self.titles.append(title)
         self.panes.append(pane)
         frame = ttk.Frame(pane.content, padding=PAD)
@@ -691,7 +981,7 @@ class Window:
     def _solar_section(self, title: str) -> ttk.Frame:
         """One of the Solar tools' own tabs; the same shape one level down."""
         pane = Scroller(self.solar_tabs)
-        self.solar_tabs.add(pane, text=title)
+        self.solar_tabs.add(pane, text=title, **icons.section_options(title))
         self.solar_titles.append(title)
         self.panes.append(pane)
         frame = ttk.Frame(pane.content, padding=PAD)
@@ -734,7 +1024,7 @@ class Window:
             "keeps this strip clear: the site sheets, the sun views, the "
             "shadow and solar diagrams.",
         )
-        self.sheets, row = self._combo(
+        self.sheets, row = self._tiles(
             frame,
             row,
             "Sheets",
@@ -748,7 +1038,6 @@ class Window:
             "per drawing gives each its full sheet. A sheet whose name no "
             "longer matches is replaced on the next run.",
         )
-        self.sheets["values"] = [title for title, _ in self.SHEET_CHOICES]
         self.sheets.set(self.SHEET_CHOICES[1][0])
 
         ttk.Separator(frame).grid(row=row, column=0, columnspan=2, sticky="ew", pady=PAD)
@@ -982,7 +1271,11 @@ class Window:
         self.do_floors = tk.BooleanVar(value=True)
 
         facade_box = ttk.Checkbutton(
-            frame, text="Facade (massing stage)", variable=self.do_facade, command=self._sync
+            frame,
+            text="Facade (massing stage)",
+            variable=self.do_facade,
+            command=self._sync,
+            **icons.study_options("Facade (massing stage)"),
         )
         facade_box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -1069,7 +1362,11 @@ class Window:
 
         self.do_plans = tk.BooleanVar(value=False)
         plans_box = ttk.Checkbutton(
-            frame, text="Apartments", variable=self.do_plans, command=self._sync
+            frame,
+            text="Apartments",
+            variable=self.do_plans,
+            command=self._sync,
+            **icons.study_options("Apartments"),
         )
         plans_box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -1155,7 +1452,11 @@ class Window:
         self.do_communal = tk.BooleanVar(value=False)
         self.do_hourly = tk.BooleanVar(value=True)
         communal_box = ttk.Checkbutton(
-            frame, text="Communal open space", variable=self.do_communal, command=self._sync
+            frame,
+            text="Communal open space",
+            variable=self.do_communal,
+            command=self._sync,
+            **icons.study_options("Communal open space"),
         )
         communal_box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -1284,7 +1585,11 @@ class Window:
         row = 0
         self.do_shadows = tk.BooleanVar(value=False)
         box = ttk.Checkbutton(
-            frame, text="Shadow diagram", variable=self.do_shadows, command=self._sync
+            frame,
+            text="Shadow diagram",
+            variable=self.do_shadows,
+            command=self._sync,
+            **icons.study_options("Shadow diagram"),
         )
         box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -1430,7 +1735,11 @@ class Window:
         row = 0
         self.do_sun_eyes = tk.BooleanVar(value=False)
         box = ttk.Checkbutton(
-            frame, text="Sun views", variable=self.do_sun_eyes, command=self._sync
+            frame,
+            text="Sun views",
+            variable=self.do_sun_eyes,
+            command=self._sync,
+            **icons.study_options("Sun views"),
         )
         box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -1510,7 +1819,13 @@ class Window:
         """
         row = 0
         self.do_site = tk.BooleanVar(value=False)
-        box = ttk.Checkbutton(frame, text="Site tools", variable=self.do_site, command=self._sync)
+        box = ttk.Checkbutton(
+            frame,
+            text="Site tools",
+            variable=self.do_site,
+            command=self._sync,
+            **icons.study_options("Site tools"),
+        )
         box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
             box,
@@ -1646,7 +1961,7 @@ class Window:
             "where the station is a long way off. The site sheet ignores this "
             "and picks the scale its boundary fits at.",
         )
-        self.site_anchor, row = self._combo(
+        self.site_anchor, row = self._tiles(
             frame,
             row,
             "Site lands at",
@@ -1658,7 +1973,6 @@ class Window:
             "at (0, 0) -- for a project that has nothing in it yet, or whose "
             "location is still the Sydney preset.",
         )
-        self.site_anchor.config(values=("Project location", "Project origin"), state="readonly")
         self.site_anchor.set("Project location")
         self.site_radius, row = self._entry(
             frame,
@@ -1712,7 +2026,7 @@ class Window:
         honest record of what gets passed and survives being saved, while the
         button is what makes a path on a network drive bearable to enter.
         """
-        name = ttk.Label(parent, text=label)
+        name = ttk.Label(parent, text=label, **icons.options(label))
         name.grid(row=row, column=0, sticky="w", pady=(2, 0))
         holder = ttk.Frame(parent)
         holder.grid(row=row, column=1, sticky="ew", pady=(2, 0))
@@ -1746,7 +2060,7 @@ class Window:
         view listed in the navigator but missing from the set is exactly the
         mistake worth catching before a run rather than after.
         """
-        name = ttk.Label(parent, text=label)
+        name = ttk.Label(parent, text=label, **icons.options(label))
         name.grid(row=row, column=0, sticky="w", pady=(2, 0))
         holder = ttk.Frame(parent)
         holder.grid(row=row, column=1, sticky="ew", pady=(2, 0))
@@ -1800,13 +2114,26 @@ class Window:
         #: sections there is otherwise nowhere on screen that answers it: a
         #: colleague reading the Facade skin tab can see that study is on and
         #: nothing whatever about the other two.
-        self.queued_line = ttk.Label(base, text="", foreground=HINT, wraplength=760)
-        self.queued_line.grid(row=0, column=0, sticky="w", pady=(PAD, 0))
+        #: The queued studies, as chips with their own drawings on them. The
+        #: label beside them stays, because it is the one that has something to
+        #: say when nothing is ticked and a row of no chips says nothing.
+        strip = ttk.Frame(base, style="Chrome.TFrame")
+        strip.grid(row=0, column=0, sticky="ew", pady=(PAD, 2))
+        self.queued_line = ttk.Label(strip, text="", style="ChromeHint.TLabel")
+        self.queued_line.pack(side="left")
+        self.queued_chips = ttk.Frame(strip, style="Chrome.TFrame")
+        self.queued_chips.pack(side="left", padx=(4, 0))
 
-        buttons = ttk.Frame(base)
-        buttons.grid(row=1, column=0, sticky="ew", pady=(4, 4))
+        progress_row = ttk.Frame(base, style="Chrome.TFrame")
+        progress_row.grid(row=2, column=0, sticky="ew", pady=(2, 6))
+        progress_row.columnconfigure(0, weight=1)
+
+        buttons = ttk.Frame(base, style="Chrome.TFrame")
+        buttons.grid(row=1, column=0, sticky="ew", pady=(2, 2))
         buttons.columnconfigure(0, weight=1)
-        self.go = ttk.Button(buttons, text="Run study", command=self._start)
+        self.go = ttk.Button(
+            buttons, text="Run study", command=self._start, **icons.button_options("run")
+        )
         self.go.grid(row=0, column=0, sticky="ew")
         Tooltip(
             self.go,
@@ -1815,14 +2142,26 @@ class Window:
             "couple. Nothing is saved — look at the result in Archicad and "
             "save it yourself if you want to keep it.",
         )
-        self.cancel = ttk.Button(buttons, text="Stop", command=self._stop, state="disabled")
+        self.cancel = ttk.Button(
+            buttons,
+            text="Stop",
+            command=self._stop,
+            state="disabled",
+            **icons.button_options("stop"),
+        )
         self.cancel.grid(row=0, column=1, padx=(6, 0))
         Tooltip(
             self.cancel,
             "Asks the run to stop and lets it put the project's layer state "
             "back on the way out. It can take a few seconds to come to a halt.",
         )
-        keep = ttk.Button(buttons, text="Save as default", command=self._remember, width=16)
+        keep = ttk.Button(
+            buttons,
+            text="Save as default",
+            command=self._remember,
+            width=18,
+            **icons.button_options("save_default"),
+        )
         keep.grid(row=0, column=2, padx=(6, 0))
         Tooltip(
             keep,
@@ -1834,7 +2173,13 @@ class Window:
             "is overruled by the project, so a saved layer name cannot make a "
             "run measure a layer that is not there.",
         )
-        drop = ttk.Button(buttons, text="Forget", command=self._forget, width=9)
+        drop = ttk.Button(
+            buttons,
+            text="Forget",
+            command=self._forget,
+            width=11,
+            **icons.button_options("forget"),
+        )
         drop.grid(row=0, column=3, padx=(6, 0))
         Tooltip(
             drop,
@@ -1844,17 +2189,33 @@ class Window:
             "Archicad as they did the first time.",
         )
 
-        self.progress = ttk.Progressbar(base, mode="determinate", maximum=100)
-        self.progress.grid(row=2, column=0, sticky="ew")
+        self.progress = ttk.Progressbar(progress_row, mode="determinate", maximum=100)
+        self.progress.grid(row=0, column=0, sticky="ew")
+        #: What the bar is actually at, in words. An indeterminate bar says
+        #: only that something is happening, and "3 of 7" is the thing a
+        #: colleague wants while a shadow diagram grinds through its sheets.
+        self.progress_count = ttk.Label(progress_row, text="", style="ChromeHint.TLabel")
+        self.progress_count.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
         self.log = scrolledtext.ScrolledText(
-            base, height=11, wrap="word", state="disabled", font=("Consolas", 9)
+            base,
+            height=11,
+            wrap="word",
+            state="disabled",
+            font=theme.log_font(),
+            background=theme.SURFACE,
+            foreground=theme.BODY,
+            insertbackground=theme.INK,
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=4,
         )
         self.log.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
 
-        ttk.Label(base, text=STATUS, foreground="#a33", wraplength=760).grid(
-            row=4, column=0, sticky="w", pady=(6, 0)
-        )
+        ttk.Label(
+            base, text=STATUS, foreground=theme.RED, background=theme.CHROME, wraplength=760
+        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
         ttk.Label(
             base,
             text=f"{PRODUCT} {__version__}  ·  created by {AUTHOR}",
@@ -1865,7 +2226,7 @@ class Window:
         """The line under a control. Returned so it can be rewritten: the
         useful thing to say under a zone field is what the project turned out
         to hold, which is not known until it has been read."""
-        made = ttk.Label(parent, text=text, foreground=HINT, wraplength=560)
+        made = ttk.Label(parent, text=text, style="Hint.TLabel", wraplength=560)
         made.grid(row=row, column=1, sticky="w", pady=(0, 4))
         return made
 
@@ -1886,7 +2247,7 @@ class Window:
     def _combo(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
     ) -> tuple[ttk.Combobox, int]:
-        name = ttk.Label(parent, text=label)
+        name = ttk.Label(parent, text=label, **icons.options(label))
         name.grid(row=row, column=0, sticky="w", pady=(2, 0))
         box = ttk.Combobox(parent, values=[])
         box.grid(row=row, column=1, sticky="ew", pady=(2, 0))
@@ -1898,7 +2259,7 @@ class Window:
     def _entry(
         self, parent: ttk.Frame, row: int, label: str, initial: str, hint: str, detail: str
     ) -> tuple[ttk.Entry, int]:
-        name = ttk.Label(parent, text=label)
+        name = ttk.Label(parent, text=label, **icons.options(label))
         name.grid(row=row, column=0, sticky="w", pady=(2, 0))
         box = ttk.Entry(parent)
         box.insert(0, initial)
@@ -1923,7 +2284,7 @@ class Window:
         line underneath says what was found, so a guess can be checked without
         opening the Zone settings in Archicad.
         """
-        name = ttk.Label(parent, text=label)
+        name = ttk.Label(parent, text=label, **icons.options(label))
         name.grid(row=row, column=0, sticky="w", pady=(2, 0))
         holder = ttk.Frame(parent)
         holder.grid(row=row, column=1, sticky="ew", pady=(2, 0))
@@ -1955,6 +2316,23 @@ class Window:
             Tooltip(target, detail)
         return layer, names, line, row + 2
 
+    def _tiles(
+        self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
+    ) -> tuple[Tiles, int]:
+        """A choice row: the label, then the drawings, then the line beneath.
+
+        The same shape as ``_combo`` so a field can move between the two
+        without its caller changing, and it is returned as the same kind of
+        thing as far as everything that reads it is concerned.
+        """
+        name = ttk.Label(parent, text=label, **icons.options(label))
+        name.grid(row=row, column=0, sticky="w", pady=(2, 0))
+        made = Tiles(parent, self.TILE_CHOICES[label], on_change=self._sync)
+        made.grid(row=row, column=1, sticky="w", pady=(2, 0))
+        self._hint(parent, row + 1, hint)
+        Tooltip(name, detail)
+        return made, row + 2
+
     def _picker(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
     ) -> tuple[ttk.Entry, int]:
@@ -1967,7 +2345,7 @@ class Window:
         something to retype, and a typo here measures nothing and says so
         several minutes later.
         """
-        name = ttk.Label(parent, text=label)
+        name = ttk.Label(parent, text=label, **icons.options(label))
         name.grid(row=row, column=0, sticky="w", pady=(2, 0))
         holder = ttk.Frame(parent)
         holder.grid(row=row, column=1, sticky="ew", pady=(2, 0))
@@ -2064,6 +2442,42 @@ class Window:
             self.tabs.select(self.titles.index(self.SOLAR))  # type: ignore[no-untyped-call]
             self.solar_tabs.select(self.solar_titles.index(title))  # type: ignore[no-untyped-call]
 
+    def ask_for(self, study: str) -> bool:
+        """Tick one study and open the section it lives in. True if it took.
+
+        This is what the add-on's palette buttons reach. Archicad cannot run
+        the analysis -- that lives in Python, where it is tested -- so a
+        palette button starts this program with ``LORIINI_STUDY`` naming what
+        it wants, and the window opens already set up for it. Which is the
+        whole of what a button in Archicad can honestly do, and is also the
+        printer driver's own logic: choose the output, and the dialog comes up
+        arranged around it.
+
+        Anything unrecognised is ignored and answers False. A misspelt
+        environment variable must leave the window opening normally rather
+        than refusing to start, for the same reason a settings file edited
+        into nonsense costs one setting and not the whole page.
+        """
+        wanted = {
+            "facade": (self.do_facade, self.FACADE),
+            "apartments": (self.do_plans, self.DIAGRAMS),
+            "communal": (self.do_communal, self.DIAGRAMS),
+            "shadow": (self.do_shadows, self.SHADOWS),
+            "views": (self.do_sun_eyes, self.EYE),
+            "site": (self.do_site, self.SITE),
+        }
+        found = wanted.get(study.strip().casefold())
+        if found is None:
+            return False
+        tick, section = found
+        tick.set(True)
+        self._show_section(section)
+        # The ticks were changed from outside, so the three things that are
+        # one fact -- the dependent boxes, the tab labels and the line above
+        # Run -- have to be told, exactly as a click would tell them.
+        self._sync()
+        return True
+
     def _sync(self) -> None:
         """Keep the window telling the truth about what it will do.
 
@@ -2100,14 +2514,30 @@ class Window:
         queued = [name for name, tick, _where in self._studies() if tick.get()]
         self.queued_line.config(
             text=(
-                "Will run: " + ", then ".join(queued)
+                "Will run"
                 if queued
                 else "Nothing ticked. Choose a study in one of the sections above."
             )
         )
 
+        # Rebuilt rather than rewritten: each chip carries an icon as well as
+        # a name, and six labels destroyed and remade is less to be wrong
+        # about than six kept in step with a changing list.
+        for old in self.queued_chips.winfo_children():
+            old.destroy()
+        for name in queued:
+            label, icon = CHIPS.get(name, (name, ""))
+            ttk.Label(
+                self.queued_chips,
+                text=label,
+                style="Chip.TLabel",
+                **icons.button_options(icon),
+            ).pack(side="left", padx=(0, 4))
+
+        self._refresh_summary(queued)
+
     # -- settings that outlive the window ------------------------------------
-    def _fields(self) -> dict[str, ttk.Entry]:
+    def _fields(self) -> dict[str, ttk.Entry | Tiles]:
         """Every typed or chosen setting, under a name that survives a rename.
 
         Written out here rather than gathered off the widget tree, because the
@@ -2294,13 +2724,16 @@ class Window:
             values=[f"{instance.project}  ·  port {instance.port}" for instance in found]
         )
         if not found:
-            self.status.config(text="no Archicad answering. Open a project, then Refresh.")
+            self.status.config(
+                text="no Archicad answering. Open a project, then Refresh.",
+                **icons.state_options("disconnected"),
+            )
             self.options = probe.ProjectOptions()
             return
         if self.instance.current() < 0:
             self.instance.current(0)
 
-        self.status.config(text="reading the project ...")
+        self.status.config(text="reading the project ...", **icons.state_options("connected"))
         self.root.update_idletasks()
         self.options = probe.options(self.ports[max(self.instance.current(), 0)])
         self._offer()
@@ -2320,12 +2753,14 @@ class Window:
                     "restart Archicad, then press Refresh."
                 ),
                 foreground="#a33",
+                **icons.state_options("disconnected"),
             )
             return
         if not found.reachable:
             self.status.config(
                 text="; ".join(found.problems) or "could not read the project",
                 foreground="#a33",
+                **icons.state_options("disconnected"),
             )
             return
         self.status.config(
@@ -2335,6 +2770,7 @@ class Window:
                 f"{len(found.zone_layers)} carry zones · {len(found.masters)} masters · "
                 f"{len(found.subsets)} subsets"
             ),
+            **icons.state_options("connected"),
         )
         self._only_what_this_project_has()
         choices = self._zone_layer_choices()
@@ -2566,7 +3002,48 @@ class Window:
         named = [name for name in self.options.zone_layers if "Zone." in name]
         return named or list(self.options.zone_layers)
 
-    #: What the Sheets box offers, and the word each sends.
+    #: What each choice row draws, keyed on the label it sits beside: the
+    #: value the field holds, the icon on the tile, and what the tile says on
+    #: hover. The values must match what the rest of the window expects to
+    #: read back -- ``SHEET_CHOICES`` below is where the sheet titles are
+    #: turned into the word the command line wants.
+    TILE_CHOICES: ClassVar[dict[str, tuple[tuple[str, str, str], ...]]] = {
+        "Sheets": (
+            (
+                "One layout, all drawings",
+                "sheets",
+                "One layout, all drawings: every drawing of a set dealt onto a single layout.",
+            ),
+            (
+                "Two layouts, half each",
+                "sheets_two",
+                "Two layouts, half each: the first half of the set on one layout "
+                "and the rest on a second.",
+            ),
+            (
+                "A layout per drawing",
+                "sheets_each",
+                "A layout per drawing: one layout each, which is a lot of "
+                "layouts and the right answer for a presentation set.",
+            ),
+        ),
+        "Site lands at": (
+            (
+                "Project location",
+                "site",
+                "Project location: the site goes where the project's own "
+                "georeferencing says it is, turned to the project's north.",
+            ),
+            (
+                "Project origin",
+                "origin",
+                "Project origin: the site's centre at (0, 0), for a project "
+                "with nothing in it yet.",
+            ),
+        ),
+    }
+
+    #: What the Sheets row offers, and the word each sends.
     SHEET_CHOICES = (
         ("One layout, all drawings", "one"),
         ("Two layouts, half each", "two"),
@@ -3116,12 +3593,25 @@ def wear_the_icon(window: tk.Tk) -> None:
         pass
 
 
-def launch() -> None:
+def wanted_study(argv: Sequence[str]) -> str:
+    """The study a palette button asked for, or nothing at all.
+
+    Read by hand rather than with argparse because there is exactly one
+    argument and the frozen executable's other half already owns the command
+    line -- see ``app.__main__``. Anything it does not recognise is nothing,
+    and ``ask_for`` ignores a name it does not know, so a stray argument
+    cannot stop the window opening.
+    """
+    for before, value in pairwise(argv):
+        if before == STUDY_FLAG:
+            return value
+    return ""
+
+
+def launch(study: str = "") -> None:
     root = tk.Tk()
-    try:
-        ttk.Style().theme_use("vista")
-    except tk.TclError:
-        pass
     wear_the_icon(root)
-    Window(root)
+    window = Window(root)
+    if study:
+        window.ask_for(study)
     root.mainloop()
