@@ -23,6 +23,7 @@
 #include "Commands.hpp"
 #include "DrawingCommands.hpp"
 #include "ProjectCommands.hpp"
+#include "ModelCommands.hpp"
 #include "LayoutCommands.hpp"
 
 #include "APIEnvir.h"
@@ -213,6 +214,7 @@ GSErrCode __ACENV_CALL Initialize (void)
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::GetDrawingsCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ArrangeDrawingsCommand> ()); },
 		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::Set3DFilterCommand> ()); },
+		[] { return ACAPI_Install_AddOnCommandHandler (GS::NewOwned<Loriini::ExportModelCommand> ()); },
 	};
 
 	for (const std::function<GSErrCode ()>& install : installers) {

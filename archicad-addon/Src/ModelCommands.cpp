@@ -1,0 +1,367 @@
+#include "ModelCommands.hpp"
+
+#include <cstdio>
+#include <vector>
+
+namespace Loriini {
+
+namespace {
+
+// The format's first eight bytes and its version, matching
+// `ingest/native.py`. Both sides carry them so a mismatched add-on and tool
+// say so instead of reading one layout as another.
+const char* const MAGIC = "LORIINIM";
+const UInt32 FORMAT_VERSION = 1;
+
+
+// A file written a field at a time, little-endian, as the reader expects.
+//
+// Buffered in memory and written once at the end: a large project is tens of
+// megabytes and tens of thousands of small `fwrite` calls are most of the
+// cost. Tens of megabytes is also small enough that holding it is not a
+// question -- the IFC this replaces was 692 MB on the same project.
+class Writer {
+public:
+	void Bytes (const void* data, size_t length)
+	{
+		const char* at = static_cast<const char*> (data);
+		buffer.insert (buffer.end (), at, at + length);
+	}
+
+	void U32 (UInt32 value)			{ Bytes (&value, sizeof (value)); }
+	void I32 (Int32 value)			{ Bytes (&value, sizeof (value)); }
+	void F64 (double value)			{ Bytes (&value, sizeof (value)); }
+	void F32 (float value)			{ Bytes (&value, sizeof (value)); }
+
+	// Length-prefixed UTF-8, because a name can carry anything a person typed
+	// and a null terminator is not a length.
+	void Text (const GS::UniString& value)
+	{
+		const GS::UniString::ConstUTF8Ptr utf8 = value.ToUTF8 ();
+		const UInt32 length = static_cast<UInt32> (strlen (utf8.Get ()));
+		U32 (length);
+		Bytes (utf8.Get (), length);
+	}
+
+	bool Save (const GS::UniString& path) const
+	{
+		FILE* file = nullptr;
+		if (fopen_s (&file, path.ToCStr ().Get (), "wb") != 0 || file == nullptr) {
+			return false;
+		}
+		const size_t written = buffer.empty ()
+			? 0
+			: fwrite (buffer.data (), 1, buffer.size (), file);
+		fclose (file);
+		return written == buffer.size ();
+	}
+
+	size_t Size () const			{ return buffer.size (); }
+
+private:
+	std::vector<char> buffer;
+};
+
+
+// The name of the layer an element sits on, or "" where it cannot be read.
+//
+// Cached, because a project has a hundred and fifty layers and tens of
+// thousands of elements, and asking the attribute manager once per element is
+// the difference between seconds and minutes.
+class LayerNames {
+public:
+	GS::UniString Of (API_AttributeIndex index)
+	{
+		const auto found = known.find (index);
+		if (found != known.end ()) {
+			return found->second;
+		}
+
+		API_Attribute attribute = {};
+		attribute.header.typeID = API_LayerID;
+		attribute.header.index = index;
+		GS::UniString name;
+		if (ACAPI_Attribute_Get (&attribute) == NoError) {
+			name = GS::UniString (attribute.header.name);
+		}
+		known[index] = name;
+		return name;
+	}
+
+private:
+	std::map<API_AttributeIndex, GS::UniString> known;
+};
+
+
+// Storey names by index, read once. The analysis needs the name rather than
+// the index: a storey is named the same on every project that has one and
+// indexed differently on each.
+std::map<short, GS::UniString> StoreyNames ()
+{
+	std::map<short, GS::UniString> names;
+	API_StoryInfo info = {};
+	if (ACAPI_Environment (APIEnv_GetStorySettingsID, &info) != NoError || info.data == nullptr) {
+		return names;
+	}
+	const short first = info.firstStory;
+	const short last = info.lastStory;
+	for (short index = first; index <= last; ++index) {
+		const API_StoryType& storey = (*info.data)[index - first];
+		names[storey.index] = GS::UniString (storey.uName);
+	}
+	BMKillHandle (reinterpret_cast<GSHandle*> (&info.data));
+	return names;
+}
+
+
+// The IFC class the analysis expects for this element type.
+//
+// Only the distinctions the analysis actually makes. Everything that is not a
+// space occludes, and the scene builder treats every occluder alike, so a
+// coarse mapping here costs nothing and a fine one would be a second table to
+// keep in step with Archicad's element list.
+GS::UniString IfcClassOf (API_ElemTypeID type)
+{
+	switch (type) {
+		case API_ZoneID:		return "IfcSpace";
+		case API_WallID:		return "IfcWall";
+		case API_SlabID:		return "IfcSlab";
+		case API_RoofID:		return "IfcRoof";
+		case API_ColumnID:		return "IfcColumn";
+		case API_BeamID:		return "IfcBeam";
+		case API_MeshID:		return "IfcGeographicElement";
+		case API_WindowID:		return "IfcWindow";
+		case API_DoorID:		return "IfcDoor";
+		case API_ShellID:		return "IfcShell";
+		case API_MorphID:		return "IfcBuildingElementProxy";
+		case API_CurtainWallID:	return "IfcCurtainWall";
+		case API_ObjectID:		return "IfcBuildingElementProxy";
+		default:				return "IfcBuildingElementProxy";
+	}
+}
+
+
+// One element's triangles, gathered from every body Archicad converted for it.
+//
+// The polygons are split into convex ones before fanning. A body's polygons
+// are general -- a wall face with a window in it is one polygon with an inner
+// contour -- and a fan over that fills the hole. A window that stops sunlight
+// is not a detail here: the apartment study is the sunlight coming through it.
+struct Triangles {
+	std::vector<float> xyz;			// nine floats per triangle
+
+	void Add (const API_Coord3D& a, const API_Coord3D& b, const API_Coord3D& c)
+	{
+		const API_Coord3D corners[3] = { a, b, c };
+		for (const API_Coord3D& corner : corners) {
+			xyz.push_back (static_cast<float> (corner.x));
+			xyz.push_back (static_cast<float> (corner.y));
+			xyz.push_back (static_cast<float> (corner.z));
+		}
+	}
+
+	UInt32 Count () const			{ return static_cast<UInt32> (xyz.size () / 9); }
+};
+
+
+// Walk one body and fan its convex polygons into `into`.
+//
+// `ACAPI_3D_GetComponent` is index-based and one-based, and a polygon's edges
+// are reached through its edge *references* rather than directly: `fpedg` to
+// `lpedg` index into the body's pedg array, each entry a signed edge index
+// whose sign says which way round the edge is walked. A zero entry separates
+// one contour from the next, which is how a hole is expressed -- and the
+// reason the contours are collected rather than fanned as they arrive.
+bool AddBody (Int32 bodyIndex, Triangles& into)
+{
+	API_Component3D body = {};
+	body.header.typeID = API_BodyID;
+	body.header.index = bodyIndex;
+	if (ACAPI_3D_GetComponent (&body) != NoError) {
+		return false;
+	}
+
+	for (Int32 p = 1; p <= body.body.nPgon; ++p) {
+		API_Component3D pgon = {};
+		pgon.header.typeID = API_PgonID;
+		pgon.header.index = p;
+		if (ACAPI_3D_GetComponent (&pgon) != NoError) {
+			continue;
+		}
+
+		// The outer contour only. An inner contour arrives after a zero
+		// separator, and everything from that point on is a hole: fanning it
+		// would fill the opening, so it is left out. A hole in a face is a
+		// face the sunlight passes through, which is exactly what must not be
+		// closed over.
+		std::vector<API_Coord3D> contour;
+		for (Int32 e = pgon.pgon.fpedg; e <= pgon.pgon.lpedg; ++e) {
+			API_Component3D pedg = {};
+			pedg.header.typeID = API_PedgID;
+			pedg.header.index = e;
+			if (ACAPI_3D_GetComponent (&pedg) != NoError) {
+				continue;
+			}
+			const Int32 edgeIndex = pedg.pedg.pedg;
+			if (edgeIndex == 0) {
+				break;			// the outer contour has closed; the rest are holes
+			}
+
+			API_Component3D edge = {};
+			edge.header.typeID = API_EdgeID;
+			edge.header.index = std::abs (edgeIndex);
+			if (ACAPI_3D_GetComponent (&edge) != NoError) {
+				continue;
+			}
+
+			API_Component3D vertex = {};
+			vertex.header.typeID = API_VertID;
+			vertex.header.index = edgeIndex > 0 ? edge.edge.vert1 : edge.edge.vert2;
+			if (ACAPI_3D_GetComponent (&vertex) != NoError) {
+				continue;
+			}
+			contour.push_back ({ vertex.vert.x, vertex.vert.y, vertex.vert.z });
+		}
+
+		// A fan from the first corner. Archicad's 3D polygons are planar and
+		// convex once the holes are set aside, which is what makes this exact
+		// rather than an approximation.
+		for (size_t i = 1; i + 1 < contour.size (); ++i) {
+			into.Add (contour[0], contour[i], contour[i + 1]);
+		}
+	}
+	return true;
+}
+
+}		// namespace
+
+
+GS::String ExportModelCommand::GetName () const			{ return "ExportModel"; }
+
+GS::Optional<GS::UniString> ExportModelCommand::GetInputParametersSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"path": {
+				"type": "string",
+				"description": "Where to write the model. Overwritten if it is there."
+			}
+		},
+		"required": [ "path" ],
+		"additionalProperties": false
+	})");
+}
+
+GS::Optional<GS::UniString> ExportModelCommand::GetResponseSchema () const
+{
+	return GS::UniString (R"({
+		"type": "object",
+		"properties": {
+			"success": { "type": "boolean" },
+			"path": { "type": "string" },
+			"elements": { "type": "integer" },
+			"triangles": { "type": "integer" },
+			"bytes": { "type": "integer" }
+		},
+		"additionalProperties": false
+	})");
+}
+
+GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
+											 GS::ProcessControl& /*processControl*/) const
+{
+	GS::UniString path;
+	if (!parameters.Get ("path", path) || path.IsEmpty ()) {
+		return Failed ("ExportModel needs a 'path' to write to.", APIERR_BADPARS);
+	}
+
+	// The bodies come from the converted 3D model, so it has to exist before
+	// they can be counted. Asking for the count is what builds it.
+	Int32 bodyCount = 0;
+	GSErrCode err = ACAPI_3D_GetNum (API_BodyID, &bodyCount);
+	if (err != NoError) {
+		return Failed ("Could not read the 3D model. Generate the 3D view and try again.", err);
+	}
+
+	const std::map<short, GS::UniString> storeys = StoreyNames ();
+	LayerNames layers;
+
+	// Bodies are grouped back onto the element they were converted from: one
+	// element is commonly several bodies, and the analysis selects by element
+	// -- a layer, an element id prefix -- not by body.
+	std::map<API_Guid, Triangles> byElement;
+	std::map<API_Guid, API_Elem_Head> heads;
+
+	for (Int32 index = 1; index <= bodyCount; ++index) {
+		API_Component3D body = {};
+		body.header.typeID = API_BodyID;
+		body.header.index = index;
+		if (ACAPI_3D_GetComponent (&body) != NoError) {
+			continue;
+		}
+		const API_Guid owner = body.body.parent.guid;
+		if (owner == APINULLGuid) {
+			continue;
+		}
+		heads[owner] = body.body.parent;
+		AddBody (index, byElement[owner]);
+	}
+
+	Writer out;
+	out.Bytes (MAGIC, 8);
+	out.U32 (FORMAT_VERSION);
+
+	// Where the project says it is. Read here rather than left to the Python
+	// side so the file is self-contained: a model and the sun positions cast
+	// against it must come from one statement of where north is.
+	API_PlaceInfo place = {};
+	if (ACAPI_Environment (APIEnv_GetPlaceSetsID, &place) != NoError) {
+		place = {};
+	}
+	out.F64 (place.latitude);
+	out.F64 (place.longitude);
+	out.F64 (place.north * 180.0 / PI);
+	out.F64 (place.altitude);
+	out.U32 (static_cast<UInt32> (byElement.size ()));
+
+	UInt32 triangleTotal = 0;
+	for (const auto& entry : byElement) {
+		const API_Elem_Head& head = heads[entry.first];
+		const Triangles& triangles = entry.second;
+
+		out.Text (APIGuidToString (entry.first));
+		out.Text (layers.Of (head.layer));
+		out.Text (IfcClassOf (head.typeID));
+
+		// The element id, which is what an --shadow-source "LABEL=prefix"
+		// rule matches on.
+		GS::UniString identifier;
+		ACAPI_Database (APIDb_GetElementInfoStringID,
+						const_cast<API_Guid*> (&entry.first), &identifier);
+		out.Text (identifier);
+
+		const auto storey = storeys.find (head.floorInd);
+		out.Text (storey == storeys.end () ? GS::UniString () : storey->second);
+
+		out.U32 (triangles.Count ());
+		triangleTotal += triangles.Count ();
+		if (!triangles.xyz.empty ()) {
+			out.Bytes (triangles.xyz.data (), triangles.xyz.size () * sizeof (float));
+		}
+	}
+
+	if (!out.Save (path)) {
+		return Failed ("Could not write the model file. Check the path is writable.", APIERR_NOACCESSRIGHT);
+	}
+
+	GS::ObjectState answer;
+	answer.Add ("success", true);
+	answer.Add ("path", path);
+	answer.Add ("elements", static_cast<Int32> (byElement.size ()));
+	answer.Add ("triangles", static_cast<Int32> (triangleTotal));
+	answer.Add ("bytes", static_cast<Int32> (out.Size ()));
+	return answer;
+}
+
+}		// namespace Loriini

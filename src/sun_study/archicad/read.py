@@ -60,6 +60,7 @@ __all__ = [
     "elements_by_ifc_ids",
     "expanded_ifc_guid",
     "export_ifc",
+    "export_model",
     "gdl_parameters",
     "layer_names",
     "library_objects",
@@ -489,6 +490,41 @@ def _refuse_from_a_sheet(connection: ArchicadConnection) -> None:
             f"(The tool cannot do it for you: ChangeWindow moves the current "
             f"database, not the window on screen.)"
         )
+
+
+def export_model(connection: ArchicadConnection, destination: str | Path) -> Path | None:
+    """Write the 3D model through the add-on, or ``None`` if it has no command.
+
+    The preferred route, and the reason it exists is size rather than speed.
+    An IFC export carries every property the translator is set to write, and
+    on the reference project that was 692 MB of which roughly nine tenths was
+    property values nothing here reads. The setting that trims it lives inside
+    Archicad's IFC translator, and no API call can create or edit one -- every
+    IFC function reads, converts or opens a dialog for a person -- so the IFC
+    route cannot be made small without somebody configuring each machine by
+    hand. This one writes triangles, a guid, a layer and a storey, and stops.
+
+    ``None`` rather than an error when the add-on is older, because the IFC
+    route still works and a run that falls back to it is a slower run rather
+    than a failed one. Every other failure is raised: a command that exists
+    and did not write is a fault worth hearing about.
+    """
+    path = Path(destination).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        answer = connection.run_loriini("ExportModel", {"path": str(path)})
+    except ArchicadError as error:
+        if "not have the registered" in str(error):
+            return None
+        raise
+    if not (isinstance(answer, dict) and answer.get("success")):
+        raise ArchicadError(f"ExportModel did not write a model: {answer!r}")
+    if not path.is_file():
+        raise ArchicadError(
+            f"ExportModel reported success but {path} is not there. Check the path is "
+            f"writable from Archicad's process."
+        )
+    return path
 
 
 def export_ifc(connection: ArchicadConnection, destination: str | Path) -> Path:

@@ -72,6 +72,7 @@ __all__ = [
     "IfcElement",
     "IfcModel",
     "read_ifc",
+    "read_model",
 ]
 
 #: Never occluders, whatever else is asked for. Both are holes in the model
@@ -474,6 +475,22 @@ def _read_layers(model: ifcopenshell.file) -> dict[str, str]:
                 layers[product.GlobalId] = found
                 break
     return layers
+
+
+def read_model(path: str | Path) -> IfcModel:
+    """Read a model from either source, told apart by what is in the file.
+
+    By the file's own first bytes rather than by its extension, because the
+    extension is a hint somebody can rename and the magic is a fact. Callers
+    that take a path from a person -- ``--ifc-in``, the window's picker --
+    should use this, so a run given the other kind says what it got instead of
+    failing somewhere inside a parser.
+    """
+    from sun_study.ingest.native import MAGIC, read_native_model
+
+    with Path(path).open("rb") as handle:
+        first = handle.read(len(MAGIC))
+    return read_native_model(path) if first == MAGIC else read_ifc(path)
 
 
 def read_ifc(path: str | Path, *, include: Sequence[str] | None = None) -> IfcModel:

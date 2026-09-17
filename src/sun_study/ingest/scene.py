@@ -39,7 +39,7 @@ from sun_study.core.sampling import (
     triangle_samples,
 )
 from sun_study.core.shadow import BASELINE, ShadowSource, default_sources
-from sun_study.ingest.ifc import IfcElement, IfcModel, read_ifc
+from sun_study.ingest.ifc import IfcElement, IfcModel, read_model
 
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
@@ -2139,7 +2139,7 @@ def build_shadow_scene_from_files(
                     f"No IFC at {path}. Publisher writes one file per view; check the "
                     f"set published, and that the file names match what was asked for."
                 )
-            loaded[path] = read_ifc(path)
+            loaded[path] = read_model(path)
         return loaded[path]
 
     def mesh_of(paths: Sequence[Path]) -> tuple[TriangleMesh, list[IfcElement]]:

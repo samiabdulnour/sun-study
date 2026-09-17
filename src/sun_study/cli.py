@@ -90,6 +90,7 @@ from sun_study.archicad.read import (
     describe_connection,
     elements_by_ifc_ids,
     export_ifc,
+    export_model,
     gdl_parameters,
     layer_names,
     library_objects,
@@ -207,7 +208,7 @@ from sun_study.core.shadow import (
 )
 from sun_study.core.solar import assessment_times, resolve_timezone, solar_position
 from sun_study.disclaimer import DISCLAIMER, STATUS
-from sun_study.ingest.ifc import GeoreferencingError, read_ifc
+from sun_study.ingest.ifc import GeoreferencingError, read_model
 from sun_study.ingest.scene import (
     DEFAULT_MASSING_SPACING_M,
     MINIMUM_GROUND_CLEARANCE_M,
@@ -282,7 +283,7 @@ def info(
     """
     banner()
     try:
-        model = read_ifc(ifc)
+        model = read_model(ifc)
     except GeoreferencingError as error:
         typer.secho(f"Georeferencing error: {error}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from error
@@ -2949,7 +2950,22 @@ def _export_for_massing(
             f"place the translator exports the selection alone",
             fg=typer.colors.YELLOW,
         )
-    typer.echo(f"  exporting the open project to {out} ...")
+    # The add-on's own writer where it exists, and the IFC where it does not.
+    #
+    # Not a preference about formats. An IFC carries whatever properties the
+    # translator is set to write -- 692 MB on the reference project, roughly
+    # nine tenths of it property values nothing here reads -- and the setting
+    # that trims it cannot be reached from an add-on at all. So the IFC route
+    # can only be made small by somebody configuring each machine by hand,
+    # which is not a thing an office can be handed. The add-on writes the
+    # triangles and the four facts about each element that the analysis
+    # actually uses.
+    #
+    # The IFC route stays, and not only as a fallback: it is how a file on
+    # disk is analysed at all, and --ifc-in snapshots are how a run is
+    # repeated without paying for the export again.
+    native = out.with_suffix(".loriini")
+    typer.echo(f"  exporting the open project to {native} ...")
     with export_state(
         connection,
         combination=combination,
@@ -2958,11 +2974,20 @@ def _export_for_massing(
         hide=tuple(hide),
     ) as plan:
         typer.echo(plan.describe())
-        written = export_ifc(connection, out)
+        written = export_model(connection, native)
+        if written is None:
+            typer.secho(
+                "  the installed Loriini add-on has no ExportModel, so this falls back "
+                "to an IFC export; install the current build to skip it.",
+                fg=typer.colors.YELLOW,
+            )
+            typer.echo(f"  exporting to {out} instead ...")
+            written = export_ifc(connection, out)
     typer.echo(f"  exported {written.stat().st_size / 1e6:.1f} MB")
-    note = oversized_export_note(written)
-    if note:
-        typer.secho(note, fg=typer.colors.YELLOW)
+    if written.suffix.lower() == ".ifc":
+        note = oversized_export_note(written)
+        if note:
+            typer.secho(note, fg=typer.colors.YELLOW)
     return written
 
 
@@ -6483,7 +6508,7 @@ def _shadow_report(
                 config,
             )
         else:
-            model = read_ifc(exported)
+            model = read_model(exported)
             # Before any number reaches the screen. A mismatch means the live
             # project and its export place the site differently, and every
             # figure below would be plausible and wrong. Archicad rotating the

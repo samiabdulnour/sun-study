@@ -3365,3 +3365,59 @@ Only a contourless fill takes the add-on route. With a contour wanted both
 commands draw the same thing, so Tapir is used and an older add-on install
 costs nothing; asked for no contour without the add-on, the run says so rather
 than drawing the edge anyway.
+
+### D103 — The geometry comes from the add-on, because the IFC cannot be made small from here
+
+Asked 17 September 2026, after the Silverwater export came to 692 MB twice:
+*"is it possible to promote new ifc translator setting via addon?"* and then,
+on hearing it could only be done by configuring each machine, *"for commercial
+usage, setting up ifc export is undoable."*
+
+Both halves are right, and together they settle the design.
+
+**The translator cannot be reached.** Every IFC function the API offers reads,
+converts, or opens a dialog: `GetIFCExportTranslatorsList`,
+`GetIFCRelationshipData`, `GetIFCDifference`, the guid conversions,
+`InvokeIFCDifferenceExportSettingsDlg`. There is no call that creates or edits
+a translator, so "Properties to export -> Element Parameters only" is a thing a
+person does in Translator Setup and nowhere else.
+
+`API_SavePars_Ifc` does carry a `translatorIdentifier`, so an export can *pick*
+a translator by name. That is a real option and it was offered: make a lean
+translator once, then name it every run. It was refused for the right reason --
+it still means somebody sets it up by hand on every machine, and a tool that
+ships to an office cannot start with a configuration step nobody will do.
+
+**So the geometry is read directly.** `API_BodyType` carries a `parent`, the
+floor plan element the body was converted from, and that header holds the
+guid, the layer and the storey. With the triangles that is the whole of what
+the analysis uses -- it has never read a property, a quantity or a
+classification, which is precisely why nine tenths of the IFC was waste.
+
+`Loriini.ExportModel` walks the bodies, groups them by element, and writes
+triangles. On the reference project 1.64 M occluder triangles are about 59 MB
+as float32 against 692 MB of IFC, and Archicad is spared writing 1.5 M
+`IfcPropertySingleValue` entities, which is where the minutes went.
+
+**Holes are why this is not a fan over whatever arrives.** A wall face with a
+window in it is one polygon with an inner contour, and fanning that fills the
+opening. A window that stops sunlight is not a detail here: the apartment
+penetration study *is* the light coming through it. So a polygon's contour is
+walked to its first zero separator -- where the outer contour closes -- and
+everything after it, which is the holes, is left out.
+
+**The seam is `IfcModel`.** Everything downstream consumes it and learns
+nothing about where the geometry came from, so this is a reader beside
+`ingest/ifc.py` rather than a second pipeline. `read_model` tells the two apart
+by the file's first bytes rather than its extension, because an extension is a
+hint somebody can rename.
+
+**And the IFC route stays.** Not as a grudging fallback: it is how a file on
+disk is analysed at all, how a model from another office is read, and
+`--ifc-in` snapshots are how a run is repeated without paying for the export
+again -- which is what made the Redfern debugging affordable on 16 September.
+An add-on too old to have `ExportModel` falls back to it with a line saying so.
+
+Unproven at the time of writing: the add-on is C++ and builds in CI, so the
+format is pinned from both ends by a Python writer in the tests, and the first
+live run is what confirms the add-on writes what the reader expects.
