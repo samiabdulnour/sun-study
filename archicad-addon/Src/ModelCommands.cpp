@@ -179,15 +179,30 @@ public:
 		}
 		const auto found = settings.elemTypeFilter.find (API_ZoneID);
 		wasShown = found != settings.elemTypeFilter.end () ? found->second : false;
-		if (wasShown) {
-			return;			// already on; nothing to change and nothing to put back
-		}
 
+		// Written back **whether or not anything needed changing**, and that is
+		// the point rather than a detail.
+		//
+		// The kit's "must convert" flag is the only way from here to make
+		// Archicad rebuild the 3D model, and the model has to be rebuilt
+		// because the caller has just changed which layers are visible. An
+		// earlier version skipped the write when the filter already showed
+		// Zones, and then walked whatever had been converted when somebody
+		// opened the 3D window -- minutes earlier, under different layers.
+		//
+		// Measured on Silverwater, 17 September 2026: `export_state` switched
+		// `07 | Fills.Areas` on and Archicad confirmed it, the filter already
+		// showed every element type so nothing was written, and the export
+		// carried 22 of the project's 159 layers and not one element from that
+		// layer. The layer change was real and simply arrived after the
+		// conversion it was meant to affect.
 		API_3DFilterAndCutSettings wanted = settings;
 		wanted.elemTypeFilter[API_ZoneID] = true;
 		bool convert = true;
 		err = ACAPI_Environment (APIEnv_Change3DImageSetsID, &wanted, &convert);
-		changed = err == NoError;
+		// Only a filter this *changed* has to be put back. The rebuild itself
+		// leaves nothing to restore.
+		changed = err == NoError && !wasShown;
 	}
 
 	~ZonesInTheModel ()
