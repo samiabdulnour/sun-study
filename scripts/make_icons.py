@@ -75,10 +75,10 @@ BOX = 32
 #: sixty icons render in under a second.
 SUPERSAMPLE = 8
 
-#: Sizes the app asks for, and how much to thicken the ink at each. A tab
-#: strip shows 20, a row label 16 or 20, a button 16; 24 and 32 are there for
-#: a high-DPI screen, which Tk picks up by itself.
-SIZES: dict[int, float] = {16: 1.9, 20: 1.6, 24: 1.3, 32: 1.0}
+#: Sizes the app asks for, and how much to thicken the ink at each. A row
+#: label shows 20, a button 16, a card on the launcher 48; 24 and 32 are
+#: there for a high-DPI screen, which Tk picks up by itself.
+SIZES: dict[int, float] = {16: 1.9, 20: 1.6, 24: 1.3, 32: 1.0, 40: 0.9, 48: 0.8}
 
 #: Below this, a shape marked ``detail`` is left out.
 DETAIL_FLOOR = 24
@@ -593,6 +593,37 @@ def studies() -> list[Icon]:
             ],
         ),
     ]
+
+
+def densities() -> list[Icon]:
+    """Rough, normal and detailed, as three grids of the same square.
+
+    These replace a box you typed metres into. The number still goes to the
+    command line -- the tiles hold "2.0", "1.0" and "0.5" -- but nobody has to
+    know that a sample grid is measured in metres to pick a coarseness, and
+    the three drawings say which way is finer without a word.
+    """
+    out: list[Icon] = []
+    for name, says, divisions in (
+        ("grid_rough", "a coarse sample grid", 2),
+        ("grid_normal", "the usual sample grid", 4),
+        ("grid_fine", "a fine sample grid", 8),
+    ):
+        step = 20 / divisions
+        shapes: list[Shape] = [rect(6, 6, 20, 20, fill=PAPER)]
+        for line in range(1, divisions):
+            at = 6 + step * line
+            thin = 0.9 if divisions < 8 else 0.7
+            shapes.append(Line(((at, 6), (at, 26)), fill=BLUE_T, width=thin, detail=divisions > 4))
+            shapes.append(Line(((6, at), (26, at)), fill=BLUE_T, width=thin, detail=divisions > 4))
+        # The coarse ones keep their divisions at every size; only the eight-way
+        # grid has to give them up, and at 16 px it reads as a filled square,
+        # which is the right answer for "finest".
+        if divisions == 8:
+            shapes.append(rect(6.8, 6.8, 18.4, 18.4, fill=BLUE_T, outline=None, coarse=True))
+        shapes.append(rect(6, 6, 20, 20, fill=None, outline=INK))
+        out.append(Icon(name, says, shapes))
+    return out
 
 
 def furniture() -> list[Icon]:
@@ -1215,7 +1246,14 @@ def settings() -> list[Icon]:
 
 def every_icon() -> list[Icon]:
     """The whole set, in the order the window meets it."""
-    return [*sections(), *studies(), *controls(), *settings(), *furniture()]
+    return [
+        *sections(),
+        *studies(),
+        *controls(),
+        *settings(),
+        *densities(),
+        *furniture(),
+    ]
 
 
 # -- rendering -------------------------------------------------------------
@@ -1314,14 +1352,18 @@ def _svg_shape(shape: Shape, ink: float) -> str:
     )
 
 
-def render_svg(icon: Icon, size: int) -> str:
+def render_svg(icon: Icon, size: int, ink: float | None = None) -> str:
     """One icon as an SVG document, sized for the palette.
 
     The drawing stays in its own 32-unit space and the ``viewBox`` does the
     scaling, so the coordinates here are the coordinates on the design boards
     and in the PNGs.
+
+    ``ink`` defaults to the size's own factor from ``SIZES``, which is the
+    right thing for a PNG and the wrong thing here -- see ``PALETTE_INK``.
     """
-    ink = SIZES[size]
+    if ink is None:
+        ink = SIZES[size]
     keep_detail = size >= DETAIL_FLOOR
     body = "\n  ".join(
         _svg_shape(shape, ink)
@@ -1355,6 +1397,21 @@ PALETTE_BUTTONS: dict[str, str] = {
 #: What the palette draws its buttons at. Tapir's are 24, and a palette row is
 #: 28 px tall.
 PALETTE_SIZE = 24
+
+#: How heavy the palette's strokes are, and it is deliberately not ``SIZES[24]``.
+#:
+#: The numbers in ``SIZES`` thicken the ink to survive rasterising: Tk draws the
+#: window's PNGs at a fixed size and a hairline there thins to nothing. 1.3 at
+#: 24 px is that compensation. The palette is SVG, drawn by Archicad with its
+#: own antialiasing and at whatever the screen is, so it needs none of it -- and
+#: inheriting it is why Sami said on 18 September 2026 that the Loriini buttons
+#: had thicker lines than the Archicad toolbar beside them. They did.
+#:
+#: 0.85 was chosen against the toolbar from a rendered comparison of 1.30, 1.00,
+#: 0.85 and 0.70 (``build/palette-ink-options.png``, remade by this script).
+#: Below about 0.7 the shadow and site drawings start to break up, so this is
+#: near the floor rather than in the middle of a range.
+PALETTE_INK = 0.85
 
 
 def contact_sheet(icons: list[Icon]) -> Image.Image:
@@ -1405,7 +1462,7 @@ def main() -> None:
     for name, base in PALETTE_BUTTONS.items():
         if name not in by_name:
             raise SystemExit(f"The palette wants {name!r} and no icon is called that.")
-        svg = render_svg(by_name[name], PALETTE_SIZE)
+        svg = render_svg(by_name[name], PALETTE_SIZE, PALETTE_INK)
         (images / f"{base}_{PALETTE_SIZE}x{PALETTE_SIZE}.svg").write_text(svg, encoding="utf-8")
 
     sheet_path = here / "build" / "icon-contact-sheet.png"
