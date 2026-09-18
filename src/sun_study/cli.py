@@ -2844,6 +2844,7 @@ def scene_config(
     balcony: list[str] | None = None,
     apartment_zone_layer: list[str] | None = None,
     apartment_zone_name: list[str] | None = None,
+    apartment_storey: list[str] | None = None,
     open_space_zone_layer: list[str] | None = None,
     open_space_zone_name: list[str] | None = None,
     grid: float = 0.2,
@@ -2866,6 +2867,7 @@ def scene_config(
         balcony_name_prefixes=tuple(balcony) if balcony else ("Balcony",),
         apartment_zone_layers=tuple(apartment_zone_layer or ()),
         apartment_zone_names=tuple(apartment_zone_name or ()),
+        apartment_storeys=tuple(apartment_storey or ()),
         open_space_zone_layers=tuple(open_space_zone_layer or ()),
         open_space_zone_names=tuple(open_space_zone_name or ()),
         grid_spacing_m=grid,
@@ -5297,6 +5299,17 @@ def archicad_run(
             ),
         ),
     ] = None,
+    apartment_storey: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--apartment-storey",
+            help=(
+                "Assess only the apartments on this storey -- name it, e.g. "
+                "'LEVEL 04'. Repeatable. The rest of the building still shades "
+                "what is measured; this only narrows what is measured."
+            ),
+        ),
+    ] = None,
     open_space_zone_layer: Annotated[
         list[str] | None,
         typer.Option(
@@ -5677,6 +5690,7 @@ def archicad_run(
         balcony=balcony,
         apartment_zone_layer=apartment_zone_layer,
         apartment_zone_name=apartment_zone_name,
+        apartment_storey=apartment_storey,
         open_space_zone_layer=open_space_zone_layer,
         open_space_zone_name=open_space_zone_name,
         grid=grid,
@@ -5832,6 +5846,14 @@ def archicad_run(
             typer.echo("")
             try:
                 styles = resolve_bands(connection, pen)
+                # The balcony Zones, joined the same way the apartments are.
+                owners = dict(result.scene.open_space_owners)
+                found = elements_by_ifc_ids(connection, list(owners))
+                balconies = {
+                    guids[0]: owners[element_id]
+                    for element_id, guids in found.items()
+                    if len(guids) == 1
+                }
                 drawn = draw_assessment(
                     connection,
                     result.assessment,
@@ -5840,6 +5862,7 @@ def archicad_run(
                     bands=styles,
                     layer_name=layer,
                     title=f"Solar access {result.assessment.ruleset_identifier}",
+                    open_space_by_zone=balconies,
                 )
             except ArchicadError as error:
                 typer.secho(str(error), fg=typer.colors.RED, err=True)

@@ -146,6 +146,17 @@ class SceneConfig:
     thirty-five halves the compliance percentage.
     """
 
+    apartment_storeys: tuple[str, ...] = ()
+    """Only apartments on these storeys are assessed. Empty means every storey.
+
+    A narrowing of what is *measured*, never of what shades it: the floors
+    above still stand in the occluder set. It exists so one level can be
+    studied without paying for the whole tower -- a 91-flat building is a
+    long run, and a question about LEVEL 04 is a question about 13 of them.
+    Windows belonging to the flats it drops are dropped with them, the way
+    any other excluded room's are.
+    """
+
     open_space_zone_layers: tuple[str, ...] = ()
     """Zones on these Archicad layers are private open space.
 
@@ -275,6 +286,8 @@ class SceneConfig:
         )
         if self.apartment_zone_names:
             zones += f"named {list(self.apartment_zone_names)} | "
+        if self.apartment_storeys:
+            zones += f"on storeys {list(self.apartment_storeys)} | "
         context = f"context layers {list(self.context_layers)} | " if self.context_layers else ""
         patch = (
             f"floor patch at {self.floor_patch_spacing_m:g} m | "
@@ -331,6 +344,14 @@ class Scene:
     is drawn on. But the ADG asks separately about the living room and about
     the private open space, and the office's own drawings annotate them
     separately too, so the two have to stay tellable apart after the fact."""
+
+    open_space_owners: tuple[tuple[str, str], ...] = ()
+    """Each private open space element and the apartment it was given to, as
+    ``(element id, apartment id)``.
+
+    The samples are parented to the apartment, which is what joins the two
+    results, and that throws away *which* Zone was the balcony. A drawing
+    needs it back: the balcony is a shape on the plan of its own."""
 
     glazed_occluders: TriangleMesh | None = None
     """The occluder set with the glazing taken out of it.
@@ -1127,6 +1148,14 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         and _named_one_of(space, config.apartment_zone_names)
     )
     _require_matches("apartment zone layers", spaces, config.apartment_zone_layers, model)
+    if config.apartment_storeys:
+        found = sorted({str(space.storey) for space in spaces})
+        spaces = tuple(space for space in spaces if _on_storey(space, config.apartment_storeys))
+        if not spaces:
+            raise SceneConfigError(
+                f"No apartments are on storeys {list(config.apartment_storeys)}. "
+                f"The apartments found are on: {found}."
+            )
     if config.apartment_zone_names and not spaces:
         raise SceneConfigError(
             f"No zones are named any of {list(config.apartment_zone_names)}. "
@@ -1301,6 +1330,7 @@ def build_scene(model: IfcModel, config: SceneConfig) -> Scene:
         open_space_samples=SamplePoints.concatenate(balcony_groups),
         floor_samples=SamplePoints.concatenate(floor_groups) if floor_groups else None,
         floor_is_open_space=(np.concatenate(floor_kinds) if floor_kinds else None),
+        open_space_owners=tuple((zone.global_id, owner) for zone, owner in owned_open_space),
         glazed_occluders=(
             model.occluder_mesh(transparent=config.livable_opening_classes)
             if config.floor_patch_spacing_m

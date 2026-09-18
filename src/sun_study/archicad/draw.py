@@ -170,13 +170,17 @@ class DrawReport:
     grouped: GroupReport = NOT_GROUPED
     """One Archicad Group per band."""
 
+    open_space_drawn: int = 0
+    """Balcony Zones filled by their apartment's open-space minutes."""
+
     @property
     def complete(self) -> bool:
         return not (self.zones_without_outline or self.unmatched)
 
     def describe(self) -> str:
+        balconies = f", {self.open_space_drawn} balcony fills" if self.open_space_drawn else ""
         lines = [
-            f"drew {self.fills_drawn} apartment fills and a {self.legend_items} item "
+            f"drew {self.fills_drawn} apartment fills{balconies} and a {self.legend_items} item "
             f"legend on layer index {self.layer.index}"
             + (
                 f", replacing {self.fills_removed} from a previous run"
@@ -806,6 +810,7 @@ def draw_assessment(
     layer_name: str | None = None,
     legend_origin: tuple[float, float] | None = None,
     title: str | None = None,
+    open_space_by_zone: dict[str, str] | None = None,
 ) -> DrawReport:
     """Draw the assessment as coloured fills on the floor plan, plus a legend.
 
@@ -813,6 +818,12 @@ def draw_assessment(
     element GUID it was matched to -- the same join the property write-back
     uses, passed in rather than repeated so the picture and the schedule can
     never disagree about which apartment is which.
+
+    ``open_space_by_zone`` maps a balcony Zone's GUID to the apartment it
+    serves. Each is filled by that apartment's *open-space* minutes, beside the
+    apartment's own fill, which carries the governing figure. The ADG asks
+    about both, and a plan that colours only the flat hides which of the two
+    failed.
     """
     connection.require_tapir_at_least(
         DRAWING_MINIMUM_TAPIR_VERSION,
@@ -854,6 +865,21 @@ def draw_assessment(
         # hours of sun at the same time.
         element_ids.append(fill_id(SOLAR, band.label))
 
+    by_id = {apartment.apartment_id: apartment for apartment in assessment.apartments}
+    balcony_fills: list[dict[str, Any]] = []
+    for zone_guid, apartment_id in (open_space_by_zone or {}).items():
+        zone = by_guid.get(zone_guid)
+        served = by_id.get(apartment_id)
+        if zone is None or served is None or served.open_space_minutes is None or not zone.outline:
+            continue
+        band = band_for(served.open_space_minutes, bands)
+        balcony_fills.append(_fill_for(zone, band, layer_index))
+        # Its own word in the ID, so a schedule of apartment fills by band
+        # does not count balcony area as apartment area.
+        element_ids.append(fill_id(SOLAR, "OPEN SPACE", band.label))
+    open_space_drawn = len(balcony_fills)
+    fills.extend(balcony_fills)
+
     legend_fills, legend_texts = _legend(bands, legend_origin or _legend_origin(zones), layer_index)
     if title:
         legend_texts.append(
@@ -892,7 +918,8 @@ def draw_assessment(
             )
 
     return DrawReport(
-        fills_drawn=len(fills),
+        fills_drawn=len(fills) - open_space_drawn,
+        open_space_drawn=open_space_drawn,
         fills_removed=removed,
         legend_items=len(legend_fills),
         layer=layer,
