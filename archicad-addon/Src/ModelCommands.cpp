@@ -1,6 +1,6 @@
 #include "ModelCommands.hpp"
 
-#include "BM.hpp"
+#include "Triangulate.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -293,15 +293,6 @@ struct Triangles {
 		}
 	}
 
-	// A fan from the first corner, which is exact for a convex polygon and
-	// only for one.
-	void Fan (const std::vector<API_Coord3D>& corners)
-	{
-		for (size_t i = 1; i + 1 < corners.size (); ++i) {
-			Add (corners[0], corners[i], corners[i + 1]);
-		}
-	}
-
 	UInt32 Count () const			{ return static_cast<UInt32> (xyz.size () / 9); }
 };
 
@@ -311,14 +302,15 @@ struct Triangles {
 struct FaceCounts {
 	Int32 polygons = 0;
 	Int32 withHoles = 0;			// an inner contour after a zero separator
-	Int32 decomposed = 0;			// split by Archicad into convex pieces
-	Int32 decomposeFailed = 0;		// fell back to a fan over the outer contour
-	Int32 holesFilled = 0;			// of those, how many had holes -- each one closed over
+	Int32 concave = 0;				// Archicad's own APIPgon_Concav flag
+	Int32 triangulated = 0;			// by earcut, holes and concavity respected
+	Int32 failed = 0;				// earcut gave nothing; the polygon is left out
+	Int32 areaMismatch = 0;			// triangles and outline disagree by more than 1%
 };
 
 
 // One vertex of the active body, placed in the model.
-bool VertexOf (const API_Tranmat& tranmat, Int32 index, API_Coord3D& out)
+bool VertexOf (const API_Tranmat& tranmat, Int32 index, Point3& out)
 {
 	API_Component3D vertex = {};
 	vertex.header.typeID = API_VertID;
@@ -326,67 +318,8 @@ bool VertexOf (const API_Tranmat& tranmat, Int32 index, API_Coord3D& out)
 	if (ACAPI_3D_GetComponent (&vertex) != NoError) {
 		return false;
 	}
-	out = Placed (tranmat, vertex.vert.x, vertex.vert.y, vertex.vert.z);
-	return true;
-}
-
-
-// The polygon as Archicad's own convex pieces, fanned.
-//
-// A face with a window in it is one polygon: an outer contour, a zero
-// separator, and the window's contour as a hole. The first version of this
-// walked the outer contour, stopped at the separator, and fanned what it had
-// -- which draws the face *solid*, straight across the opening. On Kogarah
-// D01 that closed 98 of the 162 openings on LEVEL 04, and the apartment study
-// measured sunlight through glazing that had a wall in front of it.
-//
-// `ACAPI_3D_DecomposePgon` answers with the polygon cut into convex pieces
-// that leave the holes out, and it makes no new points: every index it gives
-// is one of the body's own vertices. Its answer, per the kit's documentation,
-// is `[-n], [-m1], i1 .. i(m1), [-m2], j1 .. j(m2), ...` -- the piece count
-// and each piece's vertex count negative, the vertex indices positive. Read
-// strictly: anything else is refused rather than guessed at.
-bool AddDecomposed (Int32 pgonIndex, const API_Tranmat& tranmat, Triangles& into)
-{
-	Int32** pieces = nullptr;
-	if (ACAPI_3D_DecomposePgon (pgonIndex, &pieces) != NoError || pieces == nullptr) {
-		return false;
-	}
-
-	const Int32 size = static_cast<Int32> (BMGetHandleSize (reinterpret_cast<GSHandle> (pieces)) / sizeof (Int32));
-	const Int32* values = *pieces;
-	Triangles made;
-	bool ok = size >= 1 && values[0] < 0;
-	Int32 at = 1;
-	const Int32 count = ok ? -values[0] : 0;
-	for (Int32 piece = 0; ok && piece < count; ++piece) {
-		if (at >= size || values[at] >= 0) {
-			ok = false;
-			break;
-		}
-		const Int32 corners = -values[at++];
-		if (corners < 3 || at + corners > size) {
-			ok = false;
-			break;
-		}
-		std::vector<API_Coord3D> polygon;
-		for (Int32 k = 0; k < corners; ++k) {
-			API_Coord3D point = {};
-			if (values[at + k] <= 0 || !VertexOf (tranmat, values[at + k], point)) {
-				ok = false;
-				break;
-			}
-			polygon.push_back (point);
-		}
-		at += corners;
-		made.Fan (polygon);
-	}
-	BMKillHandle (reinterpret_cast<GSHandle*> (&pieces));
-
-	if (!ok || count == 0) {
-		return false;
-	}
-	into.xyz.insert (into.xyz.end (), made.xyz.begin (), made.xyz.end ());
+	const API_Coord3D placed = Placed (tranmat, vertex.vert.x, vertex.vert.y, vertex.vert.z);
+	out = Point3 { placed.x, placed.y, placed.z };
 	return true;
 }
 
@@ -396,8 +329,13 @@ bool AddDecomposed (Int32 pgonIndex, const API_Tranmat& tranmat, Triangles& into
 // `ACAPI_3D_GetComponent` is index-based and one-based, and a polygon's edges
 // are reached through its edge *references* rather than directly: `fpedg` to
 // `lpedg` index into the body's pedg array, each entry a signed edge index
-// whose sign says which way round the edge is walked. A zero entry separates
-// one contour from the next, which is how a hole is expressed.
+// whose sign says which way round the edge is walked. A zero entry starts a
+// new contour, which is a hole.
+//
+// Every contour is kept and the polygon is triangulated whole
+// (`Triangulate.hpp`), because a fan from the first corner -- what this did
+// first -- is exact only for a convex polygon, and a wall round a window is
+// usually a concave outline. The fan covered the opening.
 bool AddBody (Int32 bodyIndex, Triangles& into, FaceCounts& counts)
 {
 	API_Component3D body = {};
@@ -408,6 +346,7 @@ bool AddBody (Int32 bodyIndex, Triangles& into, FaceCounts& counts)
 	}
 	const API_Tranmat tranmat = body.body.tranmat;
 
+	std::vector<Point3> triangles;
 	for (Int32 p = 1; p <= body.body.nPgon; ++p) {
 		API_Component3D pgon = {};
 		pgon.header.typeID = API_PgonID;
@@ -416,10 +355,11 @@ bool AddBody (Int32 bodyIndex, Triangles& into, FaceCounts& counts)
 			continue;
 		}
 		++counts.polygons;
+		if ((pgon.pgon.status & APIPgon_Concav) != 0) {
+			++counts.concave;
+		}
 
-		// The outer contour, and whether anything follows it.
-		std::vector<API_Coord3D> contour;
-		bool holes = false;
+		std::vector<std::vector<Point3>> contours (1);
 		for (Int32 e = pgon.pgon.fpedg; e <= pgon.pgon.lpedg; ++e) {
 			API_Component3D pedg = {};
 			pedg.header.typeID = API_PedgID;
@@ -429,8 +369,10 @@ bool AddBody (Int32 bodyIndex, Triangles& into, FaceCounts& counts)
 			}
 			const Int32 edgeIndex = pedg.pedg.pedg;
 			if (edgeIndex == 0) {
-				holes = e < pgon.pgon.lpedg;
-				break;
+				if (!contours.back ().empty ()) {
+					contours.emplace_back ();
+				}
+				continue;
 			}
 
 			API_Component3D edge = {};
@@ -439,32 +381,38 @@ bool AddBody (Int32 bodyIndex, Triangles& into, FaceCounts& counts)
 			if (ACAPI_3D_GetComponent (&edge) != NoError) {
 				continue;
 			}
-			API_Coord3D point = {};
+			Point3 point = {};
 			if (VertexOf (tranmat, edgeIndex > 0 ? edge.edge.vert1 : edge.edge.vert2, point)) {
-				contour.push_back (point);
+				contours.back ().push_back (point);
 			}
 		}
-		if (holes) {
+		while (contours.size () > 1 && contours.back ().size () < 3) {
+			contours.pop_back ();
+		}
+		if (contours.size () > 1) {
 			++counts.withHoles;
 		}
 
-		// A triangle is already exact. Anything larger goes to Archicad for
-		// its convex pieces, holed or not: an outer contour on its own need not
-		// be convex either -- a wall face notched by a door is a U -- and a fan
-		// over a U covers the notch.
-		if (!holes && contour.size () == 3) {
-			into.Fan (contour);
+		// A lone triangle is already exact.
+		if (contours.size () == 1 && contours[0].size () == 3) {
+			triangles.insert (triangles.end (), contours[0].begin (), contours[0].end ());
 			continue;
 		}
-		if (AddDecomposed (p, tranmat, into)) {
-			++counts.decomposed;
+		const Triangulated made = Triangulate (contours, triangles);
+		if (!made.ok) {
+			++counts.failed;
 			continue;
 		}
-		++counts.decomposeFailed;
-		if (holes) {
-			++counts.holesFilled;
+		++counts.triangulated;
+		if (std::fabs (made.triangleArea - made.polygonArea) > 0.01 * made.polygonArea + 1e-9) {
+			++counts.areaMismatch;
 		}
-		into.Fan (contour);
+	}
+
+	for (size_t k = 0; k + 2 < triangles.size (); k += 3) {
+		into.Add (API_Coord3D { triangles[k].x, triangles[k].y, triangles[k].z },
+				  API_Coord3D { triangles[k + 1].x, triangles[k + 1].y, triangles[k + 1].z },
+				  API_Coord3D { triangles[k + 2].x, triangles[k + 2].y, triangles[k + 2].z });
 	}
 	return true;
 }
@@ -505,9 +453,10 @@ GS::Optional<GS::UniString> ExportModelCommand::GetResponseSchema () const
 			},
 			"polygons": { "type": "integer" },
 			"polygonsWithHoles": { "type": "integer" },
-			"decomposed": { "type": "integer" },
-			"decomposeFailed": { "type": "integer" },
-			"holesFilled": { "type": "integer" }
+			"polygonsConcave": { "type": "integer" },
+			"triangulated": { "type": "integer" },
+			"triangulationFailed": { "type": "integer" },
+			"areaMismatch": { "type": "integer" }
 		},
 		"additionalProperties": false
 	})");
@@ -697,13 +646,14 @@ GS::ObjectState ExportModelCommand::Execute (const GS::ObjectState& parameters,
 	// Said, because a run that found no Zones needs to know whether they were
 	// switched on for it or were there already.
 	answer.Add ("zonesWereShown", zones.WasAlreadyShown ());
-	// How the faces were made. `holesFilled` above zero means some openings
-	// are closed in the file, and the run says so.
+	// How the faces were made. `triangulationFailed` and `areaMismatch` are
+	// the two that say a face in the file is not the face in the model.
 	answer.Add ("polygons", faces.polygons);
 	answer.Add ("polygonsWithHoles", faces.withHoles);
-	answer.Add ("decomposed", faces.decomposed);
-	answer.Add ("decomposeFailed", faces.decomposeFailed);
-	answer.Add ("holesFilled", faces.holesFilled);
+	answer.Add ("polygonsConcave", faces.concave);
+	answer.Add ("triangulated", faces.triangulated);
+	answer.Add ("triangulationFailed", faces.failed);
+	answer.Add ("areaMismatch", faces.areaMismatch);
 	return answer;
 }
 
