@@ -51,8 +51,9 @@ from typing import Any
 DEFAULT_SIZE = 20
 
 #: Sizes ``make_icons.py`` writes. Asking for anything else answers ``None``
-#: rather than scaling a bitmap, which at these sizes looks broken.
-SIZES = (16, 20, 24, 32)
+#: rather than scaling a bitmap, which at these sizes looks broken. 40 is the
+#: launcher card; 20 a row label; 16 a button.
+SIZES = (16, 20, 24, 32, 40, 48)
 
 #: Loaded images, by name and size.
 #:
@@ -138,16 +139,33 @@ def options(label: str, size: int = DEFAULT_SIZE) -> dict[str, Any]:
 
 
 def section_options(title: str, size: int = DEFAULT_SIZE) -> dict[str, Any]:
-    """The same, for a notebook tab, which takes no padding.
+    """The same, for a section named in a line of text.
 
-    Keyed on the tab's title rather than on its position, so inserting a tab
-    cannot shift every icon along by one.
+    Keyed on the section's title rather than on its position, so inserting a
+    section cannot shift every icon along by one.
     """
     name = BY_SECTION.get(title)
     if name is None:
         return {}
     image = named(name, size)
     return {} if image is None else {"image": image, "compound": "left"}
+
+
+def tab_options(title: str, size: int = 32) -> dict[str, Any]:
+    """The same, for a tab in the strip, where the drawing sits *above* the
+    name rather than beside it.
+
+    Beside the name, an icon can only be as tall as one line of text -- which
+    is how the 20 px tab strip got drawings nobody could read, six pictures
+    reduced to six smudges. Above it, the tab is as wide as its name either
+    way and the drawing gets the width to itself, so 32 px costs nothing but
+    the height of one row.
+    """
+    name = BY_SECTION.get(title)
+    if name is None:
+        return {}
+    image = named(name, size)
+    return {} if image is None else {"image": image, "compound": "top"}
 
 
 def button_options(name: str, size: int = 16) -> dict[str, Any]:
@@ -194,11 +212,13 @@ def study_options(label: str, size: int = DEFAULT_SIZE) -> dict[str, Any]:
 
 #: The sections, in tab order. Keyed on the titles ``window`` defines, so a
 #: renamed tab is a failed lookup and a bare tab rather than a wrong picture.
+#:
+#: "Solar tools" is gone from here because it is gone from the window: it was
+#: a container and never a page, and a drawing of one is a picture of a menu.
 BY_SECTION: dict[str, str] = {
     "General": "general",
-    "Site tools": "site",
-    "Solar tools": "solar",
     "Model": "model",
+    "Site analysis": "site",
     "Solar analysis": "analysis",
     "Shadow diagram": "shadow",
     "Sun views": "views",
@@ -211,7 +231,7 @@ BY_STUDY: dict[str, str] = {
     "Communal open space": "communal",
     "Shadow diagram": "shadow",
     "Sun views": "views",
-    "Site tools": "site",
+    "Site analysis": "site",
 }
 
 #: Every field that has a picture worth drawing, by its own label.
@@ -244,7 +264,7 @@ BY_LABEL: dict[str, str] = {
     "Keep off drawings": "keep_off",
     # Solar analysis -- facade, apartments, communal
     "Facade layers": "facade_layers",
-    "Skin cell (m)": "skin_cell",
+    "Skin cell": "skin_cell",
     "Apartment zones": "zones",
     "Balcony zones": "balcony",
     "Living-room glazing": "glazing",

@@ -37,23 +37,28 @@ from tkinter import ttk
 
 # -- the palette, the same one the icons are drawn from --------------------
 
-#: The window's own surround: the strip at the top, the run bar at the bottom.
-#: Warm rather than Windows grey, which is what stops the window reading as a
-#: dialog from 2009.
-CHROME = "#EFEEE9"
+#: Archicad's own chrome, sampled off a screenshot of it rather than guessed:
+#: its toolbars and palette surrounds are a neutral #F0F0F0, its panels are
+#: white, and its field edges are around #8D8D8D. This window sits inside
+#: Archicad all day and an earlier warm grey made it look like a different
+#: program parked on top of it.
+CHROME = "#F0F0F0"
 
 #: Where the settings are. White, because the icons are drawn on white and a
-#: sheet of paper on grey is not a sheet of paper.
+#: sheet of paper on grey is not a sheet of paper. Archicad's panels agree.
 SURFACE = "#FFFFFF"
 
-#: A tab nobody has selected, and the trough of the progress bar.
-MUTED = "#E3E1DA"
+#: A control nobody has chosen, and the trough of the progress bar.
+MUTED = "#E4E4E4"
 
-INK = "#1F1E1A"
-BODY = "#3C3B36"
-#: The line under a control. 5.3:1 on white, which is the point of it.
-HINT = "#6B6960"
-LINE = "#D8D5CB"
+INK = "#1F1F1F"
+BODY = "#3C3C3C"
+#: The line under a control. 5.5:1 on white, which is the point of it.
+HINT = "#6A6A6A"
+#: A divider. Archicad's own are lighter than its field edges, and so are
+#: these -- LINE separates, EDGE encloses something you can type in.
+LINE = "#DCDCDC"
+EDGE = "#8D8D8D"
 
 BLUE = "#1E63C8"
 BLUE_TINT = "#E8F0FC"
@@ -101,6 +106,9 @@ def apply(root: tk.Misc) -> ttk.Style:
     body = (FACE, 9) if _has_face(FACE) else ("TkDefaultFont", 9)
     strong = (FACE, 9, "bold") if _has_face(FACE) else ("TkDefaultFont", 9, "bold")
     heading = (FACE, 10, "bold") if _has_face(FACE) else ("TkDefaultFont", 10, "bold")
+    #: The caption over a group of tabs, and nothing else. Small enough to be
+    #: read after the tabs rather than before them.
+    small = (FACE, 8) if _has_face(FACE) else ("TkDefaultFont", 8)
 
     try:
         root.option_add("*Font", body)
@@ -149,24 +157,11 @@ def apply(root: tk.Misc) -> ttk.Style:
         padding=(6, 2),
     )
 
-    # -- the tab strip ----------------------------------------------------
-    style.configure("TNotebook", background=CHROME, borderwidth=0, tabmargins=(PAD, 6, PAD, 0))
-    style.configure(
-        "TNotebook.Tab",
-        background=MUTED,
-        foreground=BODY,
-        bordercolor=LINE,
-        padding=(12, 7),
-        font=body,
-    )
-    # The selected tab is the content's own surface, so the two read as one
-    # sheet rather than as a strip above a box.
-    style.map(
-        "TNotebook.Tab",
-        background=[("selected", SURFACE), ("active", "#EDF3FC")],
-        foreground=[("selected", INK)],
-        font=[("selected", strong)],
-    )
+    # A ``ttk.Notebook`` used to be here and its styles with it. The strip is
+    # built out of buttons now -- see ``Tab.TButton`` below -- because a
+    # notebook tab cannot carry a drawing above its label, cannot be given a
+    # coloured edge of its own, and has one selected state where this window
+    # needs two marks on two axes.
 
     # -- fields -----------------------------------------------------------
     for kind in ("TEntry", "TCombobox", "TSpinbox"):
@@ -175,12 +170,12 @@ def apply(root: tk.Misc) -> ttk.Style:
             fieldbackground=SURFACE,
             background=SURFACE,
             foreground=INK,
-            bordercolor=LINE,
+            bordercolor=EDGE,
             lightcolor=SURFACE,
             darkcolor=SURFACE,
             insertcolor=INK,
             arrowcolor=BODY,
-            padding=(5, 3),
+            padding=(5, 4),
         )
         style.map(
             kind,
@@ -254,6 +249,59 @@ def apply(root: tk.Misc) -> ttk.Style:
         foreground=[("disabled", HINT)],
         bordercolor=[("disabled", LINE)],
     )
+
+    #: A tab in the strip: one drawing at 32 px with the section's name under
+    #: it. No border and no fill when it is not the open one, because six
+    #: outlined boxes in a row read as six boxes rather than as one strip.
+    #:
+    #: Four styles rather than one style with two maps, because a tab carries
+    #: two facts that must never be drawn as the same thing -- which is the
+    #: fault this replaces, where a tinted card meant "queued" and there was
+    #: nothing at all for "you are here".
+    #:
+    #: *Open* is the white surface, the same white as the page beneath it, so
+    #: the tab and its page read as one sheet; a blue rule over the tab closes
+    #: it. *Queued* is the blue label and the dot after the name. A tab can be
+    #: both at once, and then it says both.
+    tab_pad = (10, 7, 10, 7)
+    for name, ground, text, face in (
+        ("Tab.TButton", CHROME, BODY, body),
+        ("TabOpen.TButton", SURFACE, INK, strong),
+        ("TabQueued.TButton", CHROME, BLUE_DEEP, body),
+        ("TabOpenQueued.TButton", SURFACE, BLUE_DEEP, strong),
+    ):
+        #: An open tab does not light up under the pointer: you are already
+        #: there, and a hover that moves it makes the sheet look detached.
+        hover = ground if ground == SURFACE else BLUE_TINT
+        style.configure(
+            name,
+            background=ground,
+            foreground=text,
+            bordercolor=ground,
+            lightcolor=ground,
+            darkcolor=ground,
+            padding=tab_pad,
+            anchor="center",
+            font=face,
+            relief="flat",
+        )
+        style.map(
+            name,
+            background=[("pressed", BLUE_EDGE), ("active", hover)],
+            bordercolor=[("active", hover)],
+            lightcolor=[("active", hover)],
+            darkcolor=[("active", hover)],
+        )
+
+    #: The word over a group of tabs -- the only text in the strip that is not
+    #: the name of a page. It says which of the two kinds the tabs under it
+    #: are, which is the whole taxonomy: two pages set the job up, four draw
+    #: something.
+    style.configure("Group.TLabel", background=CHROME, foreground=HINT, font=small)
+
+    #: The newest line out of a run, and the only one shown. Monospaced
+    #: because it prints layer names and tallies that want to line up.
+    style.configure("Note.TLabel", background=CHROME, foreground=BODY, font=log_font(), anchor="w")
 
     #: A tile in a choice row: icon only, no text, and square.
     style.configure(

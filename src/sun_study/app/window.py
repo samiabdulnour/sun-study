@@ -9,10 +9,16 @@ commonest way a run measures the wrong thing.
 
 Grouped by what comes out of it
 -------------------------------
-A tab per *output* -- General, Facade skin, Solar diagrams, and two more that
-are not built yet and say so. That is how the work is asked for: a job wants
-the facade skin, or it wants the solar diagrams, and the person setting one up
-should be able to read the whole of that study and none of the rest.
+Six tabs in two kinds. Two of them set the job up -- what the sheets are drawn
+on, and what geometry leaves Archicad -- and four of them each draw one thing:
+the site analysis, the solar analysis, the shadow diagram, the sun views. That
+is how the work is asked for: a job wants the shadow diagrams for Tuesday, and
+the person setting one up should be able to read the whole of that study and
+none of the rest.
+
+The two kinds are drawn as two groups in the strip, because that split is the
+only thing that makes six tabs a list rather than a bag: only the four can be
+ticked, and so only the four can ever carry the queued mark.
 
 It replaces a single column of thirty settings with an Advanced panel under
 them, which was the wrong cut. "Advanced" is not a property of a setting: the
@@ -25,8 +31,9 @@ state the export starts from, the numbering the results file themselves under
 The cost of tabs is that a section nobody opens is a section nobody knows the
 state of, and this window's whole subject is the wrong answer nobody noticed.
 So it is paid for twice, in ``Window._sync``: a tab whose study will run says
-so on its own label, and a line above Run names every study queued whichever
-tab happens to be showing.
+so on its own label -- in blue, with a dot, which is a different mark from the
+white-and-blue-rule that means the tab you are on -- and a line above Run names
+every study queued whichever tab happens to be showing.
 
 Every field says what it is
 ---------------------------
@@ -39,13 +46,13 @@ because that is the part nobody can infer from a label.
 
 Which makes sections no screen can hold either
 ----------------------------------------------
-Sections shorten the page but do not fix it: Solar diagrams alone is two
+Sections shorten the page but do not fix it: Solar analysis alone is three
 studies and a dozen questions, each answered with a line of its own, which is
 more than a laptop shows -- and a window cannot be dragged taller than the
 screen it is on, so anything past the bottom edge is not awkward to reach but
 unreachable. So every tab is its own ``Scroller``. Run, the progress bar and
-the log sit below the notebook and outside it, so the button stays findable
-and the log stays readable while a study runs, whichever section is showing.
+the one line a run has to say about itself sit below the strip and outside it,
+so the button stays findable and the line stays put whichever tab is showing.
 
 What is worth remembering between runs
 --------------------------------------
@@ -61,7 +68,6 @@ does.
 
 from __future__ import annotations
 
-import math
 import queue
 import sys
 import tkinter as tk
@@ -70,10 +76,10 @@ from dataclasses import dataclass, field
 from functools import partial
 from itertools import pairwise
 from pathlib import Path
-from tkinter import filedialog, scrolledtext, ttk
+from tkinter import filedialog, ttk
 from typing import ClassVar
 
-from sun_study import AUTHOR, PRODUCT, __version__
+from sun_study import PRODUCT
 from sun_study.app import icons, preferences, probe, theme
 from sun_study.app.runner import Run
 from sun_study.archicad import naming
@@ -125,13 +131,6 @@ CHIPS: dict[str, tuple[str, str]] = {
     SUN_EYE_JOB: ("Sun views", "views"),
     SITE_JOB: ("Site analysis", "site_analysis"),
 }
-
-#: The schematic in the summary pane. Not a rendering of the project -- the
-#: printer driver's paper preview is not the document either -- but the sun
-#: and the shadows do follow the first hour asked for, because a shadow that
-#: does not move when the hour changes is worse than no shadow at all.
-PREVIEW_W = 186
-PREVIEW_H = 158
 
 
 class Tooltip:
@@ -566,10 +565,17 @@ class Tiles(ttk.Frame):
         return self._chosen
 
     def set(self, value: str) -> None:
-        """Choose one. A value nobody offered is ignored."""
-        if value in self._buttons:
-            self._chosen = value
-            self._paint()
+        """Choose one, or hold a value nobody offered.
+
+        An unoffered value is kept rather than refused, and no tile lights up.
+        These rows replaced typed fields, so a settings file saved before them
+        can hold 1.25 where the tiles offer 2, 1 and 0.5 -- and silently
+        rounding somebody to the nearest tile would change a study's answer
+        without saying so. Held, it goes to the command line as it always did
+        and the untinted row says it is not one of the three.
+        """
+        self._chosen = value
+        self._paint()
 
     # -- what makes it a drop-in for the Combobox it replaced --------------
     def delete(self, first: object = 0, last: object = None) -> None:
@@ -598,10 +604,13 @@ class Window:
         # Never taller than the screen. A window opened past the bottom edge
         # cannot be dragged back by its title bar, so everything below the
         # fold -- Run included -- is out of reach, which is the fault this
-        # replaces. The minimum height only has to keep the log and the
-        # buttons: the settings above them scroll.
+        # replaces. The minimum height only has to keep the strip and the run
+        # bar: the settings between them scroll.
         self.root.minsize(820, 460)
-        self.root.geometry(self._on_the_screen(880, 940))
+        # Wide enough for six tabs in a row with their drawings over their
+        # names, and for a settings row to carry a label, a field and a Choose
+        # button. Shorter than it was by the height of the log that is gone.
+        self.root.geometry(self._on_the_screen(1020, 820))
 
         #: Lines from the worker thread. Tkinter is not thread-safe, so nothing
         #: touches a widget from the runner's thread: lines go through here and
@@ -612,6 +621,10 @@ class Window:
         self.ports: list[int] = []
         self.run: Run | None = None
         self.queued: list[Job] = []
+        #: Everything a run has said, in order. The window shows the newest
+        #: line of it and no more, but a failure has to be readable after the
+        #: fact, so the transcript is kept rather than drawn.
+        self.lines: list[str] = []
 
         self._build()
         #: What the window opens with when nothing has been saved. Taken
@@ -634,26 +647,65 @@ class Window:
         return f"{max(wide, 820)}x{max(tall, 460)}"
 
     # -- layout ------------------------------------------------------------
-    #: The sections, in the order a colleague meets them. One tab per
-    #: *output*, because that is how this work is asked for -- "the facade
-    #: skin and the solar diagrams for Tuesday" -- rather than per kind of
-    #: setting. General is first and is not an output: it is what every
-    #: output is drawn on, and its settings are the ones a project is set up
-    #: with once.
+    #: The six pages, and the two kinds they come in. That split is the
+    #: taxonomy, and it is what six equal cards had no way of saying: *set up*
+    #: is what the job is, answered once and never run; *what it draws* is
+    #: what comes out, one page per output, each with a tick that Run obeys.
     #:
-    #: The last two are not built. They are here because the shape of the
-    #: tool is worth showing, and because a setting that arrives later then
-    #: has a decided place to land instead of being wedged into whichever
-    #: section is nearest. Each says plainly that it does nothing yet, and
-    #: neither carries a tick, so there is nothing to switch on and wait for.
+    #: Only the second kind can be queued, which is the whole reason the
+    #: strip is grouped rather than flat: a colleague looking for the queued
+    #: mark now knows the two pages that can never carry one.
+    #:
+    #: "Solar tools" is not a page here and never was an output -- it was a
+    #: container holding four of them, which meant four of the six things
+    #: this program does were invisible until somebody opened it.
     GENERAL = "General"
-    SITE = "Site tools"
-    SOLAR = "Solar tools"
-    #: The solar toolset's own tabs, inside the Solar tools tab.
     MODEL = "Model"
+    SITE = "Site analysis"
     DIAGRAMS = "Solar analysis"
     SHADOWS = "Shadow diagram"
     EYE = "Sun views"
+
+    #: The two kinds, in strip order, under the word that names each. Two
+    #: words of chrome, and they are the only text in the strip that is not
+    #: the name of a page.
+    SET_UP = "SET UP"
+    DRAWS = "WHAT IT DRAWS"
+    GROUPS: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
+        (SET_UP, (GENERAL, MODEL)),
+        (DRAWS, (SITE, DIAGRAMS, SHADOWS, EYE)),
+    )
+
+    #: What each tab says when hovered. The tab carries a drawing at 32 px and
+    #: a name, and nothing else -- so the sentence that would otherwise sit
+    #: under the label lives here, where it costs no room at all.
+    SECTION_BLURB: ClassVar[dict[str, str]] = {
+        GENERAL: (
+            "The sheet every output lands on: the master and its title block, "
+            "the layer prefixes that file the results, the storey everything is "
+            "measured from, and which days of the year the sun is put at."
+        ),
+        SITE: (
+            "An address in; the Context and Site Analysis sheets, the Summary of "
+            "Controls, and a 500 m context model of terrain, blocks and "
+            "neighbours out."
+        ),
+        MODEL: (
+            "What geometry leaves Archicad and by which route: the layer "
+            "combination it starts from, what is forced in, what the "
+            "neighbours are, and what is kept off the drawings."
+        ),
+        DIAGRAMS: (
+            "Hours of direct sun. Three studies: the facade in bands at massing "
+            "stage, the apartments assessed against the ADG, and communal open "
+            "space."
+        ),
+        SHADOWS: (
+            "Shadows cast by each massing, hour by hour, drawn from published "
+            "views -- one sheet per hour per day."
+        ),
+        EYE: ("3D documents aimed straight down the sun, and the sheets they are dealt onto."),
+    }
     #: The facade study lives in the Solar analysis section now; the name
     #: stays for the settings files and tests that knew it as a tab.
     FACADE = DIAGRAMS
@@ -669,25 +721,13 @@ class Window:
 
         # The bottom of the window is built first and packed to the bottom,
         # so it stays put while the settings above it change tab and scroll.
-        # Run has to be findable without hunting through sections, and a log
-        # that scrolls off the top during a run is a log nobody reads --
-        # which is most of what this window has to say while it works.
+        # Run has to be findable without hunting through sections, and the one
+        # line a run has to say about itself has to stay where it was put.
         base = ttk.Frame(self.root, style="Chrome.TFrame", padding=(PAD, 0, PAD, PAD))
         base.pack(side="bottom", fill="x")
         base.columnconfigure(0, weight=1)
 
         self._project_picker()
-
-        # The settings and the summary share a row, so the summary stays put
-        # while a tab is changed and scrolled -- which is the whole of its
-        # job. It is the printer driver's paper preview: a colleague filling
-        # in the shadow tab can still see what day, what hour and which
-        # studies are queued without leaving the page to find out.
-        middle = ttk.Frame(self.root, style="Chrome.TFrame")
-        middle.pack(side="top", fill="both", expand=True)
-        self.middle = middle
-
-        self._summary(middle)
         self._sections()
         self._controls(base)
         self._sync()
@@ -733,12 +773,9 @@ class Window:
             "in the sections below.",
         )
         row += 1
-        ttk.Label(
-            top,
-            text="The open project to measure. Check the name if you have two open.",
-            style="ChromeHint.TLabel",
-        ).grid(row=row, column=1, sticky="w")
-        row += 1
+        # No line under this one. What it needs to say -- which project, and
+        # check it if two are open -- the hover says at length, and the status
+        # line below already reports what was read out of whichever is chosen.
         for target in (label, self.instance):
             Tooltip(
                 target,
@@ -755,236 +792,168 @@ class Window:
         self.status.grid(row=row, column=1, sticky="w", pady=(0, 4))
 
     def _sections(self) -> None:
-        """The tabs, each holding everything one output needs.
+        """One page per output, reached from a strip of tabs across the top.
 
-        Grouped by output rather than by kind, because that is the question a
-        colleague arrives with. Thirty settings in one column made a page
-        nobody could hold in their head, and the split that mattered was
-        never "simple and advanced" -- it was "the four things the facade
-        skin needs" against "the nine things the diagrams need". A person
-        running one study can now read the whole of it and none of the rest.
+        The launcher of cards this replaces was right about one thing and
+        wrong about everything else. Right: a drawing big enough to recognise
+        beats a 20 px smudge beside a word, and six of them in view beats a
+        row of small words. Wrong in three ways that a strip fixes at once.
 
-        What tabs cost is that a section nobody opens is a section nobody
-        knows the state of. Paid for twice, in ``_sync``: a tab whose study
-        will run says so on its own label, and the line above Run names every
-        study queued whichever tab is showing.
+        It cost a click to reach any page and two to reach the next one,
+        because the way from one tool to another ran through the front door.
+
+        It had nowhere to say which page you were on, since the cards were
+        gone by the time you were on one -- so the one thing a colleague looks
+        for first, *where am I*, had to be read off a breadcrumb that was
+        itself the only thing left of the navigation.
+
+        And its single mark, the blue tint, was spent on *queued*, which left
+        *chosen* with no mark at all. One colour cannot carry two facts.
+
+        The strip keeps the drawings -- 32 px, over the name rather than
+        beside it, which is what makes the size free -- and gets all three
+        back. Every page is one click from every other. The open tab is white
+        and capped in blue, joined to the page beneath it, and stays on screen
+        saying so. Queued is a separate mark on a separate axis: the name goes
+        blue and takes a dot. A tab can be open, queued, both or neither, and
+        all four read without being read.
         """
-        self.tabs = ttk.Notebook(self.middle)
-        self.tabs.pack(side="right", fill="both", expand=True, padx=(4, PAD), pady=(2, 0))
+        #: The sections, in strip order, the two kinds flattened into one
+        #: list. The kinds are drawn by ``_strip``; everything else -- the
+        #: settings file, the studies, the wheel, the tests -- wants them flat.
+        self.titles: list[str] = [title for _kind, group in self.GROUPS for title in group]
+        #: The four that used to live inside Solar tools. Kept because
+        #: ``_studies`` names the section a study belongs to and the settings
+        #: file remembers one of these strings; nothing navigates by it now.
+        self.solar_titles: list[str] = [self.MODEL, self.DIAGRAMS, self.SHADOWS, self.EYE]
 
-        #: Every tab's title in tab order, and every tab's pane. The
-        #: notebook's own labels grow a tick when the study in them will run,
-        #: so they are no longer safe to read a title back out of, and the
-        #: saved "which section was open" is keyed on this list instead.
-        self.titles: list[str] = []
+        #: Every pane in title order, and the same panes by title. The list is
+        #: what the wheel and the tests reach for; the map is what showing one
+        #: needs.
         self.panes: list[Scroller] = []
+        self.pane_of: dict[str, Scroller] = {}
+        #: The tab buttons, and the three pixels of rule over each. Separate
+        #: because they carry the one fact between them: the rule is blue on
+        #: the open tab and chrome on the other five.
+        self.tabs: dict[str, ttk.Button] = {}
+        self.rules: dict[str, tk.Frame] = {}
+        #: Which section is showing. Never empty: there is no state of this
+        #: window with no page open, which is what the launcher was.
+        self.showing = self.GENERAL
 
-        self._general(self._section(self.GENERAL))
-        self._site(self._section(self.SITE))
+        # Packed before the stack, so it lands above it.
+        self._strip()
 
-        # The solar tools share a model export and are used together at
-        # another stage of a job than the site tools, so they are one tab
-        # outside and four inside: what the export starts from, then a tool
-        # per tab.
-        holder = ttk.Frame(self.tabs)
-        self.tabs.add(holder, text=self.SOLAR, **icons.section_options(self.SOLAR))
-        self.titles.append(self.SOLAR)
-        self.solar_tabs = ttk.Notebook(holder)
-        self.solar_tabs.pack(fill="both", expand=True)
-        self.solar_titles: list[str] = []
-        self._model(self._solar_section(self.MODEL))
-        self._diagrams(self._solar_section(self.DIAGRAMS))
-        self._shadows(self._solar_section(self.SHADOWS))
-        self._sun_eyes(self._solar_section(self.EYE))
+        self.stack = ttk.Frame(self.root)
+        self.stack.pack(side="top", fill="both", expand=True, padx=PAD)
 
-    def _summary(self, parent: ttk.Frame) -> None:
-        """What the run will draw, down the left, whichever tab is showing.
+        builders = {
+            self.GENERAL: self._general,
+            self.SITE: self._site,
+            self.MODEL: self._model,
+            self.DIAGRAMS: self._diagrams,
+            self.SHADOWS: self._shadows,
+            self.EYE: self._sun_eyes,
+        }
+        for title in self.titles:
+            builders[title](self._section(title))
+        self._show_section(self.GENERAL)
 
-        Lifted from the print dialog, which puts a picture of a sheet and the
-        words "100% / Letter" beside the settings rather than making anybody
-        assemble that from six separate fields. Here it is the schematic, the
-        day and hour, the sheet it lands on, and the studies that are queued.
+    def _strip(self) -> None:
+        """The six tabs, in their two kinds, across the top of the window.
 
-        None of it is a control. Everything here is read from fields that live
-        in the tabs, so there is exactly one place to change any of it and
-        this is a second place to see it.
+        Grouped rather than flat because the taxonomy is the thing six equal
+        cards could not say: two of these pages set the job up and four of
+        them draw something, and only the four can be queued. A colleague
+        hunting for the queued mark can rule out two tabs without looking.
         """
-        pane = ttk.Frame(parent, style="Chrome.TFrame", padding=(PAD, 2, 0, PAD))
-        pane.pack(side="left", fill="y")
+        strip = ttk.Frame(self.root, style="Chrome.TFrame", padding=(PAD, 4, PAD, 0))
+        strip.pack(side="top", fill="x")
 
-        ttk.Label(pane, text="What it will draw", style="ChromeHint.TLabel").pack(anchor="w")
+        column = 0
+        for kind, group in self.GROUPS:
+            if column:
+                # Between the kinds, a rule rather than a wider gap: at this
+                # size a gap reads as two tabs that happen to sit apart, and
+                # the split is the whole point of the arrangement.
+                ttk.Separator(strip, orient="vertical").grid(
+                    row=0, column=column, rowspan=2, sticky="ns", padx=12, pady=(3, 4)
+                )
+                column += 1
+            ttk.Label(strip, text=kind, style="Group.TLabel").grid(
+                row=0, column=column, columnspan=len(group), sticky="w", padx=(3, 0)
+            )
+            for title in group:
+                self._tab(strip, title, column)
+                column += 1
+        # The strip ends where the tabs do; the rest of the row is chrome.
+        strip.columnconfigure(column, weight=1)
 
-        self.preview = tk.Canvas(
-            pane,
-            width=PREVIEW_W,
-            height=PREVIEW_H,
-            background=theme.SURFACE,
-            highlightthickness=1,
-            highlightbackground=theme.LINE,
-        )
-        self.preview.pack(anchor="w", pady=(4, 7))
+    def _tab(self, strip: ttk.Frame, title: str, column: int) -> None:
+        """One tab: a rule, a drawing at 32 px, and the page's name under it.
 
-        self.preview_day = ttk.Label(pane, text="", style="ChromeStrong.TLabel")
-        self.preview_day.pack(anchor="w")
-        self.preview_sheet = ttk.Label(
-            pane, text="", style="ChromeHint.TLabel", justify="left", wraplength=PREVIEW_W
-        )
-        self.preview_sheet.pack(anchor="w", pady=(1, 0))
-
-        ttk.Separator(pane).pack(fill="x", pady=(11, 8))
-
-        ttk.Label(pane, text="Queued, in order", style="ChromeHint.TLabel").pack(anchor="w")
-        #: Rebuilt by ``_sync`` rather than hidden and shown: the list is at
-        #: most six rows and destroying them is simpler to be sure of than
-        #: keeping six widgets and a count in step.
-        self.queued_rows = ttk.Frame(pane, style="Chrome.TFrame")
-        self.queued_rows.pack(anchor="w", fill="x", pady=(5, 0))
-
-    def _first_hour(self) -> int:
-        """The first whole hour the shadow diagram was asked for, or noon.
-
-        Only the preview reads this, so anything unparseable is noon rather
-        than an error: the field itself is checked properly by the run.
+        The rule is a frame of its own rather than a border, because ttk has
+        no way to give one edge of a widget its own colour -- and the edge is
+        the point: it is the mark that means *open*, and it has to be a thing
+        the tint used for *queued* can never be confused with.
         """
-        for piece in self.shadow_hours.get().split(","):
-            try:
-                hour = int(piece.strip())
-            except ValueError:
-                continue
-            if 0 <= hour <= 23:
-                return hour
-        return 12
+        cell = ttk.Frame(strip, style="Chrome.TFrame")
+        cell.grid(row=1, column=column, sticky="nsew")
+        rule = tk.Frame(cell, height=3, background=theme.CHROME)
+        rule.pack(side="top", fill="x")
+        tab = ttk.Button(
+            cell,
+            style="Tab.TButton",
+            text=title,
+            command=partial(self._show_section, title),
+            **icons.tab_options(title, 32),
+        )
+        tab.pack(side="top", fill="both", expand=True)
+        Tooltip(tab, self.SECTION_BLURB[title])
+        self.tabs[title] = tab
+        self.rules[title] = rule
 
-    def _draw_preview(self) -> None:
-        """The schematic, with the sun where the chosen hour puts it.
+    def _paint_tabs(self) -> None:
+        """Say which tab is open and which tabs will run, in two ways that
+        cannot be read as each other.
 
-        Sydney, so the morning sun is north-east and throws its shadows
-        south-west; at three it is north-west and throws them south-east. The
-        arithmetic is one line and it is what makes the panel worth having.
+        Open is the white tab under the blue rule. Queued is the blue name and
+        the dot after it. Two marks on two axes, so a tab that is both says
+        both -- where the launcher had one tint that had to mean both and
+        therefore meant neither.
         """
-        canvas = self.preview
-        canvas.delete("all")
-        wide, tall = PREVIEW_W, PREVIEW_H
-
-        # The sheet, with its title block bottom right.
-        canvas.create_rectangle(10, 8, wide - 10, tall - 10, outline=theme.LINE, fill=theme.SURFACE)
-        canvas.create_rectangle(
-            wide - 58, tall - 34, wide - 14, tall - 14, outline=theme.BLUE, fill=theme.BLUE_TINT
-        )
-
-        middle_x, middle_y = wide / 2, tall / 2 + 6
-        # The ground, on the same axis as every block in the icon set.
-        canvas.create_polygon(
-            middle_x - 60,
-            middle_y,
-            middle_x,
-            middle_y - 30,
-            middle_x + 60,
-            middle_y,
-            middle_x,
-            middle_y + 30,
-            fill="#EDEBE4",
-            outline="#C6C5BE",
-        )
-
-        hour = self._first_hour()
-        lean = math.radians((12 - hour) * 15)
-        sun_x = middle_x + math.sin(lean) * 52
-        sun_y = 30 - math.cos(lean) * 14
-        stretch = 1.0 + abs(12 - hour) / 3.0
-
-        for centre_x, centre_y, half in (
-            (middle_x - 22, middle_y + 2, 11),
-            (middle_x + 20, middle_y - 4, 8),
-        ):
-            drop_x = -math.sin(lean) * 22 * stretch
-            drop_y = math.cos(lean) * 11 * stretch
-            canvas.create_polygon(
-                centre_x - half,
-                centre_y,
-                centre_x,
-                centre_y - half / 2,
-                centre_x + half + drop_x,
-                centre_y + drop_y,
-                centre_x + drop_x,
-                centre_y + half / 2 + drop_y,
-                fill="#B9B7AF",
-                outline="",
+        running = {where for _name, tick, where in self._studies() if tick.get()}
+        styles = {
+            (False, False): "Tab.TButton",
+            (True, False): "TabOpen.TButton",
+            (False, True): "TabQueued.TButton",
+            (True, True): "TabOpenQueued.TButton",
+        }
+        for title, tab in self.tabs.items():
+            open_here = title == self.showing
+            queued_here = title in running
+            tab.configure(
+                style=styles[(open_here, queued_here)],
+                text=f"{title} •" if queued_here else title,
             )
-            canvas.create_polygon(
-                centre_x - half,
-                centre_y,
-                centre_x,
-                centre_y - half / 2,
-                centre_x + half,
-                centre_y,
-                centre_x,
-                centre_y + half / 2,
-                fill=theme.SURFACE,
-                outline="#3C3C3A",
-            )
-
-        canvas.create_oval(sun_x - 7, sun_y - 7, sun_x + 7, sun_y + 7, fill=theme.SUN, outline="")
-
-        # North, in interface blue because it is not a thing that was built.
-        canvas.create_polygon(20, 20, 26, 36, 20, 32, 14, 36, fill=theme.BLUE, outline="")
-
-    def _refresh_summary(self, queued: list[str]) -> None:
-        """Put the panel back in step with the fields and the ticks."""
-        self._draw_preview()
-
-        hour = self._first_hour()
-        day = (self.shadow_dates.get().split(",") or [""])[0].strip()
-        self.preview_day.config(text=f"{day or '21 Jun'}  ·  {hour:02d}:00")
-
-        sheets = self.sheets.get() or "one layout"
-        self.preview_sheet.config(
-            text=f"{self.master.get() or 'no master chosen'}\n1:{self.eye_scale.get() or '200'}"
-            f"  ·  {sheets.split(',')[0].lower()}"
-        )
-
-        for old in self.queued_rows.winfo_children():
-            old.destroy()
-        if not queued:
-            ttk.Label(self.queued_rows, text="nothing ticked", style="ChromeHint.TLabel").pack(
-                anchor="w"
-            )
-            return
-        for place, name in enumerate(queued, start=1):
-            label, icon = CHIPS.get(name, (name, ""))
-            row = ttk.Frame(self.queued_rows, style="Chrome.TFrame")
-            row.pack(anchor="w", fill="x", pady=1)
-            ttk.Label(row, text=f"{place}", style="ChromeHint.TLabel", width=2).pack(side="left")
-            ttk.Label(row, text=label, style="Chrome.TLabel", **icons.button_options(icon)).pack(
-                side="left"
-            )
+            self.rules[title].configure(background=theme.BLUE if open_here else theme.CHROME)
 
     def _section(self, title: str) -> ttk.Frame:
-        """One tab, and the frame its settings are built into.
+        """One page, and the frame its settings are built into.
 
-        Each tab scrolls on its own rather than the notebook sitting inside
-        one scroller, because the sections are not the same length: Solar
-        diagrams asks about two studies and is three times General. A single
-        scroller would size itself to the longest and leave every short tab
-        with a bar that moves nothing, while a laptop that cannot show the
-        longest tab still has to be able to reach the bottom of it.
+        Each scrolls on its own rather than all of them inside one scroller,
+        because they are not the same length: Solar analysis asks about three
+        studies and is three times General. One scroller would size itself to
+        the longest and leave every short page with a bar that moves nothing.
+
+        Built now and shown later. Every page exists from the moment the
+        window opens, so reading the project fills all six at once and moving
+        between them costs nothing.
         """
-        pane = Scroller(self.tabs)
-        self.tabs.add(pane, text=title, **icons.section_options(title))
-        self.titles.append(title)
+        pane = Scroller(self.stack)
         self.panes.append(pane)
-        frame = ttk.Frame(pane.content, padding=PAD)
-        frame.pack(fill="both", expand=True)
-        frame.columnconfigure(1, weight=1)
-        return frame
-
-    def _solar_section(self, title: str) -> ttk.Frame:
-        """One of the Solar tools' own tabs; the same shape one level down."""
-        pane = Scroller(self.solar_tabs)
-        self.solar_tabs.add(pane, text=title, **icons.section_options(title))
-        self.solar_titles.append(title)
-        self.panes.append(pane)
-        frame = ttk.Frame(pane.content, padding=PAD)
+        self.pane_of[title] = pane
+        frame = ttk.Frame(pane.content, padding=(2, PAD, PAD, PAD))
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(1, weight=1)
         return frame
@@ -1322,17 +1291,17 @@ class Window:
             "includes every internal partition and balustrade. The slab layers "
             "belong here too, or there are no floors to colour.",
         )
-        self.grid_m, row = self._entry(
+        self.grid_m, row = self._tiles(
             frame,
             row,
-            "Skin cell (m)",
-            "0.5",
-            "Cell size of the 3D facade skin.",
+            "Skin cell",
+            "",
             "Finer looks better and makes many more elements — half the cell "
             "size is roughly four times the count, and this project already "
             "makes over five thousand at 0.5 m. A face narrower than one cell "
             "is not drawn at all, so a coarse setting loses thin columns.",
         )
+        self.grid_m.set("0.5")
         return row
 
     def _diagrams(self, frame: ttk.Frame) -> None:
@@ -1540,17 +1509,17 @@ class Window:
             "the fall and the built form shade the surface far more than they "
             "shade a point a metre above it.",
         )
-        self.communal_grid, row = self._entry(
+        self.communal_grid, row = self._tiles(
             frame,
             row,
             "Communal grid",
-            "0.5",
-            "Sample spacing in metres over the communal area.",
+            "",
             "Half a metre reads a courtyard properly. This is separate from "
             "the ground grid on purpose: the ground is the whole site, and "
             "gridding all of it this finely costs four times the samples for "
             "an answer nobody asked of it.",
         )
+        self.communal_grid.set("0.5")
         self.communal_csv, row = self._entry(
             frame,
             row,
@@ -1821,10 +1790,10 @@ class Window:
         self.do_site = tk.BooleanVar(value=False)
         box = ttk.Checkbutton(
             frame,
-            text="Site tools",
+            text="Site analysis",
             variable=self.do_site,
             command=self._sync,
-            **icons.study_options("Site tools"),
+            **icons.study_options("Site analysis"),
         )
         box.grid(row=row, column=0, columnspan=2, sticky="w")
         Tooltip(
@@ -2197,30 +2166,26 @@ class Window:
         self.progress_count = ttk.Label(progress_row, text="", style="ChromeHint.TLabel")
         self.progress_count.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
-        self.log = scrolledtext.ScrolledText(
-            base,
-            height=11,
-            wrap="word",
-            state="disabled",
-            font=theme.log_font(),
-            background=theme.SURFACE,
-            foreground=theme.BODY,
-            insertbackground=theme.INK,
-            relief="solid",
-            borderwidth=1,
-            padx=6,
-            pady=4,
-        )
-        self.log.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
+        #: The newest line out of a run, and the only one on screen.
+        #:
+        #: Eight lines of scrolling log used to sit here: a sixth of the
+        #: window given to a transcript that, between runs, was eight empty
+        #: lines, and during one was read by nobody -- a run is minutes long
+        #: and the question the whole time is "where is it up to", which is
+        #: one line and a bar, not a page.
+        #:
+        #: Nothing is thrown away. Every line is still kept, in ``self.lines``,
+        #: so a run that failed can be read back; it is simply not what the
+        #: bottom of the window is made of.
+        self.note = ttk.Label(base, text="", style="Note.TLabel")
+        self.note.grid(row=3, column=0, sticky="ew", pady=(8, 0))
 
-        ttk.Label(
-            base, text=STATUS, foreground=theme.RED, background=theme.CHROME, wraplength=760
-        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(
-            base,
-            text=f"{PRODUCT} {__version__}  ·  created by {AUTHOR}",
-            foreground=HINT,
-        ).grid(row=5, column=0, sticky="w", pady=(2, 0))
+        # The one line of text down here that is not about this run. It is a
+        # statement about what the numbers are worth, it is the same sentence
+        # the README and every exported file carry, and it stays.
+        ttk.Label(base, text=STATUS, foreground=theme.RED, background=theme.CHROME).grid(
+            row=4, column=0, sticky="w", pady=(8, 0)
+        )
 
     def _hint(self, parent: ttk.Frame, row: int, text: str) -> ttk.Label:
         """The line under a control. Returned so it can be rewritten: the
@@ -2326,12 +2291,18 @@ class Window:
         thing as far as everything that reads it is concerned.
         """
         name = ttk.Label(parent, text=label, **icons.options(label))
-        name.grid(row=row, column=0, sticky="w", pady=(2, 0))
+        name.grid(row=row, column=0, sticky="w", pady=(4, 0))
         made = Tiles(parent, self.TILE_CHOICES[label], on_change=self._sync)
-        made.grid(row=row, column=1, sticky="w", pady=(2, 0))
-        self._hint(parent, row + 1, hint)
+        made.grid(row=row, column=1, sticky="w", pady=(4, 0))
         Tooltip(name, detail)
-        return made, row + 2
+        # No line underneath. Every tile says what it is on hover and the
+        # drawing says it before that, so the sentence that a typed field
+        # needs -- because a typed field can be wrong in silence -- would be
+        # three lines of grey saying what three pictures already said.
+        if hint:
+            self._hint(parent, row + 1, hint)
+            return made, row + 2
+        return made, row + 1
 
     def _picker(
         self, parent: ttk.Frame, row: int, label: str, hint: str, detail: str
@@ -2416,31 +2387,38 @@ class Window:
         ]
 
     def _open_section(self) -> str:
-        """Which tab is showing, by title.
+        """Which page is showing, by title.
 
-        By title and not by number so that inserting Shadow diagram ahead of
-        Sun eye view, or dropping a section, cannot reopen somebody on a
-        different page than the one they left.
+        By title and not by number so that inserting a section, or dropping
+        one, cannot reopen somebody on a different page than the one they
+        left. Never empty: a tab strip has no state with nothing open, which
+        is the one thing the launcher could be and this cannot.
         """
-        try:
-            # Tk's own wrappers, and none of ttk's Notebook is annotated --
-            # hence the ignores in this file and nowhere else.
-            outer = self.titles[self.tabs.index("current")]  # type: ignore[no-untyped-call]
-            if outer == self.SOLAR:
-                inner = self.solar_tabs.index("current")  # type: ignore[no-untyped-call]
-                return str(self.solar_titles[inner])
-            return outer
-        except (tk.TclError, IndexError):  # pragma: no cover - no tab yet
-            return ""
+        return self.showing
 
     def _show_section(self, title: str) -> None:
-        """Open that tab, if there is still one by that name -- outside, or
-        one of the Solar tools' own, which opens Solar tools first."""
-        if title in self.titles:
-            self.tabs.select(self.titles.index(title))  # type: ignore[no-untyped-call]
-        elif title in self.solar_titles:
-            self.tabs.select(self.titles.index(self.SOLAR))  # type: ignore[no-untyped-call]
-            self.solar_tabs.select(self.solar_titles.index(title))  # type: ignore[no-untyped-call]
+        """Open that page. An empty name opens General.
+
+        A title this version *does* have but under another name leaves the
+        page where it is -- a settings file written before the sections were
+        regrouped names "Solar tools", which was a container and is not a page
+        any more. Losing which page was open is the cheapest thing in that
+        file to lose, and moving somebody somewhere they did not ask for is
+        dearer than not moving them.
+
+        An empty name is different, and is the one case that does move: it is
+        what a file saved by the version with the launcher wrote for "no page
+        open", and there is no such place to put anybody now.
+        """
+        if title not in self.pane_of:
+            if title:
+                return
+            title = self.GENERAL
+        for pane in self.panes:
+            pane.pack_forget()
+        self.pane_of[title].pack(side="top", fill="both", expand=True)
+        self.showing = title
+        self._paint_tabs()
 
     def ask_for(self, study: str) -> bool:
         """Tick one study and open the section it lives in. True if it took.
@@ -2486,10 +2464,11 @@ class Window:
 
         A dependent tick is only a question while the study above it is on.
 
-        A tab whose study will run says so on its own label. That is what
-        tabs cost: a section nobody opens is a section nobody knows the state
-        of, and a colleague who has never opened Solar diagrams should still
-        be able to see from the outside that two studies are waiting in it.
+        A tab whose study will run says so on its own label -- in blue, with a
+        dot, which is not what the open tab is marked with. That is what tabs
+        cost: a section nobody opens is a section nobody knows the state of,
+        and a colleague who has never opened Solar analysis should still be
+        able to see from the outside that two studies are waiting in it.
 
         And the line above Run names every study queued. With the ticks
         spread over three sections there is otherwise nowhere on screen that
@@ -2499,26 +2478,11 @@ class Window:
         self.floors_box.config(state="normal" if self.do_facade.get() else "disabled")
         self.hourly_box.config(state="normal" if self.do_communal.get() else "disabled")
 
-        running = {where for _name, tick, where in self._studies() if tick.get()}
-        if running & set(self.solar_titles):
-            running.add(self.SOLAR)
-        for index, title in enumerate(self.titles):
-            self.tabs.tab(  # type: ignore[no-untyped-call]
-                index, text=f"{title} ✓" if title in running else title
-            )
-        for index, title in enumerate(self.solar_titles):
-            self.solar_tabs.tab(  # type: ignore[no-untyped-call]
-                index, text=f"{title} ✓" if title in running else title
-            )
+        # A tab whose study will run says so, without anybody opening it.
+        self._paint_tabs()
 
         queued = [name for name, tick, _where in self._studies() if tick.get()]
-        self.queued_line.config(
-            text=(
-                "Will run"
-                if queued
-                else "Nothing ticked. Choose a study in one of the sections above."
-            )
-        )
+        self.queued_line.config(text="Will run" if queued else "Nothing ticked")
 
         # Rebuilt rather than rewritten: each chip carries an icon as well as
         # a name, and six labels destroyed and remade is less to be wrong
@@ -2533,8 +2497,6 @@ class Window:
                 style="Chip.TLabel",
                 **icons.button_options(icon),
             ).pack(side="left", padx=(0, 4))
-
-        self._refresh_summary(queued)
 
     # -- settings that outlive the window ------------------------------------
     def _fields(self) -> dict[str, ttk.Entry | Tiles]:
@@ -3027,6 +2989,28 @@ class Window:
                 "layouts and the right answer for a presentation set.",
             ),
         ),
+        # Metres, still, on the command line -- the tiles hold the number.
+        # Nobody has to know a sample grid is measured in metres to pick a
+        # coarseness, and three drawings say which way is finer without a word.
+        "Skin cell": (
+            ("2.0", "grid_rough", "Rough — 2 m cells. Fast, and it loses anything narrower."),
+            ("1.0", "grid_normal", "Normal — 1 m cells."),
+            (
+                "0.5",
+                "grid_fine",
+                "Detailed — 0.5 m cells. Four times the elements of 1 m; over five "
+                "thousand on a project this size.",
+            ),
+        ),
+        "Communal grid": (
+            ("2.0", "grid_rough", "Rough — samples every 2 m."),
+            ("1.0", "grid_normal", "Normal — samples every 1 m."),
+            (
+                "0.5",
+                "grid_fine",
+                "Detailed — samples every 0.5 m, which is what reads a courtyard properly.",
+            ),
+        ),
         "Site lands at": (
             (
                 "Project location",
@@ -3487,9 +3471,7 @@ class Window:
             self._write("Nothing selected. Tick a study first.")
             return
 
-        self.log.config(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.config(state="disabled")
+        self.lines.clear()
         self.queued = queued
         self.go.config(state="disabled")
         self.cancel.config(state="normal")
@@ -3545,10 +3527,17 @@ class Window:
         self.root.after(80, self._drain)
 
     def _write(self, line: str) -> None:
-        self.log.config(state="normal")
-        self.log.insert("end", line + "\n")
-        self.log.see("end")
-        self.log.config(state="disabled")
+        """Keep the line, and show it if it says anything.
+
+        Every line is kept; only the newest one with words in it is shown. The
+        blanks and the ``──`` rules a run prints are there to space a
+        transcript out, and a one-line note has nothing to space -- shown,
+        they would blank the note at exactly the moments a study changes over,
+        which is when it has most to say.
+        """
+        self.lines.append(line)
+        if line.strip(" ─"):
+            self.note.config(text=line)
 
 
 def icon_path() -> Path | None:

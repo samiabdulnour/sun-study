@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 else:
     tk = pytest.importorskip("tkinter", reason="this machine has no tkinter")
 
-from sun_study.app import icons, preferences, probe, window
+from sun_study.app import icons, preferences, probe, theme, window
 from sun_study.app.runner import CLI_MARKER, child_environment, command_prefix
 from sun_study.archicad import naming
 from sun_study.archicad.connection import DEFAULT_TIMEOUT_SECONDS, Instance
@@ -1024,18 +1024,18 @@ def in_a_section(hidden_window: Any, widget: tk.Misc) -> bool:
 
 
 def test_the_settings_scroll_and_the_run_button_does_not(hidden_window: Any) -> None:
-    """Sections shorten the page but do not fix it -- Solar diagrams alone is
-    two studies and a dozen questions, each with its explanation underneath,
+    """Sections shorten the page but do not fix it -- Solar analysis alone is
+    three studies and a dozen questions, each with its explanation underneath,
     and no laptop shows that at once -- so every section scrolls. Run, the
-    progress bar and the log do not: a log that scrolls off the top during a
-    run is a log nobody reads, and Run somewhere down a long page is worse
-    than a Run that never moves.
+    progress bar and the line a run reports itself on do not: a note that
+    scrolls out of view is a note nobody reads, and Run somewhere down a long
+    page is worse than a Run that never moves.
     """
     assert in_a_section(hidden_window, hidden_window.prefix_solar), "a setting in General"
     assert in_a_section(hidden_window, hidden_window.grid_m), "and one in Facade skin"
     assert in_a_section(hidden_window, hidden_window.communal_csv), "and one in Solar diagrams"
     assert not in_a_section(hidden_window, hidden_window.go), "Run must stay where it is"
-    assert not in_a_section(hidden_window, hidden_window.log), "and so must the log"
+    assert not in_a_section(hidden_window, hidden_window.note), "and so must what it says"
     assert not in_a_section(hidden_window, hidden_window.instance), (
         "and so must the project it all runs against"
     )
@@ -1271,7 +1271,7 @@ def test_a_layer_saved_on_another_job_is_not_measured_here(hidden_window: Any) -
     hidden_window.refresh()
 
     assert hidden_window._listed(hidden_window.subject) == ["01 | Wall.External"]
-    assert "SOMEBODY ELSE" in hidden_window.log.get("1.0", "end"), "and it is said out loud"
+    assert "SOMEBODY ELSE" in "\n".join(hidden_window.lines), "and it is said out loud"
 
 
 def test_a_layer_the_project_spells_differently_is_corrected(hidden_window: Any) -> None:
@@ -1810,11 +1810,105 @@ def test_every_labelled_icon_matches_a_label_the_window_really_uses(
     assert not orphans, f"in BY_LABEL but no such label in the window: {orphans}"
 
 
-def test_every_tab_carries_its_own_icon(hidden_window: Any) -> None:
-    for index, title in enumerate(hidden_window.titles):
-        assert hidden_window.tabs.tab(index, "image"), f"{title} has no icon"
-    for index, title in enumerate(hidden_window.solar_titles):
-        assert hidden_window.solar_tabs.tab(index, "image"), f"{title} has no icon"
+def test_every_tab_carries_its_own_drawing_above_its_name(hidden_window: Any) -> None:
+    """A tab is a drawing and a name. Without the drawing it is a small word.
+
+    Above the name and not beside it, which is what lets the drawing be 32 px:
+    beside it, an icon can be no taller than one line of text, and that is how
+    the strip this replaces ended up with six pictures nobody could tell apart.
+    """
+    for title in hidden_window.titles:
+        tab = hidden_window.tabs[title]
+        assert tab.cget("image"), f"{title} has no icon"
+        assert str(tab.cget("compound")) == "top", f"{title} wears its icon beside the name"
+        # A tab whose study is queued also carries a dot, which `_sync` puts
+        # there -- the fixture opens with the facade study on.
+        assert tab.cget("text").rstrip(" •") == title, f"{title} is not named"
+
+
+def test_the_strip_always_has_exactly_one_tab_open(hidden_window: Any) -> None:
+    """There is no state of this window with no page showing, which is the one
+    thing the launcher it replaces could be."""
+    assert hidden_window._open_section() == window.Window.GENERAL
+    hidden_window._show_section(window.Window.SHADOWS)
+    assert hidden_window._open_section() == window.Window.SHADOWS
+    # What a settings file from the launcher version wrote for "nothing open".
+    # There is nowhere to put that now, so it opens the first tab.
+    hidden_window._show_section("")
+    assert hidden_window._open_section() == window.Window.GENERAL
+    # A name from an older file leaves the page alone rather than moving
+    # somebody somewhere they did not ask for.
+    hidden_window._show_section(window.Window.SHADOWS)
+    hidden_window._show_section("Solar tools")
+    assert hidden_window._open_section() == window.Window.SHADOWS
+
+
+def test_open_and_queued_are_two_marks_and_never_the_same_one(hidden_window: Any) -> None:
+    """The fault the launcher had: one blue tint that had to mean both "this
+    is the page you are on" and "this will run", and so meant neither.
+
+    Four styles, two axes. A tab can be open, queued, both or neither, and all
+    four are told apart -- and the rule over the open tab is blue only there.
+    """
+    hidden_window._show_section(window.Window.GENERAL)
+    tab = hidden_window.tabs[window.Window.SHADOWS]
+
+    hidden_window.do_shadows.set(False)
+    hidden_window._sync()
+    assert tab.cget("style") == "Tab.TButton", "neither"
+    assert hidden_window.rules[window.Window.SHADOWS].cget("background") == theme.CHROME
+
+    hidden_window.do_shadows.set(True)
+    hidden_window._sync()
+    assert tab.cget("style") == "TabQueued.TButton", "queued but not open"
+    assert tab.cget("text").endswith("•")
+
+    hidden_window._show_section(window.Window.SHADOWS)
+    assert tab.cget("style") == "TabOpenQueued.TButton", "open and queued"
+    assert hidden_window.rules[window.Window.SHADOWS].cget("background") == theme.BLUE
+
+    hidden_window.do_shadows.set(False)
+    hidden_window._sync()
+    assert tab.cget("style") == "TabOpen.TButton", "open but not queued"
+    assert hidden_window.rules[window.Window.GENERAL].cget("background") == theme.CHROME
+
+
+def test_only_the_tabs_that_draw_something_can_be_queued(hidden_window: Any) -> None:
+    """The taxonomy, and the reason the strip is grouped rather than flat: two
+    pages set the job up and four draw something, and a tick belongs only to
+    the four. A queued mark on General would be a promise nothing keeps."""
+    setting_up = dict(window.Window.GROUPS)[window.Window.SET_UP]
+    drawn = dict(window.Window.GROUPS)[window.Window.DRAWS]
+
+    assert set(setting_up) | set(drawn) == set(hidden_window.titles), "every tab in a group"
+    assert not set(setting_up) & set(drawn), "and in only one"
+
+    for _name, tick, _where in hidden_window._studies():
+        tick.set(True)
+    hidden_window._sync()
+
+    for title in setting_up:
+        assert hidden_window.tabs[title].cget("style") in {"Tab.TButton", "TabOpen.TButton"}, (
+            f"{title} sets the job up and cannot be queued"
+        )
+    for title in drawn:
+        assert hidden_window.tabs[title].cget("style").endswith("Queued.TButton"), (
+            f"{title} draws something and every one of its studies is ticked"
+        )
+
+
+def test_a_coarseness_nobody_offered_is_kept_rather_than_rounded(
+    hidden_window: Any,
+) -> None:
+    """Skin cell used to be a typed field and is now three tiles.
+
+    A settings file saved before that can hold 1.25, and rounding somebody to
+    the nearest tile would change what a study measures without saying so.
+    """
+    hidden_window.apply({"skin_grid": "1.25"})
+    assert hidden_window.grid_m.get() == "1.25"
+    hidden_window.apply({"skin_grid": "2.0"})
+    assert hidden_window.grid_m.get() == "2.0"
 
 
 @pytest.mark.parametrize(
