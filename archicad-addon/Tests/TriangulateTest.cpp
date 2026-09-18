@@ -64,6 +64,25 @@ double Area3 (const std::vector<Point3>& tris)
 	return sum;
 }
 
+// Does every triangle's normal point the same way as the outline's (Newell)?
+bool AllFaceAsOutline (const std::vector<Point3>& tris, const std::vector<Point3>& outer)
+{
+	double nx = 0.0, ny = 0.0, nz = 0.0;
+	for (size_t i = 0, j = outer.size () - 1; i < outer.size (); j = i++) {
+		nx += (outer[j].y - outer[i].y) * (outer[j].z + outer[i].z);
+		ny += (outer[j].z - outer[i].z) * (outer[j].x + outer[i].x);
+		nz += (outer[j].x - outer[i].x) * (outer[j].y + outer[i].y);
+	}
+	for (size_t k = 0; k + 2 < tris.size (); k += 3) {
+		const Point3 a = tris[k], b = tris[k + 1], c = tris[k + 2];
+		const double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+		const double vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+		const double tx = uy * vz - uz * vy, ty = uz * vx - ux * vz, tz = ux * vy - uy * vx;
+		if (tx * nx + ty * ny + tz * nz <= 0.0) return false;
+	}
+	return !tris.empty ();
+}
+
 std::vector<Point3> OldFan (const std::vector<Point3>& outer)
 {
 	std::vector<Point3> tris;
@@ -101,6 +120,13 @@ void Case (const char* name,
 		   "self-check: triangles cover the polygon's area");
 	Check (Covering (tris, inOpening) == 0, "the opening is open");
 	Check (Covering (tris, inSolid) >= 1, "the solid part is covered");
+	Check (AllFaceAsOutline (tris, contours[0]), "every triangle faces the way the outline does");
+	std::vector<Point3> reversedOuter (contours[0].rbegin (), contours[0].rend ());
+	std::vector<std::vector<Point3>> flipped = contours;
+	flipped[0] = reversedOuter;
+	std::vector<Point3> other;
+	Loriini::Triangulate (flipped, other);
+	Check (AllFaceAsOutline (other, reversedOuter), "and still does with the outline reversed");
 	const std::vector<Point3> fan = OldFan (contours[0]);
 	std::printf ("        old fan: area %.3f, opening covered %d time(s)\n", Area3 (fan), Covering (fan, inOpening));
 }

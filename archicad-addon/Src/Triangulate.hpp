@@ -115,14 +115,24 @@ inline Triangulated Triangulate (const std::vector<std::vector<Point3>>& contour
 	for (const auto& ring : rings) {
 		flatPoints.insert (flatPoints.end (), ring.begin (), ring.end ());
 	}
+
+	// Each triangle wound as the outer contour is. earcut does not keep the
+	// input's direction, and the direction is the face's normal: the analysis
+	// tells a Zone's floor from its top, and the outside of a window from the
+	// inside, by which way a triangle faces. Measured the first time without
+	// this: every balcony floor faced up and the study found no balconies.
+	const bool outerPositive = Detail::Shoelace (rings[0]) > 0.0;
 	for (size_t k = 0; k + 2 < indices.size (); k += 3) {
 		const auto& a = flatPoints[indices[k]];
 		const auto& b = flatPoints[indices[k + 1]];
 		const auto& c = flatPoints[indices[k + 2]];
-		result.triangleArea += std::fabs ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2.0;
+		const std::vector<std::array<double, 2>> corners { a, b, c };
+		const double twice = Detail::Shoelace (corners);
+		result.triangleArea += std::fabs (twice) / 2.0;
+		const bool flip = (twice > 0.0) != outerPositive;
 		out.push_back (flatOrder[indices[k]]);
-		out.push_back (flatOrder[indices[k + 1]]);
-		out.push_back (flatOrder[indices[k + 2]]);
+		out.push_back (flatOrder[indices[flip ? k + 2 : k + 1]]);
+		out.push_back (flatOrder[indices[flip ? k + 1 : k + 2]]);
 	}
 	result.ok = true;
 	return result;
